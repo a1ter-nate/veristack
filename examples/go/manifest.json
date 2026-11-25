@@ -1,0 +1,26 @@
+{
+  "language": "go",
+  "caught": {
+    "go_titans.go": [
+      "go-range-string-runelen-offset",
+      "go-url-path-posix-clean-before-filepath",
+      "go-defer-before-blocking-select",
+      "go-channel-double-close",
+      "go-select-unchecked-channel-spin",
+      "condvar-wait-without-loop",
+      "atomic-check-then-mutate-toctou",
+      "go-slice-index-len-plus-one-unchecked"
+    ],
+    "go_runtime.go": [
+      "go-unclosed-http-body",
+      "ast-unchecked-crypto-or-read-return",
+      "go-error-type-assert-not-as",
+      "http-unnormalized-path-authz-match",
+      "float-nan-unsafe-cmp"
+    ]
+  },
+  "clean": [
+    "safe_go_titans.go",
+    "safe_go_runtime.go"
+  ]
+}

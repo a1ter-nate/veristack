@@ -1,31 +1,26 @@
-type Order is Data:
-  Pending{id: U32}
-  Cancelled{id: U32}
-  Shipped{id: U32}
+import Base
+import ./Model.bend as Model
 
-def cancel(order: Order) -> Order:
-  match order:
-    case Pending{id}:
-      Cancelled{id}
-    case Cancelled{id}:
-      Cancelled{id}
-    case Shipped{id}:
-      Shipped{id}
+law cancel_idempotent:
+  for order: Model.Order
+  {Model.cancel(Model.cancel(order)) == Model.cancel(order) : Model.Order}
 
-law cancel_idempotent(order: Order):
-  {cancel(cancel(order)) == cancel(order) : Order}
+law shipped_never_cancelled:
+  for id: U32
+  {Model.cancel(Model.Shipped{id}) == Model.Shipped{id} : Model.Order}
 
-def cancel_idempotent(order: Order) -> {cancel(cancel(order)) == cancel(order) : Order}:
-  match order:
-    case Pending{id}:
-      {==}
-    case Cancelled{id}:
-      {==}
-    case Shipped{id}:
-      {==}
+law sat_sub_zero_left:
+  for b: Nat
+  {Model.sat_sub(0n, b) == 0n : Nat}
 
-law shipped_never_cancelled(id: U32):
-  {cancel(Shipped{id}) == Shipped{id} : Order}
+law clamp_respects_zero_cap:
+  for x: Nat
+  {Model.clamp_nat(0n, x) == 0n : Nat}
 
-def shipped_never_cancelled(id: U32) -> {cancel(Shipped{id}) == Shipped{id} : Order}:
-  {==}
+law status_roundtrip:
+  for s: Model.OrderStatus
+  {Model.decode_status(Model.encode_status(s)) == s : Model.OrderStatus}
+
+law unwind_restores_empty:
+  for xs: List<U32>
+  {Model.unwind_all(xs) == Nil{} : List<U32>}

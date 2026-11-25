@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
 import { lineOf } from "../test-lexical.ts";
@@ -12,13 +14,20 @@ export interface LawCheckResult {
 }
 
 const BEND_LAW_DECL = /^\s*(?:law|theorem)\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm;
-const BEND_DEF_DECL = /^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm;
-const BEND_UNSAFE_ESCAPE = /\b(?:unsafe|sorry|admit|todo!|panic!)\b/g;
+const BEND_DEF_DECL = /^\s*def\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\b/gm;
+const BEND_UNSAFE_ESCAPE = /(?:@unsafe\b|\?[A-Za-z_][A-Za-z0-9_]*|\b(?:unsafe|sorry|admit|todo!|panic!)\b)/g;
+
+function resolveBendBinary(): string {
+  const localBin = path.join(os.homedir(), ".bend", "bin", "bend");
+  if (fs.existsSync(localBin)) return localBin;
+  return "bend";
+}
 
 function isLawFile(rel: string): boolean {
   const base = path.posix.basename(rel);
   return (
     base === "LAWS.bend" ||
+    base === "PROOF.bend" ||
     base.endsWith(".laws.bend") ||
     base.endsWith(".laws.json") ||
     /(?:^|\/)\.verification\/laws\//.test(rel)
@@ -42,13 +51,18 @@ function hasCodeownersCoverage(repo: DiscoveredRepo, lawRel: string): boolean {
   return false;
 }
 
-function auditBendLawFile(file: ScannedFile, findings: Finding[]): number {
+function auditBendLawFile(
+  file: ScannedFile,
+  pairedProof: ScannedFile | undefined,
+  findings: Finding[],
+): number {
   const declared: Array<{ name: string; offset: number }> = [];
   for (const m of file.content.matchAll(BEND_LAW_DECL)) {
     if (m[1]) declared.push({ name: m[1], offset: m.index ?? 0 });
   }
   const defs = new Set<string>();
-  for (const m of file.content.matchAll(BEND_DEF_DECL)) {
+  const defSource = pairedProof ? `${file.content}\n${pairedProof.content}` : file.content;
+  for (const m of defSource.matchAll(BEND_DEF_DECL)) {
     if (m[1]) defs.add(m[1]);
   }
   for (const law of declared) {
@@ -62,26 +76,68 @@ function auditBendLawFile(file: ScannedFile, findings: Finding[]): number {
         severity: "error",
         file: file.rel,
         line,
-        message: `Bend 2 law '${law.name}' has no matching constructive proof definition ('def ${law.name}').`,
-        fix: `Provide a total proof function 'def ${law.name}(...)' that inhabits the law type and check with 'bend ${file.rel} --safe'.`,
+        message: `Bend 2 law '${law.name}' has no matching constructive proof definition ('def ${law.name}' or paired PROOF.bend).`,
+        fix: `Provide a total proof function proving '${law.name}' and verify with 'bend PROOF.bend --verdict'.`,
       });
     }
   }
-  for (const m of file.content.matchAll(BEND_UNSAFE_ESCAPE)) {
-    const line = lineOf(file.content, m.index ?? 0);
-    findings.push({
-      id: `LAW:unsafe-escape:${file.rel}:${line}`,
-      rule: "laws-bend-unsafe-escape",
-      category: "cheat",
-      rung: "R0",
-      severity: "error",
-      file: file.rel,
-      line,
-      message: `Proof escape hatch '${m[0]}' inside law file undermines mechanical verification.`,
-      fix: "Complete the constructive proof without unsafe/sorry/admit escapes.",
-    });
+  const escapeFiles = pairedProof ? [file, pairedProof] : [file];
+  for (const ef of escapeFiles) {
+    for (const m of ef.content.matchAll(BEND_UNSAFE_ESCAPE)) {
+      const line = lineOf(ef.content, m.index ?? 0);
+      findings.push({
+        id: `LAW:unsafe-escape:${ef.rel}:${line}`,
+        rule: "laws-bend-unsafe-escape",
+        category: "cheat",
+        rung: "R0",
+        severity: "error",
+        file: ef.rel,
+        line,
+        message: `Proof escape hatch '${m[0]}' inside Bend 2 file undermines mechanical verification.`,
+        fix: "Complete the constructive proof without @unsafe, ?holes, sorry, or admit escapes.",
+      });
+    }
   }
   return declared.length;
+}
+
+function runBendVerdict(
+  repoRoot: string,
+  relPath: string,
+  findings: Finding[],
+  verifiedBackends: LawCheckResult["verifiedBackends"],
+): void {
+  const bendBin = resolveBendBinary();
+  const absFile = path.join(repoRoot, relPath);
+  const useKernel = Boolean(process.env.BENDTT);
+  const flag = useKernel ? "--verdict" : "--check-only";
+  const probe = spawnSync(bendBin, [absFile, flag], {
+    cwd: path.dirname(absFile),
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  if (probe.error) {
+    verifiedBackends.push({ file: relPath, backend: "bend2", status: "skipped", detail: "bend CLI not installed on PATH" });
+    return;
+  }
+  const combined = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`;
+  if (probe.status === 0 && /ALL PROOFS CHECK/i.test(combined)) {
+    verifiedBackends.push({ file: relPath, backend: "bend2", status: "passed", detail: `bend ${flag}: ALL PROOFS CHECK` });
+  } else {
+    const detail = combined.trim().slice(0, 220) || `bend exited with status ${probe.status}`;
+    verifiedBackends.push({ file: relPath, backend: "bend2", status: "failed", detail });
+    findings.push({
+      id: `LAW:bend-fail:${relPath}`,
+      rule: "laws-bend-check-failed",
+      category: "oracle-lock",
+      rung: "R5",
+      severity: "error",
+      file: relPath,
+      line: 1,
+      message: `Bend 2 proof verification failed for ${relPath}: ${detail}`,
+      fix: `Fix the failing Bend 2 proof until 'bend ${relPath} ${flag}' prints ALL PROOFS CHECK.`,
+    });
+  }
 }
 
 function auditJsonLawFile(
@@ -115,16 +171,22 @@ function auditJsonLawFile(
       }
       if (verify) {
         const ref = law.witnessRef;
-        const cmdArgs: [string, string[]] | null =
+        if (ref.endsWith(".bend")) {
+          runBendVerdict(repo.root, ref, findings, verifiedBackends);
+          continue;
+        }
+        const cmdArgs: [string, string[], string] | null =
           Array.isArray(law.verifyArgs) && law.verifyArgs.length > 0 && typeof law.verifyArgs[0] === "string"
-            ? [law.verifyArgs[0], law.verifyArgs.slice(1)]
+            ? [law.verifyArgs[0], law.verifyArgs.slice(1), repo.root]
             : /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(ref)
-              ? ["bun", ["test", path.join(repo.root, ref)]]
+              ? ["bun", ["test", path.join(repo.root, ref)], repo.root]
               : /(?:^|\/)test_[^/]+\.py$|_test\.py$/.test(ref)
-                ? ["pytest", [path.join(repo.root, ref)]]
-                : null;
+                ? ["pytest", [path.join(repo.root, ref)], repo.root]
+                : ref.endsWith("_test.go")
+                  ? ["go", ["test", "."], path.dirname(path.join(repo.root, ref))]
+                  : null;
         if (cmdArgs) {
-          const run = spawnSync(cmdArgs[0], cmdArgs[1], { cwd: repo.root, encoding: "utf8", timeout: 30_000 });
+          const run = spawnSync(cmdArgs[0], cmdArgs[1], { cwd: cmdArgs[2], encoding: "utf8", timeout: 45_000 });
           if (run.error) {
             verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "skipped", detail: `${cmdArgs[0]} not on PATH` });
           } else if (run.status === 0) {
@@ -171,9 +233,18 @@ export function auditLaws(repo: DiscoveredRepo, options?: { verify?: boolean }):
   let declaredLaws = 0;
 
   const hasCodeowners = repo.files.some((f) => /(?:^|\/)codeowners$/i.test(f.rel));
+  const filesByRel = new Map<string, ScannedFile>();
+  for (const f of repo.files) filesByRel.set(f.rel, f);
 
   for (const file of repo.files) {
     if (!isLawFile(file.rel)) continue;
+    const base = path.posix.basename(file.rel);
+    const dir = path.posix.dirname(file.rel);
+    const siblingLaws = dir === "." ? "LAWS.bend" : `${dir}/LAWS.bend`;
+    if (base === "PROOF.bend" && filesByRel.has(siblingLaws)) {
+      continue;
+    }
+
     lawFiles.push(file.rel);
 
     if (hasCodeowners && !hasCodeownersCoverage(repo, file.rel) && !file.rel.startsWith("templates/")) {
@@ -191,28 +262,12 @@ export function auditLaws(repo: DiscoveredRepo, options?: { verify?: boolean }):
     }
 
     if (file.rel.endsWith(".bend")) {
-      declaredLaws += auditBendLawFile(file, findings);
+      const siblingProofRel = dir === "." ? "PROOF.bend" : `${dir}/PROOF.bend`;
+      const pairedProof = base === "LAWS.bend" ? filesByRel.get(siblingProofRel) : undefined;
+      declaredLaws += auditBendLawFile(file, pairedProof, findings);
       if (options?.verify) {
-        const probe = spawnSync("bend", ["check", path.join(repo.root, file.rel), "--safe"], { encoding: "utf8", timeout: 15000 });
-        if (probe.error) {
-          verifiedBackends.push({ file: file.rel, backend: "bend2", status: "skipped", detail: "bend CLI not installed on PATH" });
-        } else if (probe.status === 0) {
-          verifiedBackends.push({ file: file.rel, backend: "bend2", status: "passed", detail: "bend --safe verified" });
-        } else {
-          const detail = (probe.stderr || probe.stdout || "verification failed").trim().slice(0, 200);
-          verifiedBackends.push({ file: file.rel, backend: "bend2", status: "failed", detail });
-          findings.push({
-            id: `LAW:bend-fail:${file.rel}`,
-            rule: "laws-bend-check-failed",
-            category: "oracle-lock",
-            rung: "R5",
-            severity: "error",
-            file: file.rel,
-            line: 1,
-            message: `Bend 2 proof verification failed for ${file.rel}: ${detail}`,
-            fix: "Fix the failing Bend 2 proof definition or implementation until 'bend check --safe' exits 0.",
-          });
-        }
+        const targetRel = pairedProof ? pairedProof.rel : file.rel;
+        runBendVerdict(repo.root, targetRel, findings, verifiedBackends);
       }
     } else if (file.rel.endsWith(".laws.json")) {
       declaredLaws += auditJsonLawFile(file, repo, findings, verifiedBackends, Boolean(options?.verify));

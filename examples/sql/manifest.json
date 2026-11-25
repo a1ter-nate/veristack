@@ -1,0 +1,14 @@
+{
+  "language": "sql",
+  "caught": {
+    "migrations/bad_migration.sql": [
+      "db-migration-missing-lock-timeout",
+      "rls-fail-open-null-or-public-role",
+      "sql-limit-offset-without-order-by",
+      "sql-null-trap-predicate"
+    ]
+  },
+  "clean": [
+    "migrations/safe_migration.sql"
+  ]
+}

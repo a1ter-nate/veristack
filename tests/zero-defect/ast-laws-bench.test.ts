@@ -46,11 +46,13 @@ test("Bend 2 LAWS.bend audit enforces CODEOWNERS lock, constructive witnesses, a
   withTempRepo(
     {
       ".github/CODEOWNERS": "LAWS.bend @owners\n",
+      "Model.bend": fs.readFileSync(path.join(repoRoot, "templates/bend2-reference/Model.bend"), "utf8"),
       "LAWS.bend": fs.readFileSync(path.join(repoRoot, "templates/bend2-reference/LAWS.bend"), "utf8"),
+      "PROOF.bend": fs.readFileSync(path.join(repoRoot, "templates/bend2-reference/PROOF.bend"), "utf8"),
     },
     (dir) => {
       const result = auditLaws(discoverRepo(dir));
-      assert.equal(result.declaredLaws, 2);
+      assert.equal(result.declaredLaws, 6);
       assert.deepEqual(result.findings, []);
     },
   );

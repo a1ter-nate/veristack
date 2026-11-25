@@ -269,6 +269,8 @@ function checkRustScatteredMutations(file: ScannedFile, prodMasked: string): Fin
   ];
 }
 
+const NON_DOMAIN_ENUM_PREFIX = /^(?:StatusCode|KeyCode|ErrorKind|EventKind|TokenKind|SyntaxKind|Tag|HttpStatus)::/;
+
 function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): Finding[] {
   const findings: Finding[] = [];
   const seenLines = new Set<number>();
@@ -282,13 +284,34 @@ function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): F
     if (closeIdx < 0) continue;
 
     const body = prodMasked.slice(openIdx + 1, closeIdx);
-    const hasEnumVariantArm = /\b[A-Z][A-Za-z0-9_]*::[A-Z][A-Za-z0-9_]*\b|\b(?:Some|None|Ok|Err)\s*(?:\(|=>)/.test(body);
-    if (!hasEnumVariantArm) continue;
+    let hasDomainEnumPattern = false;
+    let hasSilentWildcard = false;
+    let depth = 0;
+    let armStart = 0;
 
-    const wildcardArm = /(?:^|[,\n{])\s*_\s*=>\s*([^,}\n]+)/.exec(body);
-    if (!wildcardArm) continue;
-    const rhs = (wildcardArm[1] ?? "").trim();
-    if (/^(?:unreachable!|panic!)/.test(rhs)) continue;
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (ch === "{" || ch === "(" || ch === "[") {
+        depth += 1;
+      } else if (ch === "}" || ch === ")" || ch === "]") {
+        depth = Math.max(0, depth - 1);
+      } else if (depth === 0 && ch === "=" && body[i + 1] === ">") {
+        const pattern = body.slice(armStart, i).replace(/^[\s,]+/, "").trim();
+        const rhsTail = body.slice(i + 2, i + 40).trim();
+        if (pattern === "_" && !/^(?:unreachable!|panic!)/.test(rhsTail)) {
+          hasSilentWildcard = true;
+        }
+        const enumMatch = /\b([A-Z][A-Za-z0-9_]*::[A-Z][A-Za-z0-9_]*)\b/.exec(pattern);
+        if (enumMatch && !NON_DOMAIN_ENUM_PREFIX.test(enumMatch[1] ?? "")) {
+          hasDomainEnumPattern = true;
+        }
+        i += 1;
+      } else if (depth === 0 && (ch === "," || ch === "\n")) {
+        if (ch === ",") armStart = i + 1;
+      }
+    }
+
+    if (!hasDomainEnumPattern || !hasSilentWildcard) continue;
 
     const line = lineOf(file.content, match.index ?? 0);
     if (seenLines.has(line)) continue;

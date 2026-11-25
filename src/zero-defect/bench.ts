@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { auditDiffInvariantLoss, buildSyntheticRevertEvents } from "../ast/invariant-loss.ts";
 import { scanRepo } from "../ladder.ts";
+import { auditDiffAntiEvasion } from "./anti-evasion.ts";
 
 export interface BenchLanguageResult {
   language: string;
@@ -33,10 +35,15 @@ export interface ReplayBenchReport {
   totalPairs: number;
   caughtPairs: number;
   catchRatePct: number;
+  regressionCaughtPairs: number;
+  regressionImmunityPct: number;
+  combinedCaughtPairs: number;
+  combinedRatePct: number;
   cleanAfterPairs: number;
   scanMs: number;
-  byLanguage: Record<string, { total: number; caught: number; pct: number }>;
+  byLanguage: Record<string, { total: number; caught: number; pct: number; regressionCaught: number }>;
   topCaughtRules: Array<{ rule: string; count: number }>;
+  topLostInvariants: Array<{ invariant: string; count: number }>;
   topEscapedShapes: Array<{ shape: string; escaped: number; total: number }>;
   escapedSamples: Array<{ id: string; repo: string; lang: string; subject: string; shapes: string[] }>;
 }
@@ -60,7 +67,9 @@ interface ExampleManifest {
 }
 
 function commentPrefix(lang: string): string {
-  return lang === "python" ? "# " : "// ";
+  if (lang === "python" || lang === "shell") return "# ";
+  if (lang === "sql") return "-- ";
+  return "// ";
 }
 
 function wrapInComments(content: string, lang: string): string {
@@ -71,11 +80,13 @@ function wrapInComments(content: string, lang: string): string {
     .join("\n");
 }
 
-function wrapInStringLiteral(content: string, lang: string): string {
+function wrapInStringLiteral(content: string, lang: string): string | null {
+  if (lang === "sql" || lang === "shell") return null;
   const escaped = content.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n");
   if (lang === "python") return `DOC = "${escaped}"\n`;
   if (lang === "rust") return `pub const DOC: &str = "${escaped}";\n`;
   if (lang === "csharp") return `public static class Doc { public const string Text = "${escaped}"; }\n`;
+  if (lang === "go") return `package doc\nconst Doc = "${escaped}"\n`;
   return `export const DOC = "${escaped}";\n`;
 }
 
@@ -137,9 +148,12 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
   }
 
   let caughtPairs = 0;
+  let regressionCaughtPairs = 0;
+  let combinedCaughtPairs = 0;
   let cleanAfterPairs = 0;
-  const byLanguage: Record<string, { total: number; caught: number; pct: number }> = {};
+  const byLanguage: Record<string, { total: number; caught: number; pct: number; regressionCaught: number }> = {};
   const caughtRuleCounts = new Map<string, number>();
+  const lostInvariantCounts = new Map<string, number>();
   const shapeStats = new Map<string, { escaped: number; total: number }>();
   const escapedSamples: ReplayBenchReport["escapedSamples"] = [];
 
@@ -159,13 +173,27 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
       if (aCnt > (bMap.get(rule) ?? 0)) regressedRules.push(rule);
     }
 
+    const beforeRaw = fs.readFileSync(path.join(replayDir, "before", entry.beforeRel), "utf8");
+    const afterRaw = fs.readFileSync(path.join(replayDir, "after", entry.afterRel), "utf8");
+    const revertEvents = buildSyntheticRevertEvents(entry.afterRel, afterRaw, beforeRaw);
+    const revertFindings = [...auditDiffInvariantLoss(revertEvents), ...auditDiffAntiEvasion(revertEvents)];
+    const regressionCaught = revertFindings.length > 0;
+    for (const rf of revertFindings) {
+      const m = /removed a '([^']+)' invariant/.exec(rf.message);
+      const label = m?.[1] ?? rf.rule;
+      lostInvariantCounts.set(label, (lostInvariantCounts.get(label) ?? 0) + 1);
+    }
+
     const caught = caughtRules.length > 0;
     if (caught) caughtPairs += 1;
+    if (regressionCaught) regressionCaughtPairs += 1;
+    if (caught || regressionCaught) combinedCaughtPairs += 1;
     if (regressedRules.length === 0) cleanAfterPairs += 1;
 
-    const langSlot = byLanguage[entry.lang] ?? { total: 0, caught: 0, pct: 0 };
+    const langSlot = byLanguage[entry.lang] ?? { total: 0, caught: 0, pct: 0, regressionCaught: 0 };
     langSlot.total += 1;
     if (caught) langSlot.caught += 1;
+    if (regressionCaught) langSlot.regressionCaught += 1;
     langSlot.pct = Number(((langSlot.caught / langSlot.total) * 100).toFixed(1));
     byLanguage[entry.lang] = langSlot;
 
@@ -173,11 +201,11 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
     for (const sh of shapes) {
       const s = shapeStats.get(sh) ?? { escaped: 0, total: 0 };
       s.total += 1;
-      if (!caught) s.escaped += 1;
+      if (!caught && !regressionCaught) s.escaped += 1;
       shapeStats.set(sh, s);
     }
 
-    if (!caught && escapedSamples.length < 40) {
+    if (!caught && !regressionCaught && escapedSamples.length < 40) {
       escapedSamples.push({
         id: entry.id,
         repo: entry.repo,
@@ -193,6 +221,10 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
     totalPairs: entries.length,
     caughtPairs,
     catchRatePct: Number(((caughtPairs / Math.max(1, entries.length)) * 100).toFixed(1)),
+    regressionCaughtPairs,
+    regressionImmunityPct: Number(((regressionCaughtPairs / Math.max(1, entries.length)) * 100).toFixed(1)),
+    combinedCaughtPairs,
+    combinedRatePct: Number(((combinedCaughtPairs / Math.max(1, entries.length)) * 100).toFixed(1)),
     cleanAfterPairs,
     scanMs,
     byLanguage,
@@ -200,6 +232,10 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 20)
       .map(([rule, count]) => ({ rule, count })),
+    topLostInvariants: [...lostInvariantCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([invariant, count]) => ({ invariant, count })),
     topEscapedShapes: [...shapeStats.entries()]
       .sort((a, b) => b[1].escaped - a[1].escaped)
       .slice(0, 15)
@@ -210,7 +246,7 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
 
 export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDir?: string): BenchReport {
   const examplesRoot = path.join(repoRoot, "examples");
-  const langs = ["typescript", "csharp", "rust", "python"] as const;
+  const langs = ["typescript", "csharp", "rust", "python", "go", "sql", "shell"] as const;
   const languages: BenchLanguageResult[] = [];
 
   for (const lang of langs) {
@@ -253,7 +289,8 @@ export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDi
       if (/test|spec/i.test(relFile)) continue;
       const content = fs.readFileSync(path.join(caughtDir, relFile), "utf8");
       commentedFiles[relFile] = wrapInComments(content, lang);
-      stringFiles[relFile] = wrapInStringLiteral(content, lang);
+      const wrappedStr = wrapInStringLiteral(content, lang);
+      if (wrappedStr !== null) stringFiles[relFile] = wrappedStr;
     }
 
     const commentScan = runInTempDir(commentedFiles);
@@ -261,7 +298,7 @@ export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDi
       .filter((f) => f.rule !== "no-comments" && f.rule !== "suppression-audit")
       .map((f) => `${f.file}:${f.rule}@${f.line}`);
 
-    const stringScan = runInTempDir(stringFiles);
+    const stringScan = Object.keys(stringFiles).length > 0 ? runInTempDir(stringFiles) : { findings: [] };
     const stringWrappedFps = stringScan.findings
       .filter((f) => f.rule !== "no-comments" && f.rule !== "max-file-lines")
       .map((f) => `${f.file}:${f.rule}@${f.line}`);
@@ -329,13 +366,16 @@ export function formatBenchReport(report: BenchReport): string {
   if (report.replay) {
     const r = report.replay;
     lines.push(
-      `  historical replay: caught=${r.caughtPairs}/${r.totalPairs} (${r.catchRatePct}%) | regressionFree=${r.cleanAfterPairs}/${r.totalPairs} (${r.scanMs}ms)`,
+      `  historical replay: forwardCaught=${r.caughtPairs}/${r.totalPairs} (${r.catchRatePct}%) | regressionImmunity=${r.regressionCaughtPairs}/${r.totalPairs} (${r.regressionImmunityPct}%) | combined=${r.combinedCaughtPairs}/${r.totalPairs} (${r.combinedRatePct}%) | regressionFree=${r.cleanAfterPairs}/${r.totalPairs} (${r.scanMs}ms)`,
     );
     for (const [lang, stats] of Object.entries(r.byLanguage).sort()) {
-      lines.push(`    - ${lang.padEnd(10)} ${stats.caught}/${stats.total} (${stats.pct}%)`);
+      lines.push(`    - ${lang.padEnd(10)} forward=${stats.caught}/${stats.total} (${stats.pct}%) | invLoss=${stats.regressionCaught}/${stats.total}`);
     }
     if (r.topCaughtRules.length > 0) {
       lines.push(`    top caught rules: ${r.topCaughtRules.slice(0, 8).map((x) => `${x.rule}(${x.count})`).join(", ")}`);
+    }
+    if (r.topLostInvariants.length > 0) {
+      lines.push(`    top protected invariants: ${r.topLostInvariants.slice(0, 8).map((x) => `${x.invariant}(${x.count})`).join(", ")}`);
     }
     if (r.topEscapedShapes.length > 0) {
       lines.push(`    top escaped shapes: ${r.topEscapedShapes.slice(0, 6).map((x) => `${x.shape}(${x.escaped}/${x.total})`).join(", ")}`);

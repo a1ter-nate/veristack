@@ -2,3 +2,5 @@
 /tests/fixtures/ @a1ter-nate
 /.github/workflows/ @a1ter-nate
 /AGENTS.md @a1ter-nate
+/.verification/laws/ @a1ter-nate
+/templates/bend2-reference/LAWS.bend @a1ter-nate

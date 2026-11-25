@@ -18,6 +18,8 @@
     "lint:state-machines": "bun src/cli.ts state-machines . --fail",
     "test:csharp": "dotnet test lint/csharp/VStack.Analyzers.Tests/VStack.Analyzers.Tests.csproj && dotnet test templates/csharp-reference/OrderLifecycle.slnx",
     "test:rust": "cargo fmt --manifest-path templates/rust-reference/Cargo.toml --check && cargo clippy --manifest-path templates/rust-reference/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path templates/rust-reference/Cargo.toml",
+    "test:go": "cd templates/go-reference && go vet ./... && go test -race -v ./...",
+    "test:laws": "bun src/cli.ts laws . --verify --fail",
     "test:python": "uv run --project templates/python-reference ruff check templates/python-reference examples/python/clean && uv run --project templates/python-reference ruff format --check templates/python-reference examples/python/clean && uv run --project templates/python-reference mypy templates/python-reference/src templates/python-reference/tests examples/python/clean && PYTHONPATH=examples/python/clean uv run --project templates/python-reference pytest templates/python-reference examples/python/clean",
     "check": "bun run lint:no-comments && bun run lint:state-machines && bun test ./tests/ ./examples/typescript/clean/ && bun src/cli.ts scan . --fail-on-cheats"
   },

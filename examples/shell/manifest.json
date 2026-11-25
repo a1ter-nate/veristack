@@ -1,0 +1,15 @@
+{
+  "language": "shell",
+  "caught": {
+    "bad_ops.sh": [
+      "sh-secret-in-argv",
+      "sh-unanchored-shebang-grep",
+      "sh-untrusted-path-in-sudo",
+      "shell-harness-order-and-sockpath",
+      "sh-pkill-f-pattern-kill"
+    ]
+  },
+  "clean": [
+    "safe_ops.sh"
+  ]
+}

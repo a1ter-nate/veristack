@@ -1,0 +1,13 @@
+[
+  { "from": "pending", "event": "pay", "ok": true, "to": "paid" },
+  { "from": "pending", "event": "cancel", "ok": true, "to": "cancelled" },
+  { "from": "pending", "event": "ship", "ok": false, "to": "pending" },
+  { "from": "paid", "event": "ship", "ok": true, "to": "shipped" },
+  { "from": "paid", "event": "cancel", "ok": true, "to": "cancelled" },
+  { "from": "paid", "event": "pay", "ok": false, "to": "paid" },
+  { "from": "shipped", "event": "cancel", "ok": false, "to": "shipped" },
+  { "from": "shipped", "event": "pay", "ok": false, "to": "shipped" },
+  { "from": "cancelled", "event": "cancel", "ok": true, "to": "cancelled" },
+  { "from": "cancelled", "event": "pay", "ok": false, "to": "cancelled" },
+  { "from": "cancelled", "event": "ship", "ok": false, "to": "cancelled" }
+]

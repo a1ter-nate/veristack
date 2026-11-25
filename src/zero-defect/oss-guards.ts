@@ -175,8 +175,13 @@ function scanRustOss(file: ScannedFile, raw: string, masked: string, findings: F
   }
 
   for (const m of prodMasked.matchAll(RUST_INSTANT_ARITH)) {
+    const idx = m.index ?? 0;
+    const tail = prodMasked.slice(idx, idx + 80);
+    if (/\bInstant::now\s*\(\s*\)\s*\+\s*(?:Duration::from_(?:secs|millis|micros|nanos)\s*\(\s*\d[\d_]*\s*\)|[A-Z][A-Z0-9_]{2,}\b)/.test(tail)) {
+      continue;
+    }
     push(
-      findings, file.rel, lineOf(raw, m.index ?? 0), "rust-unchecked-duration-or-size-arith", "R1", "warn",
+      findings, file.rel, lineOf(raw, idx), "rust-unchecked-duration-or-size-arith", "R1", "warn",
       `Unchecked time arithmetic (${m[0].trim()}) can panic on Duration::MAX overflow or backward clock jumps.`,
       "Use checked_add/saturating_duration_since instead of bare +/- or .unwrap() on time deltas.",
     );
@@ -263,7 +268,11 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
   if (file.language === "go") {
     for (const m of masked.matchAll(GO_HTTP_CALL)) {
       const idx = m.index ?? 0;
-      if (/\.Body\.Close\s*\(/.test(masked.slice(idx, idx + 500))) continue;
+      const tail = masked.slice(idx, idx + 500);
+      if (/\.Do\s*\(\s*func\b/i.test(tail) || /\bonce\.Do\s*\(/i.test(m[0])) continue;
+      const lineStart = raw.lastIndexOf("\n", idx) + 1;
+      if (/^\s*return\b/.test(masked.slice(lineStart, idx))) continue;
+      if (/\.Body\.Close\s*\(/.test(tail)) continue;
       push(
         findings, file.rel, lineOf(raw, idx), "go-unclosed-http-body", "R1", "error",
         "HTTP client call does not close resp.Body, leaking sockets and exhausting keep-alive pools.",

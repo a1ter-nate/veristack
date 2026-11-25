@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "title": "Universal Mined-Bug Laws (Bend 2 Kernel Proofs + Multi-Language PBT/MBT Witnesses)",
+  "laws": [
+    {
+      "id": "bend2-universal-kernel-proofs",
+      "invariant": "Idempotency, monotonic terminal states, total saturating arithmetic, zero-cap clamping, codec round-trip, and stack unwind proven by Bend 2 BendTT Lean kernel.",
+      "witnessRef": "templates/bend2-reference/PROOF.bend"
+    },
+    {
+      "id": "go-order-lifecycle-table-pbt-mbt",
+      "invariant": "Go order transition matrix, bounded discount property, and stateful MBT invariants hold across arbitrary event sequences.",
+      "witnessRef": "templates/go-reference/order_test.go"
+    },
+    {
+      "id": "rust-order-lifecycle-stateright-formal",
+      "invariant": "Rust Stateright exhaustive model check + proptest pricing & stateful MBT invariants hold with zero counterexamples.",
+      "witnessRef": "templates/rust-reference/tests/formal_model_check.rs",
+      "verifyArgs": ["cargo", "test", "--manifest-path", "templates/rust-reference/Cargo.toml"]
+    },
+    {
+      "id": "python-order-lifecycle-hypothesis-mbt",
+      "invariant": "Python Hypothesis property-based and stateful rule-based state machine laws hold.",
+      "witnessRef": "templates/python-reference/tests/test_property_and_mbt.py",
+      "verifyArgs": ["uv", "run", "--project", "templates/python-reference", "pytest", "templates/python-reference"]
+    },
+    {
+      "id": "csharp-order-lifecycle-fscheck-laws",
+      "invariant": "C# OrderLifecycle state machine and Roslyn analyzer invariants hold.",
+      "witnessRef": "templates/csharp-reference/OrderLifecycle.Tests/OrderFormalProofTests.cs",
+      "verifyArgs": ["dotnet", "test", "templates/csharp-reference/OrderLifecycle.slnx", "--no-restore"]
+    },
+    {
+      "id": "ts-zero-defect-invariants-and-anti-evasion",
+      "invariant": "TypeScript cross-file AST, invariant-loss, and anti-evasion gates pass deterministically.",
+      "witnessRef": "tests/zero-defect/repo-config-and-rust.test.ts"
+    }
+  ]
+}
