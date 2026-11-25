@@ -2,10 +2,11 @@ import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
 import { lineOf, maskStrings } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
-const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
+const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated|min|bundle)\.[cm]?[jt]sx?$/i;
 
-const LOOP_START_BRACE = /\b(?:for|while|foreach)\s*\([^)]*\)\s*\{|\b(?:for|while)\s+[^{;]+\{/g;
-const LOOP_START_PY = /^(\s*)(?:async\s+)?(?:for|while)\b[^:\n]*:\s*$/gm;
+const LOOP_START_PAREN = /\b(?:for|while|foreach)\s*(?:await\s*)?\([^)]*\)\s*\{/g;
+const LOOP_START_RUST = /(?:^|[;{}]\s*)(?:'[a-zA-Z_][a-zA-Z0-9_]*:\s*)?(?:for\s+[^{;]+\bin\b[^{;]+|while\s+[^{;]+)\s*\{/gm;
+const LOOP_START_GO = /(?:^|[;{}]\s*)for\b[^{;]*\{/gm;
 
 const PERF_CHEAT_PATTERN = /\bgc\.disable\s*\(\s*\)|#\s*pragma\s+GCC\s+optimize\b|\bGC\.TryStartNoGCRegion\s*\(/g;
 
@@ -14,9 +15,50 @@ interface LoopSpan {
   body: string;
 }
 
-function extractBraceLoopSpans(masked: string): LoopSpan[] {
+function maskCommentsAndStrings(source: string, isPython: boolean): string {
+  const base = maskStrings(source);
+  const out = [...base];
+  for (let i = 0; i < out.length; i++) {
+    const ch = out[i];
+    const next = out[i + 1];
+    if (isPython && ch === "#") {
+      while (i < out.length && out[i] !== "\n") {
+        out[i] = " ";
+        i += 1;
+      }
+      continue;
+    }
+    if (!isPython && ch === "/" && next === "/") {
+      while (i < out.length && out[i] !== "\n") {
+        out[i] = " ";
+        i += 1;
+      }
+      continue;
+    }
+    if (!isPython && ch === "/" && next === "*") {
+      out[i] = " ";
+      out[i + 1] = " ";
+      i += 2;
+      while (i < out.length) {
+        if (out[i] === "*" && out[i + 1] === "/") {
+          out[i] = " ";
+          out[i + 1] = " ";
+          i += 1;
+          break;
+        }
+        if (out[i] !== "\n") out[i] = " ";
+        i += 1;
+      }
+    }
+  }
+  return out.join("");
+}
+
+function extractBraceLoopSpans(masked: string, language: ScannedFile["language"]): LoopSpan[] {
   const spans: LoopSpan[] = [];
-  for (const match of masked.matchAll(LOOP_START_BRACE)) {
+  const loopRegex =
+    language === "rust" ? LOOP_START_RUST : language === "go" ? LOOP_START_GO : LOOP_START_PAREN;
+  for (const match of masked.matchAll(loopRegex)) {
     const start = match.index ?? 0;
     const openBrace = start + match[0].length - 1;
     let depth = 0;
@@ -74,7 +116,8 @@ function extractPythonLoopSpans(masked: string): LoopSpan[] {
 function checkLoopRules(file: ScannedFile, raw: string, masked: string): Finding[] {
   const findings: Finding[] = [];
   const seenLines = new Set<string>();
-  const spans = file.language === "python" ? extractPythonLoopSpans(masked) : extractBraceLoopSpans(masked);
+  const spans =
+    file.language === "python" ? extractPythonLoopSpans(masked) : extractBraceLoopSpans(masked, file.language);
 
   const pushOnce = (rule: string, offset: number, message: string, fix: string): void => {
     const line = lineOf(raw, offset);
@@ -168,7 +211,7 @@ export function analyzePerfHygiene(repo: DiscoveredRepo): Finding[] {
   for (const file of repo.files) {
     if (!file.language || GENERATED_PATH.test(file.rel)) continue;
     const raw = file.content;
-    const masked = maskStrings(raw);
+    const masked = maskCommentsAndStrings(raw, file.language === "python");
 
     for (const m of masked.matchAll(PERF_CHEAT_PATTERN)) {
       const line = lineOf(raw, m.index ?? 0);

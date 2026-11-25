@@ -4,13 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { scanRepo } from "../src/ladder.ts";
+import { scanRepo } from "../../src/ladder.ts";
 import {
   computeRolledThroughputYield,
   evaluateSpcSeries,
   generateMcdcVectors,
   runRedBeforeFix,
-} from "../src/zero-defect/index.ts";
+} from "../../src/zero-defect/index.ts";
 
 test("V30/V31/V36 prod zero-defect guards catch CDC wall-clock durations, unbounded loops, and Debug.Assert/debug_assert!", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-zd-prod-"));

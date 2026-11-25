@@ -26,7 +26,9 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
   for (const file of repo.files) {
     if (!file.language || file.isTest || GENERATED_PATH.test(file.rel)) continue;
     const raw = file.content;
-    const masked = maskStrings(raw);
+    const maskedAll = maskStrings(raw);
+    const cfgTestIdx = file.language === "rust" ? raw.search(/#\[cfg\(test\)\]/) : -1;
+    const masked = cfgTestIdx >= 0 ? maskedAll.slice(0, cfgTestIdx) : maskedAll;
 
     if (file.language === "python") {
       for (const match of masked.matchAll(PY_TEST_ONLY_EXPORT)) {
@@ -123,9 +125,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     }
 
     if (file.language === "rust") {
-      const cfgTestIdx = raw.search(/#\[cfg\(test\)\]/);
-      const prodMasked = cfgTestIdx >= 0 ? masked.slice(0, cfgTestIdx) : masked;
-      for (const match of prodMasked.matchAll(RUST_DEBUG_ASSERT)) {
+      for (const match of masked.matchAll(RUST_DEBUG_ASSERT)) {
         const line = lineOf(raw, match.index ?? 0);
         findings.push({
           id: `ZD:rs-debug-assert:${file.rel}:${line}`,
@@ -171,8 +171,14 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
 
     for (const match of masked.matchAll(UNBOUNDED_LOOP)) {
       const idx = match.index ?? 0;
-      const window = masked.slice(idx, idx + 400);
-      if (/\b(?:maxIter|max_iter|maxAttempts|max_attempts|limit|fuel|budget|countdown)\b/i.test(window)) continue;
+      const window = masked.slice(Math.max(0, idx - 220), idx + 450);
+      if (
+        /\b(?:maxIter|max_iter|maxAttempts|max_attempts|maxRetries|max_retries|maxPages|max_pages|deadline|timeout|limit|fuel|budget|countdown)\b/i.test(
+          window,
+        )
+      ) {
+        continue;
+      }
       const line = lineOf(raw, idx);
       findings.push({
         id: `ZD:unbounded-loop:${file.rel}:${line}`,

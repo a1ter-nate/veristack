@@ -234,6 +234,7 @@ function checkRustScatteredMutations(file: ScannedFile, prodMasked: string): Fin
 
 function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): Finding[] {
   const findings: Finding[] = [];
+  const seenLines = new Set<number>();
   const matchRegex = /\bmatch\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s*\{/g;
 
   for (const match of prodMasked.matchAll(matchRegex)) {
@@ -244,12 +245,17 @@ function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): F
     if (closeIdx < 0) continue;
 
     const body = prodMasked.slice(openIdx + 1, closeIdx);
+    const hasEnumVariantArm = /\b[A-Z][A-Za-z0-9_]*::[A-Z][A-Za-z0-9_]*\b|\b(?:Some|None|Ok|Err)\s*(?:\(|=>)/.test(body);
+    if (!hasEnumVariantArm) continue;
+
     const wildcardArm = /(?:^|[,\n{])\s*_\s*=>\s*([^,}\n]+)/.exec(body);
     if (!wildcardArm) continue;
     const rhs = (wildcardArm[1] ?? "").trim();
     if (/^(?:unreachable!|panic!)/.test(rhs)) continue;
 
     const line = lineOf(file.content, match.index ?? 0);
+    if (seenLines.has(line)) continue;
+    seenLines.add(line);
     findings.push({
       id: `SM:rs-wildcard-match:${file.rel}:${line}`,
       rule: "implicit-sm-non-exhaustive-switch",

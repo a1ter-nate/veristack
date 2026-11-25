@@ -55,6 +55,8 @@ const FETCH_STUB =
 const TEST_NONDETERMINISM =
   /\bMath\.random\s*\(|\bDate\.now\s*\(\s*\)|\bnew\s+Date\s*\(\s*\)|\bDateTime(?:Offset)?\.(?:Now|UtcNow)\b|\bnew\s+Random\s*\(\s*\)|\bRandom\.Shared\b|\bSystemTime::now\s*\(|\b(?:Utc|Local)::now\s*\(|\brand::(?:random|thread_rng|rng)\s*\(|\bdatetime\.(?:utc)?now\s*\(|\brandom\.(?:random|randint|choice)\s*\(|\btime\.time\s*\(\s*\)/g;
 const COVERAGE_FARM_NAME = /(?:^|[-_.])(?:coverage-|closeout|easy-?wins|zero-?coverage|leftovers)/i;
+const COVERAGE_POLICY_TOOLING =
+  /\bcoverage-(?:policy|floor|floors|inventory|gate|gates|config|check|checks|report|summary|threshold|thresholds|ratchet|baseline)\b/i;
 
 function classifyBoundary(file: ScannedFile, code: string, repoHasEmulator: boolean): { boundary: TestBoundary; rung: RungId } {
   if (E2E_SIGNAL.test(code) || /\.e2e\.|\/e2e\//i.test(file.rel)) return { boundary: "e2e", rung: "R7" };
@@ -118,7 +120,8 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
     return count;
   };
 
-  if (COVERAGE_FARM_NAME.test(path.posix.basename(file.rel))) {
+  const baseName = path.posix.basename(file.rel);
+  if (COVERAGE_FARM_NAME.test(baseName) && !COVERAGE_POLICY_TOOLING.test(baseName)) {
     findings.push({
       id: `TS:coverage-farm:${file.rel}:1`,
       rule: "no-coverage-farm-file",
@@ -291,8 +294,8 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
     "no-test-nondeterminism",
     "test-smell",
     "warn",
-    "Bare Math.random(), Date.now(), or new Date() introduces time/RNG nondeterminism.",
-    "Use a seeded RNG, fixed ISO date literal, or vi.setSystemTime / injectable clock.",
+    "Bare Math.random(), Date.now(), or new Date() introduces nondeterminism and defeats content-addressed test caching.",
+    "Use a seeded RNG, fixed ISO date literal, or vi.setSystemTime / injectable clock to keep tests hermetic and cacheable.",
     3,
   );
 
@@ -302,8 +305,8 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
     "no-imported-mutation",
     "test-smell",
     "warn",
-    "Direct process.env/imported-object mutation leaks state across tests.",
-    "Pass configuration through options/bindings or use a scoped override helper.",
+    "Direct process.env/imported-object mutation leaks state across tests and breaks test-cache hermeticity.",
+    "Pass configuration through options/bindings or a scoped override helper so tests remain hermetic and cacheable.",
   );
 
   addMatches(

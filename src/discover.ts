@@ -70,7 +70,7 @@ export function isTestFilePath(rel: string): boolean {
   const lower = norm.toLowerCase();
   const base = path.posix.basename(lower);
   if (/\.(?:test|spec|e2e|cy|int|integration|contract)\.[cm]?[jt]sx?$/.test(base)) return true;
-  if (/(?:^|_)tests?\.py$|^test_.*\.py$/.test(base)) return true;
+  if (/(?:^|[-_])tests?\.py$|^test[-_].*\.py$/.test(base)) return true;
   if (/_test\.go$/.test(base)) return true;
   if (/tests?\.cs$|specs?\.cs$/.test(base)) return true;
   if (/(?:^|\/)[^/]+\.tests\//.test(lower) && lower.endsWith(".cs")) return true;
@@ -151,6 +151,19 @@ function readSafe(abs: string): string | undefined {
   }
 }
 
+const ARCHIVED_DOCS_PATH = /^docs\/.*\/(?:data|archive|snapshots|artifacts)\//i;
+const MINIFIED_FILE_PATH = /\.(?:min|bundle)\.[cm]?js$/i;
+
+function isMinifiedJs(rel: string, content: string, lines: number): boolean {
+  if (MINIFIED_FILE_PATH.test(rel)) return true;
+  if (!/\.[cm]?js$/i.test(rel)) return false;
+  if (lines > 0 && content.length / lines > 300) return true;
+  for (const line of content.split(/\r?\n/)) {
+    if (line.length > 2_500) return true;
+  }
+  return false;
+}
+
 export function discoverRepo(repoPath: string): DiscoveredRepo {
   const root = path.resolve(repoPath);
   const files: ScannedFile[] = [];
@@ -176,10 +189,13 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
       if (!entry.isFile()) continue;
       const abs = path.join(dir, entry.name);
       const rel = path.relative(root, abs).split(path.sep).join("/");
+      if (ARCHIVED_DOCS_PATH.test(rel)) continue;
       allRelPaths.push(rel);
       if (!shouldReadText(rel)) continue;
       const content = readSafe(abs);
       if (content === undefined) continue;
+      const lines = content.length === 0 ? 0 : content.split(/\r?\n/).length;
+      if (isMinifiedJs(rel, content, lines)) continue;
       const language = detectLanguage(rel);
       files.push({
         rel,
@@ -188,7 +204,7 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
         isTest: isTestFilePath(rel),
         isWorkflow: isWorkflowPath(rel),
         content,
-        lines: content.length === 0 ? 0 : content.split(/\r?\n/).length,
+        lines,
       });
     }
   }

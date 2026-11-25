@@ -5,13 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { scanGitDiffCheats } from "../src/ci-auditor.ts";
-import { perfArchitectureAdvisorCircuit, type PerfAdvisorInput } from "../src/circuits/catalog.ts";
-import { runCircuit, type System1DecisionEngine } from "../src/circuits/engine.ts";
-import { scanRepo } from "../src/ladder.ts";
-import { fitEmpiricalBigO, measureEmpiricalBigO } from "../src/zero-defect/big-o.ts";
+import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
+import { perfArchitectureAdvisorCircuit, type PerfAdvisorInput } from "../../src/circuits/catalog.ts";
+import { runCircuit, type System1DecisionEngine } from "../../src/circuits/engine.ts";
+import { scanRepo } from "../../src/ladder.ts";
+import { fitEmpiricalBigO, measureEmpiricalBigO } from "../../src/zero-defect/big-o.ts";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cliPath = path.join(repoRoot, "src", "cli.ts");
 
 test("V42 deterministic perf-hygiene lints catch O(N^2) loop scans/shifts, N+1 I/O, loop regex/deepcopy, and GC tampering across TS/C#/Rust/Python", () => {
