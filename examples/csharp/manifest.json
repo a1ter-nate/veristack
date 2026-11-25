@@ -18,11 +18,17 @@
       "weak-asserts-tautology",
       "no-test-nondeterminism",
       "no-imported-mutation"
+    ],
+    "OssHardening.cs": [
+      "math-floor-ceiling-inversion",
+      "efcore-unordered-skip-or-assert",
+      "csharp-undisposed-local-idisp"
     ]
   },
   "clean": [
     "ExplicitStateMachine.cs",
     "CleanPerfAndJidoka.cs",
-    "CleanBehaviorTests.Tests.cs"
+    "CleanBehaviorTests.Tests.cs",
+    "SafeOssHardening.cs"
   ]
 }

@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { scanGitDiffCheats } from "../src/ci-auditor.ts";
-import { scanRepo } from "../src/ladder.ts";
+import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
+import { scanRepo } from "../../src/ladder.ts";
 
 function withTempRepo(files: Record<string, string>, fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-wave1-"));
@@ -90,7 +90,7 @@ test("Test harness guards catch missing emulator guard, vi.mock hoist hazard, re
         'import fs from "node:fs";',
         'import path from "node:path";',
         "const fakeDb = { get: () => null };",
-        'vi.mock("../src/dao/orders", () => ({ db: fakeDb }));',
+        'vi.mock("../../src/dao/orders", () => ({ db: fakeDb }));',
         'test("writes repo", () => {',
         '  fs.writeFileSync(path.join(process.cwd(), "src/tmp.txt"), "x");',
         "  expect(admin.apps.length).toBe(0);",

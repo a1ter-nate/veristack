@@ -53,6 +53,18 @@
       "cli-argv-unguarded-empty-check",
       "evaluator-pass-with-violators",
       "ui-popstate-pushstate-loop"
+    ],
+    "oss_hardening.ts": [
+      "no-unescaped-script-interpolation",
+      "no-proto-null-literal",
+      "no-identity-string-replace",
+      "regex-empty-alternation-or-unescaped",
+      "orm-unfiltered-bulk-mutation",
+      "schema-noncanonical-content-key",
+      "http-conflicting-framing-headers",
+      "math-floor-ceiling-inversion",
+      "http-case-sensitive-header-directive",
+      "require-try-finally-around-teardown"
     ]
   },
   "clean": [
@@ -61,6 +73,7 @@
     "allowed_comments.ts",
     "check-coverage-policy.test.ts",
     "safe_runtime_guards.ts",
-    "safe_ecosystem_guards.ts"
+    "safe_ecosystem_guards.ts",
+    "safe_oss_hardening.ts"
   ]
 }

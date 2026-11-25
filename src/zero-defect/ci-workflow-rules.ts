@@ -141,6 +141,44 @@ export function auditExtendedCiRules(file: ScannedFile): Finding[] {
       }
     }
 
+    if (!/permissions:\s*\r?\n\s*contents:\s*read\b/.test(file.content)) {
+      const checkoutRe = /uses:\s*actions\/checkout@[^\n]+/g;
+      for (const m of file.content.matchAll(checkoutRe)) {
+        const idx = m.index ?? 0;
+        const after = file.content.slice(idx, idx + 220);
+        if (!/\bpersist-credentials\s*:\s*false\b/.test(after)) {
+          const line = file.content.slice(0, idx).split(/\r?\n/).length;
+          findings.push({
+            id: `CI:checkout-creds:${file.rel}:${line}`,
+            rule: "ci-checkout-persist-credentials",
+            category: "ci-hygiene",
+            rung: "R0",
+            severity: "warn",
+            file: file.rel,
+            line,
+            message: "actions/checkout persists GITHUB_TOKEN credentials in .git/config without read-only permissions.",
+            fix: "Set 'permissions: { contents: read }' and 'persist-credentials: false' unless pushing with GITHUB_TOKEN.",
+          });
+        }
+      }
+    }
+
+    const unpinnedActionRe = /^\s*-?\s*uses:\s*([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)@(?:main|master|HEAD)\b/gm;
+    for (const m of file.content.matchAll(unpinnedActionRe)) {
+      const line = file.content.slice(0, m.index ?? 0).split(/\r?\n/).length;
+      findings.push({
+        id: `CI:unpinned-action:${file.rel}:${line}`,
+        rule: "ci-unpinned-action-ref",
+        category: "ci-hygiene",
+        rung: "R0",
+        severity: "warn",
+        file: file.rel,
+        line,
+        message: `Workflow action '${m[1]}' tracks a mutable branch (@main/@master/@HEAD) instead of a pinned SHA or release tag.`,
+        fix: "Pin GitHub Actions to an immutable commit SHA (or major version tag for trusted first-party actions).",
+      });
+    }
+
     for (const job of parseWorkflowJobs(file.content)) {
       const hasAlways = /^\s*if:\s*.*always\(\)/m.test(job.body);
       const hasNeeds = /^\s*needs:/m.test(job.body);

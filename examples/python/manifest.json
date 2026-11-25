@@ -19,11 +19,21 @@
       "weak-asserts-tautology",
       "no-imported-mutation",
       "no-test-nondeterminism"
+    ],
+    "oss_hardening.py": [
+      "py-no-eager-asyncio-primitive-init",
+      "no-env-auth-bypass",
+      "py-open-missing-encoding",
+      "py-unscoped-fd-or-connection-lifecycle",
+      "py-orm-dynamic-kwarg-alias-injection",
+      "http-case-sensitive-header-directive",
+      "py-cleanup-require-finally-or-baseexception"
     ]
   },
   "clean": [
     "explicit_state_machine.py",
     "clean_perf_and_jidoka.py",
-    "test_clean_behavior.py"
+    "test_clean_behavior.py",
+    "safe_oss_hardening.py"
   ]
 }

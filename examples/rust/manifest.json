@@ -18,11 +18,20 @@
       "weak-asserts-tautology",
       "no-imported-mutation",
       "no-test-nondeterminism"
+    ],
+    "oss_async_and_serde.rs": [
+      "serde-deny-unknown-with-flatten",
+      "rust-unchecked-duration-or-size-arith",
+      "rust-poll-pending-no-waker",
+      "rust-drop-under-lock-guard",
+      "rust-hashmap-deterministic-order",
+      "rust-select-non-cancel-safe"
     ]
   },
   "clean": [
     "explicit_state_machine.rs",
     "impl_for_and_str_match.rs",
-    "clean_perf_and_jidoka.rs"
+    "clean_perf_and_jidoka.rs",
+    "safe_oss_async_and_serde.rs"
   ]
 }

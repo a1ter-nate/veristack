@@ -2,6 +2,7 @@ import type { DiscoveredRepo } from "./discover.ts";
 import { lineOf, maskStrings } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
 import { analyzeEcosystemGuards } from "./zero-defect/ecosystem-guards.ts";
+import { analyzeOssGuards } from "./zero-defect/oss-guards.ts";
 import { analyzeRuntimeGuards } from "./zero-defect/runtime-guards.ts";
 
 const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
@@ -196,6 +197,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     }
 
     findings.push(...analyzeRuntimeGuards(file));
+    findings.push(...analyzeOssGuards(file));
   }
 
   findings.push(...analyzeEcosystemGuards(repo));

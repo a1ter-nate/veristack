@@ -219,6 +219,12 @@ const DAO_MOCK_PATH = /\b(?:vi|jest)\.mock\s*\(\s*["'][^"']*(?:\/dao\/|\/daos\/|
 const REPO_MUTATION_CALL =
   /\b(?:writeFileSync|writeFile|rmSync|unlinkSync|appendFileSync)\s*\(\s*(?:path\.(?:join|resolve)\s*\(\s*process\.cwd\(\)|["'](?:\.\.?\/)?(?:src|apps|packages|tools|\.github)\/)|\bexec(?:File)?Sync\s*\(\s*["']git["']\s*,\s*\[[^\]]*(?:commit|reset|checkout|clean|add)/g;
 
+const HARDCODED_TEST_PORT =
+  /(?:127\.0\.0\.1|localhost):(?:300\d|400\d|500\d|800\d|808\d|900\d)\b|\.\s*listen\s*\(\s*(?:300\d|400\d|500\d|800\d|808\d|900\d)\b/g;
+const SKIP_IN_AFTER_HOOK = /\b(?:afterEach|afterAll)\s*\([\s\S]{0,220}?\b(?:test|it)\.skip\s*\(/g;
+const LONG_UNREFD_TIMER = /\bsetTimeout\s*\([^,\n]+,\s*(?:[5-9]\d{3}|\d{5,})\s*\)/g;
+const PY_GLOBAL_TEST_MUTATION = /\b(?:sys\.modules\s*\[[^\]]+\]\s*=|sys\.path\.(?:append|insert)\s*\()/g;
+
 export function scanTestHarnessGuards(
   file: ScannedFile,
   raw: string,
@@ -226,6 +232,49 @@ export function scanTestHarnessGuards(
   repoHasEmulator: boolean,
 ): Finding[] {
   const findings: Finding[] = [];
+
+  for (const m of code.matchAll(HARDCODED_TEST_PORT)) {
+    const idx = m.index ?? 0;
+    const lineText = raw.split(/\r?\n/)[lineOf(raw, idx) - 1] ?? "";
+    if (/^\s*(?:\/\/|#|\*)/.test(lineText) || /\b(?:mock|stub|baseUrl|example\.com|FIRESTORE_EMULATOR_HOST)\b/i.test(lineText)) {
+      continue;
+    }
+    if (/\b(?:listen|bind|TcpListener|HTTPServer|createServer)\b/i.test(lineText)) {
+      const line = lineOf(raw, idx);
+      findings.push({
+        id: `TH:static-loopback-port:${file.rel}:${line}`,
+        rule: "test-hardcoded-loopback-port",
+        category: "test-smell",
+        rung: "R3",
+        severity: "warn",
+        file: file.rel,
+        line,
+        message: "Test binds a hardcoded loopback port, causing EADDRINUSE flakes under parallel test execution.",
+        fix: "Bind port 0 (ephemeral OS-assigned port) and read the assigned address from the listener.",
+      });
+    }
+  }
+
+  if (file.language === "python") {
+    if (!/\b(?:monkeypatch|patch\.dict)\b/.test(raw)) {
+      for (const m of code.matchAll(PY_GLOBAL_TEST_MUTATION)) {
+        const line = lineOf(raw, m.index ?? 0);
+        findings.push({
+          id: `TH:py-global-state:${file.rel}:${line}`,
+          rule: "py-test-global-state-pollution",
+          category: "test-smell",
+          rung: "R2",
+          severity: "warn",
+          file: file.rel,
+          line,
+          message: `Test mutates global Python runtime state (${m[0].trim()}) without monkeypatch or mock.patch.dict cleanup.`,
+          fix: "Use pytest monkeypatch.setitem/syspath_prepend or unittest.mock.patch.dict so state resets after the test.",
+        });
+      }
+    }
+    return findings;
+  }
+
   if (file.language === "rust") {
     for (const m of code.matchAll(/\bassert_eq!\s*\([^;\n]*\.to_bits\s*\(\s*\)/g)) {
       const line = lineOf(raw, m.index ?? 0);
@@ -244,6 +293,38 @@ export function scanTestHarnessGuards(
     return findings;
   }
   if (file.language !== "typescript" && file.language !== "javascript") return findings;
+
+  for (const m of code.matchAll(SKIP_IN_AFTER_HOOK)) {
+    const line = lineOf(raw, m.index ?? 0);
+    findings.push({
+      id: `TH:skip-after:${file.rel}:${line}`,
+      rule: "no-skip-in-after-hook",
+      category: "cheat",
+      rung: "R0",
+      severity: "error",
+      file: file.rel,
+      line,
+      message: "Calling test.skip() inside afterEach/afterAll aborts cleanup hooks and masks teardown failures.",
+      fix: "Guard conditional skips at the top of the test or in beforeEach, never inside teardown hooks.",
+    });
+  }
+
+  if (!/\.unref\s*\(\s*\)|\bclearTimeout\s*\(/.test(code)) {
+    for (const m of code.matchAll(LONG_UNREFD_TIMER)) {
+      const line = lineOf(raw, m.index ?? 0);
+      findings.push({
+        id: `TH:long-timer:${file.rel}:${line}`,
+        rule: "no-unrefd-long-test-timer",
+        category: "test-smell",
+        rung: "R2",
+        severity: "warn",
+        file: file.rel,
+        line,
+        message: "Long setTimeout (>= 5s) in test without .unref() or clearTimeout keeps the event loop alive and stalls worker exit.",
+        fix: "Call timer.unref(), clearTimeout in finally, or use fake timers / AbortSignal.timeout.",
+      });
+    }
+  }
 
   if (CLOUD_SDK_IMPORT.test(raw) && !EMULATOR_GUARD.test(raw)) {
     const idx = raw.search(CLOUD_SDK_IMPORT);
