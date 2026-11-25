@@ -23,12 +23,17 @@
       "math-floor-ceiling-inversion",
       "efcore-unordered-skip-or-assert",
       "csharp-undisposed-local-idisp"
+    ],
+    "TitansBHardening.cs": [
+      "cache-evict-on-fault",
+      "http-byte-length-and-encoding-drift"
     ]
   },
   "clean": [
     "ExplicitStateMachine.cs",
     "CleanPerfAndJidoka.cs",
     "CleanBehaviorTests.Tests.cs",
-    "SafeOssHardening.cs"
+    "SafeOssHardening.cs",
+    "SafeTitansBHardening.cs"
   ]
 }

@@ -94,6 +94,13 @@
       "llm-prompt-cache-prefix-bust",
       "llm-retry-after-unbounded",
       "js-prototype-copy-missing-constructor-skip"
+    ],
+    "titans_b_guards.ts": [
+      "jwt-unsafe-alg-or-unverified-jwe",
+      "http-cookie-vary-and-delete-attrs",
+      "http-byte-length-and-encoding-drift",
+      "secrets-untrusted-ref-eval-or-dto-leak",
+      "cache-evict-on-fault"
     ]
   },
   "clean": [
@@ -106,6 +113,7 @@
     "safe_oss_hardening.ts",
     "safe_ast_and_affine.ts",
     "safe_cve_and_postmortem.ts",
-    "safe_ai_first_guards.ts"
+    "safe_ai_first_guards.ts",
+    "safe_titans_b_guards.ts"
   ]
 }

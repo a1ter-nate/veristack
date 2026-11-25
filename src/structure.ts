@@ -233,9 +233,10 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
     if (file.language === "rust" && !file.isTest && !isGenerated) {
       const cfgTestIdx = file.content.search(/#\[cfg\(test\)\]/);
       const prodContent = cfgTestIdx >= 0 ? file.content.slice(0, cfgTestIdx) : file.content;
+      const maskedProd = maskCode(prodContent, "rust");
       const prodLines = prodContent.split(/\r?\n/);
 
-      for (const match of prodContent.matchAll(RUST_TEST_ONLY_EXPORT)) {
+      for (const match of maskedProd.matchAll(RUST_TEST_ONLY_EXPORT)) {
         const line = lineOf(prodContent, match.index ?? 0);
         findings.push({
           id: `ST:rs-test-seam:${file.rel}:${line}`,
@@ -250,7 +251,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
         });
       }
 
-      for (const match of prodContent.matchAll(RUST_UNSAFE_OR_TRANSMUTE)) {
+      for (const match of maskedProd.matchAll(RUST_UNSAFE_OR_TRANSMUTE)) {
         const line = lineOf(prodContent, match.index ?? 0);
         const cur = prodLines[line - 1] ?? "";
         const prev = prodLines[line - 2] ?? "";
@@ -269,7 +270,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
         }
       }
 
-      for (const match of prodContent.matchAll(RUST_SWALLOWING_ERR)) {
+      for (const match of maskedProd.matchAll(RUST_SWALLOWING_ERR)) {
         const line = lineOf(prodContent, match.index ?? 0);
         findings.push({
           id: `ST:rs-swallow-err:${file.rel}:${line}`,
@@ -285,7 +286,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
       }
 
       let unwrapCount = 0;
-      for (const match of prodContent.matchAll(RUST_PROD_UNWRAP)) {
+      for (const match of maskedProd.matchAll(RUST_PROD_UNWRAP)) {
         unwrapCount += 1;
         if (unwrapCount <= 5) {
           const line = lineOf(prodContent, match.index ?? 0);

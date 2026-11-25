@@ -28,12 +28,18 @@
       "py-orm-dynamic-kwarg-alias-injection",
       "http-case-sensitive-header-directive",
       "py-cleanup-require-finally-or-baseexception"
+    ],
+    "titans_b_http.py": [
+      "jwt-unsafe-alg-or-unverified-jwe",
+      "http-cookie-vary-and-delete-attrs",
+      "http-byte-length-and-encoding-drift"
     ]
   },
   "clean": [
     "explicit_state_machine.py",
     "clean_perf_and_jidoka.py",
     "test_clean_behavior.py",
-    "safe_oss_hardening.py"
+    "safe_oss_hardening.py",
+    "safe_titans_b_http.py"
   ]
 }

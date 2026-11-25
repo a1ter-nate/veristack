@@ -26,12 +26,19 @@
       "rust-drop-under-lock-guard",
       "rust-hashmap-deterministic-order",
       "rust-select-non-cancel-safe"
+    ],
+    "titans_b_rust.rs": [
+      "no-chained-or-any-cast",
+      "rust-unchecked-utf8-or-osstr",
+      "rust-drop-async-spawn-or-unwrap",
+      "rust-reentrant-callback-under-borrow"
     ]
   },
   "clean": [
     "explicit_state_machine.rs",
     "impl_for_and_str_match.rs",
     "clean_perf_and_jidoka.rs",
-    "safe_oss_async_and_serde.rs"
+    "safe_oss_async_and_serde.rs",
+    "safe_titans_b_rust.rs"
   ]
 }
