@@ -1,0 +1,14 @@
+[
+  { "name": "pending authorize valid", "initial": "pending", "event": "authorize", "arg": "AUTH-1", "accepted": true, "expected": "authorized", "error_code": "" },
+  { "name": "pending authorize blank fails", "initial": "pending", "event": "authorize", "arg": "   ", "accepted": false, "expected": "pending", "error_code": "INVALID_AUTH_CODE" },
+  { "name": "pending ship rejected", "initial": "pending", "event": "ship", "arg": "TRK-1", "accepted": false, "expected": "pending", "error_code": "CANNOT_SHIP_UNPAID" },
+  { "name": "pending cancel valid", "initial": "pending", "event": "cancel", "arg": "user", "accepted": true, "expected": "cancelled", "error_code": "" },
+  { "name": "pending cancel blank fails", "initial": "pending", "event": "cancel", "arg": "", "accepted": false, "expected": "pending", "error_code": "INVALID_CANCEL_REASON" },
+  { "name": "authorized ship valid", "initial": "authorized", "event": "ship", "arg": "TRK-9", "accepted": true, "expected": "shipped", "error_code": "" },
+  { "name": "authorized ship blank fails", "initial": "authorized", "event": "ship", "arg": " ", "accepted": false, "expected": "authorized", "error_code": "INVALID_TRACKING_ID" },
+  { "name": "authorized cancel valid", "initial": "authorized", "event": "cancel", "arg": "oos", "accepted": true, "expected": "cancelled", "error_code": "" },
+  { "name": "authorized cancel blank fails", "initial": "authorized", "event": "cancel", "arg": "", "accepted": false, "expected": "authorized", "error_code": "INVALID_CANCEL_REASON" },
+  { "name": "authorized re-authorize rejected", "initial": "authorized", "event": "authorize", "arg": "AUTH-2", "accepted": false, "expected": "authorized", "error_code": "ALREADY_AUTHORIZED" },
+  { "name": "shipped is terminal", "initial": "shipped", "event": "cancel", "arg": "late", "accepted": false, "expected": "shipped", "error_code": "TERMINAL_SHIPPED" },
+  { "name": "cancelled is terminal", "initial": "cancelled", "event": "authorize", "arg": "AUTH-3", "accepted": false, "expected": "cancelled", "error_code": "TERMINAL_CANCELLED" }
+]

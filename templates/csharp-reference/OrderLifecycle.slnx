@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="../../lint/csharp/VStack.Analyzers/VStack.Analyzers.csproj" />
+  <Project Path="OrderLifecycle.Domain/OrderLifecycle.Domain.csproj" />
+  <Project Path="OrderLifecycle.Tests/OrderLifecycle.Tests.csproj" />
+</Solution>

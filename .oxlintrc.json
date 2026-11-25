@@ -1,0 +1,10 @@
+{
+  "jsPlugins": [
+    "./lint/oxlint-no-comments.mjs",
+    "./lint/oxlint-explicit-state-machine.mjs"
+  ],
+  "rules": {
+    "verification-stack/no-comments": ["error", { "allow": ["WARNING", "SAFETY"] }],
+    "verification-stack-state-machine/no-implicit-state-machine": "error"
+  }
+}

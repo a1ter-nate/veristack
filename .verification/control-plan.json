@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "service": "veristack",
+  "controls": [
+    {
+      "id": "CP-001",
+      "seam": "no-comments multi-language linter",
+      "failureMode": "Prose comments slip into TS/C#/Rust/Python production code",
+      "severity": 8,
+      "maxAllowedRung": "R0",
+      "controlRef": "src/no-comments.ts",
+      "reqId": "REQ-NO-COMMENTS-01"
+    },
+    {
+      "id": "CP-002",
+      "seam": "explicit state machine gate",
+      "failureMode": "Implicit boolean-soup or optional-bag state machines compile",
+      "severity": 9,
+      "maxAllowedRung": "R1",
+      "controlRef": "src/state-machines/index.ts",
+      "reqId": "REQ-EXPLICIT-SM-01"
+    },
+    {
+      "id": "CP-003",
+      "seam": "circuit 3-band safety resolver",
+      "failureMode": "Abstained or fact-contradicted System 1 answer auto-approves without human review",
+      "severity": 10,
+      "maxAllowedRung": "R2",
+      "controlRef": "tests/formal-verification.test.ts",
+      "reqId": "REQ-CIRCUIT-SAFETY-01"
+    }
+  ]
+}

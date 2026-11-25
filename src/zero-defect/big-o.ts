@@ -1,0 +1,158 @@
+export interface ScalingSample {
+  n: number;
+  timeMs: number;
+  memoryBytes?: number;
+}
+
+export interface BigOThresholds {
+  maxTimeExponent: number;
+  maxSpaceExponent?: number;
+}
+
+export interface EmpiricalBigOResult {
+  sampleCount: number;
+  timeExponent: number;
+  timeR2: number;
+  timeClass: string;
+  spaceExponent: number | null;
+  spaceR2: number | null;
+  spaceClass: string | null;
+  passed: boolean;
+  reasons: string[];
+}
+
+function fitLogLogSlope(xs: readonly number[], ys: readonly number[]): { slope: number; r2: number } {
+  const pairs: Array<[number, number]> = [];
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i] ?? 0;
+    const y = ys[i] ?? 0;
+    if (x > 0 && y > 0) pairs.push([Math.log(x), Math.log(y)]);
+  }
+  if (pairs.length < 2) return { slope: 0, r2: 0 };
+
+  const meanX = pairs.reduce((acc, [x]) => acc + x, 0) / pairs.length;
+  const meanY = pairs.reduce((acc, [, y]) => acc + y, 0) / pairs.length;
+
+  let cov = 0;
+  let varX = 0;
+  let varY = 0;
+  for (const [x, y] of pairs) {
+    const dx = x - meanX;
+    const dy = y - meanY;
+    cov += dx * dy;
+    varX += dx * dx;
+    varY += dy * dy;
+  }
+
+  if (varX === 0) return { slope: 0, r2: 0 };
+  const slope = cov / varX;
+  const r2 = varY === 0 ? 1 : (cov * cov) / (varX * varY);
+  return {
+    slope: Number(slope.toFixed(3)),
+    r2: Number(Math.max(0, Math.min(1, r2)).toFixed(4)),
+  };
+}
+
+export function classifyExponent(alpha: number): string {
+  if (alpha < 0.2) return "O(1)";
+  if (alpha < 0.65) return "O(log n / sqrt n)";
+  if (alpha < 1.15) return "O(n)";
+  if (alpha < 1.45) return "O(n log n)";
+  if (alpha < 2.35) return "O(n^2)";
+  return "O(n^3+)";
+}
+
+export function fitEmpiricalBigO(
+  samples: readonly ScalingSample[],
+  thresholds: BigOThresholds = { maxTimeExponent: 1.45 },
+): EmpiricalBigOResult {
+  if (samples.length < 3) {
+    return {
+      sampleCount: samples.length,
+      timeExponent: 0,
+      timeR2: 0,
+      timeClass: "insufficient_samples",
+      spaceExponent: null,
+      spaceR2: null,
+      spaceClass: null,
+      passed: false,
+      reasons: ["At least 3 scaling sizes (e.g., N, 2N, 4N, 8N) are required to fit empirical Big-O."],
+    };
+  }
+
+  const ordered = [...samples].sort((a, b) => a.n - b.n);
+  const ns = ordered.map((s) => s.n);
+  const times = ordered.map((s) => s.timeMs);
+  const timeFit = fitLogLogSlope(ns, times);
+  const timeClass = classifyExponent(timeFit.slope);
+
+  const memPairs = ordered.filter((s) => typeof s.memoryBytes === "number" && s.memoryBytes > 0);
+  const spaceFit =
+    memPairs.length >= 3
+      ? fitLogLogSlope(
+          memPairs.map((s) => s.n),
+          memPairs.map((s) => s.memoryBytes ?? 0),
+        )
+      : null;
+  const spaceClass = spaceFit ? classifyExponent(spaceFit.slope) : null;
+
+  const reasons: string[] = [];
+  if (timeFit.slope > thresholds.maxTimeExponent) {
+    reasons.push(
+      `Time scaling exponent ${timeFit.slope} (${timeClass}) exceeds budget <= ${thresholds.maxTimeExponent}.`,
+    );
+  }
+  if (
+    typeof thresholds.maxSpaceExponent === "number" &&
+    spaceFit !== null &&
+    spaceFit.slope > thresholds.maxSpaceExponent
+  ) {
+    reasons.push(
+      `Space scaling exponent ${spaceFit.slope} (${spaceClass}) exceeds budget <= ${thresholds.maxSpaceExponent}.`,
+    );
+  }
+
+  return {
+    sampleCount: ordered.length,
+    timeExponent: timeFit.slope,
+    timeR2: timeFit.r2,
+    timeClass,
+    spaceExponent: spaceFit ? spaceFit.slope : null,
+    spaceR2: spaceFit ? spaceFit.r2 : null,
+    spaceClass,
+    passed: reasons.length === 0,
+    reasons,
+  };
+}
+
+export function measureEmpiricalBigO<TInput>(
+  buildInput: (n: number, trial: number) => TInput,
+  run: (input: TInput) => unknown,
+  scales: readonly number[],
+  options: { repeats?: number; maxTimeExponent?: number } = {},
+): { samples: ScalingSample[]; result: EmpiricalBigOResult } {
+  const repeats = Math.max(1, options.repeats ?? 3);
+  if (scales.length > 0) {
+    run(buildInput(scales[0] ?? 16, 0));
+  }
+
+  const samples: ScalingSample[] = [];
+  for (const n of scales) {
+    const timings: number[] = [];
+    for (let r = 1; r <= repeats; r++) {
+      const input = buildInput(n, r);
+      const t0 = performance.now();
+      run(input);
+      const dt = performance.now() - t0;
+      timings.push(Math.max(dt, 0.001));
+    }
+    timings.sort((a, b) => a - b);
+    const median = timings[Math.floor(timings.length / 2)] ?? 0.001;
+    samples.push({ n, timeMs: Number(median.toFixed(4)) });
+  }
+
+  const result = fitEmpiricalBigO(samples, {
+    maxTimeExponent: options.maxTimeExponent ?? 1.45,
+  });
+  return { samples, result };
+}

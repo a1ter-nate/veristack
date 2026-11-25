@@ -1,0 +1,159 @@
+import type { Finding, ScanReport, System1ClassificationReport } from "./types.ts";
+
+export function formatTerminalReport(report: ScanReport): string {
+  const s = report.summary;
+  const out: string[] = [];
+
+  out.push(`Verification Stack Scan: ${report.repo}`);
+  out.push(
+    `Archetype: ${report.archetype} | Languages: ${report.languages.join(", ") || "none"} | Prod: ${s.sourceFiles} files (${s.prodLines} L) | Tests: ${s.testFiles} files (${s.testLines} L, ratio ${s.testToProdRatio}x)`,
+  );
+  out.push(
+    `Summary: ${s.holeCount} rung hole/over-budget | ${s.pushDownCount} push-down opportunities | ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} no-comments) | ${s.warnCount} warnings`,
+  );
+  out.push("");
+  out.push("9-RUNG VERIFICATION LADDER (R0 -> R8)");
+  for (const r of report.rungs) {
+    const tag = r.status.toUpperCase().padEnd(14);
+    const ev = r.evidence.length > 0 ? r.evidence.join(", ") : "none";
+    out.push(`  ${r.rung} [${tag}] ${r.name} (${r.speedBudget} | budget: ${r.targetBudget}) -> ${ev}`);
+    for (const gap of r.gaps) {
+      out.push(`       GAP: ${gap}`);
+    }
+  }
+
+  if (report.pushDownOpportunities.length > 0) {
+    out.push("");
+    out.push(`PUSH-DOWN OPPORTUNITIES (${report.pushDownOpportunities.length})`);
+    for (const p of report.pushDownOpportunities) {
+      out.push(`  - ${p.file}:${p.line} [${p.currentRung} -> ${p.targetRung}] (${p.pattern})`);
+      out.push(`      Why: ${p.reason}`);
+      out.push(`      Fix: ${p.replacement}`);
+      if (p.forbiddenWarning) out.push(`      Guard: ${p.forbiddenWarning}`);
+    }
+  }
+
+  if (report.findings.length > 0) {
+    out.push("");
+    out.push(`ANTI-SLOP, NO-COMMENTS & ANTI-CHEAT FINDINGS (${report.findings.length}, showing up to 40)`);
+    for (const f of report.findings.slice(0, 40)) {
+      out.push(`  - [${f.severity.toUpperCase()}] ${f.rung} ${f.rule} ${f.file}:${f.line} — ${f.message}`);
+      out.push(`      Fix: ${f.fix}`);
+    }
+    if (report.findings.length > 40) {
+      out.push(`  ... and ${report.findings.length - 40} more findings (use --json for complete output).`);
+    }
+  }
+
+  if (report.missingLinters.length > 0) {
+    out.push("");
+    out.push("RECOMMENDED MISSING LINTERS");
+    for (const m of report.missingLinters) {
+      out.push(`  - [${m.priority}] ${m.tool}: ${m.why}`);
+    }
+  }
+
+  return out.join("\n");
+}
+
+export function formatMarkdownReport(report: ScanReport): string {
+  const s = report.summary;
+  const out: string[] = [];
+
+  out.push(`# Verification Stack Report`);
+  out.push("");
+  out.push(
+    `- **Repo:** \`${report.repo}\` | **Archetype:** \`${report.archetype}\` | **Languages:** ${report.languages.join(", ") || "none"}`,
+  );
+  out.push(
+    `- **Counts:** ${s.sourceFiles} prod files (${s.prodLines} L) · ${s.testFiles} test files (${s.testLines} L, ${s.testToProdRatio}x) · ${s.e2eTestCases} E2E cases`,
+  );
+  out.push(
+    `- **Signals:** ${s.holeCount} rung holes/over-budget · ${s.pushDownCount} push-down opportunities · ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} prose comments) · ${s.warnCount} warnings`,
+  );
+  out.push("");
+  out.push("## 9-Rung Coverage (R0 → R8)");
+  out.push("");
+  out.push("| Rung | Layer | Status | Budget | Evidence | Gaps |");
+  out.push("| :---: | :--- | :---: | :--- | :--- | :--- |");
+  for (const r of report.rungs) {
+    out.push(
+      `| **${r.rung}** | ${r.name} | \`${r.status}\` | ${r.targetBudget} | ${r.evidence.join("; ") || "—"} | ${r.gaps.join("; ") || "—"} |`,
+    );
+  }
+
+  if (report.pushDownOpportunities.length > 0) {
+    out.push("");
+    out.push("## Push-Down Opportunities");
+    out.push("");
+    out.push("| Location | Move | Pattern | Replacement |");
+    out.push("| :--- | :---: | :--- | :--- |");
+    for (const p of report.pushDownOpportunities) {
+      out.push(`| \`${p.file}:${p.line}\` | **${p.currentRung} → ${p.targetRung}** | \`${p.pattern}\` | ${p.replacement} |`);
+    }
+  }
+
+  if (report.findings.length > 0) {
+    out.push("");
+    out.push("## Findings (First 50)");
+    out.push("");
+    out.push("| Severity | Rung | Rule | Location | Message | Fix |");
+    out.push("| :---: | :---: | :--- | :--- | :--- | :--- |");
+    for (const f of report.findings.slice(0, 50)) {
+      out.push(`| \`${f.severity}\` | ${f.rung} | \`${f.rule}\` | \`${f.file}:${f.line}\` | ${f.message} | ${f.fix} |`);
+    }
+  }
+
+  return out.join("\n");
+}
+
+export function formatFindingsList(title: string, findings: readonly Finding[], asJson: boolean): string {
+  if (asJson) return JSON.stringify({ title, count: findings.length, findings }, null, 2);
+  if (findings.length === 0) return `${title}: 0 issues found.`;
+  const lines = [`${title}: ${findings.length} issue(s)`];
+  for (const f of findings) {
+    lines.push(`  - [${f.severity.toUpperCase()}] ${f.rule} ${f.file}:${f.line} — ${f.message}`);
+    lines.push(`      Fix: ${f.fix}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatSystem1Report(report: System1ClassificationReport): string {
+  const out: string[] = [];
+  const prov = report.provider ? `, provider=${report.provider}` : "";
+  out.push(`System 1 Improvement Classifier (${report.mode}${prov})`);
+  out.push(
+    `Repo: ${report.repo} | Rubric: ${report.rubricVersion} (${report.rubricHash}) | Calibration: ${report.calibrationStatus}`,
+  );
+  out.push(
+    `Sampled: ${report.selectedCount}/${report.totalEligible} candidates across ${report.componentDistribution.length} component(s) | Judgments: ${report.judgments.length}`,
+  );
+  out.push(
+    `Release Bar: precision >= ${report.releaseBar.minPrecision * 100}%, recall >= ${report.releaseBar.minRecall * 100}%, coverage >= ${report.releaseBar.minDecisionCoverage * 100}%`,
+  );
+  out.push("");
+
+  const actionable = report.judgments.filter(
+    (j) =>
+      j.verdict === "corroborated_issue" ||
+      j.verdict === "disagreed_human_review" ||
+      (j.verdict === "static_advisory" &&
+        (j.staticLabel.startsWith("push_to_") ||
+          j.staticLabel === "COVERAGE_FARM" ||
+          j.staticLabel === "TAUTOLOGY" ||
+          j.staticLabel === "CHANGE_DETECTOR" ||
+          j.staticLabel === "self_derived_or_circular" ||
+          j.staticLabel === "literal_only_tautology" ||
+          j.staticLabel === "internal_overmocking" ||
+          j.staticLabel === "promotable_deterministic_rule")),
+  );
+
+  out.push(`ACTIONABLE IMPROVEMENT SIGNALS (${actionable.length}, showing up to 30)`);
+  for (const j of actionable.slice(0, 30)) {
+    const modelPart = j.modelChoice ? ` | model=${j.modelChoice} (${j.modelScore ?? "n/a"})` : "";
+    out.push(`  - [${j.verdict}] ${j.rubricId} ${j.file} -> ${j.staticLabel}${modelPart}`);
+    out.push(`      Why: ${j.reason}`);
+  }
+  if (actionable.length === 0) out.push("  (none in sampled candidates)");
+  return out.join("\n");
+}

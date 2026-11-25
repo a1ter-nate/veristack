@@ -1,0 +1,101 @@
+{
+  "testCases": [
+    {
+      "name": "catches vi.mock module mocking",
+      "file": "src/cart.test.ts",
+      "content": "import { vi, test, expect } from 'vitest';\nimport { addItem } from './cart';\nvi.mock('./db');\ntest('adds', () => { expect(addItem(1)).toBe(1); });",
+      "expectedRules": ["no-test-doubles"],
+      "expectedPushDowns": []
+    },
+    {
+      "name": "catches fixed sleep and flake retries",
+      "file": "tests/checkout.e2e.ts",
+      "content": "import { test, expect } from '@playwright/test';\ntest.describe.configure({ retries: 2 });\ntest('buy', async ({ page }) => { await page.goto('/cart'); await page.waitForTimeout(500); expect(page).toHaveURL('/done'); });",
+      "expectedRules": ["no-fixed-sleep", "no-flake-masking"],
+      "expectedPushDowns": []
+    },
+    {
+      "name": "catches skipped and focused tests while ignoring conditional env skip",
+      "file": "src/price.test.ts",
+      "content": "import { calc } from './price';\ntest.skip(!isLocalMode, 'requires local stack');\ntest.only('a', () => { expect(calc(2)).toBe(4); });\ntest.skip('b', () => { expect(calc(3)).toBe(6); });",
+      "expectedRules": ["test-discipline"],
+      "expectedPushDowns": []
+    },
+    {
+      "name": "catches self-derived expectation and conditional expect",
+      "file": "src/tax.test.ts",
+      "content": "import { calcTax } from './tax';\ntest('tax', () => {\n  expect(calcTax(100)).toBe(calcTax(100));\n  if (ready) expect(calcTax(50)).toBe(5);\n});",
+      "expectedRules": ["self-derived-expectation", "no-conditional-expect"],
+      "expectedPushDowns": []
+    },
+    {
+      "name": "catches strict test quality rules: multi-status, fetch stub, coverage farm, unexercised, nondeterminism",
+      "file": "src/coverage-leftovers.test.ts",
+      "content": "import { vi, test, expect } from 'vitest';\ntest('farm', () => {\n  vi.stubGlobal('fetch', () => Promise.resolve({ status: 200 }));\n  const now = Date.now();\n  expect([200, 404]).toContain(now);\n});",
+      "expectedRules": [
+        "no-coverage-farm-file",
+        "no-fetch-stub",
+        "no-multi-status-assertion",
+        "no-test-nondeterminism"
+      ],
+      "expectedPushDowns": []
+    },
+    {
+      "name": "catches unexercised test file with no SUT imports",
+      "file": "src/empty-signal.test.ts",
+      "content": "import { test, expect } from 'vitest';\ntest('nothing', () => {\n  expect(1 + 1).toBe(2);\n});",
+      "expectedRules": ["no-unexercised-test"],
+      "expectedPushDowns": []
+    },
+    {
+      "name": "flags E2E mocking network for push-down to R3 component",
+      "file": "e2e/profile.e2e.ts",
+      "content": "import { test, expect } from '@playwright/test';\ntest('renders', async ({ page }) => { await page.route('/api/user', r => r.fulfill({ json: { name: 'Ada' } })); await page.goto('/me'); await expect(page.getByRole('heading')).toHaveText('Ada'); });",
+      "expectedRules": [],
+      "expectedPushDowns": ["e2e-with-mocked-network"]
+    },
+    {
+      "name": "flags combinatorial E2E file for push-down to R2 table",
+      "file": "e2e/roles.e2e.ts",
+      "content": "import { test, expect } from '@playwright/test';\ntest('t1', async ({page}) => { await page.goto('/a'); expect(page).toHaveURL('/a'); });\ntest('t2', async ({page}) => { await page.goto('/b'); expect(page).toHaveURL('/b'); });\ntest('t3', async ({page}) => { await page.goto('/c'); expect(page).toHaveURL('/c'); });\ntest('t4', async ({page}) => { await page.goto('/d'); expect(page).toHaveURL('/d'); });\ntest('t5', async ({page}) => { await page.goto('/e'); expect(page).toHaveURL('/e'); });",
+      "expectedRules": [],
+      "expectedPushDowns": ["e2e-combinatorial-matrix"]
+    },
+    {
+      "name": "flags integration test with no real DB or bus",
+      "file": "tests/integration/discount.test.ts",
+      "content": "import { test, expect } from 'vitest';\nimport { applyDiscount } from '../../src/discount';\ntest('discount', () => { expect(applyDiscount(100, 10)).toBe(90); });",
+      "expectedRules": [],
+      "expectedPushDowns": ["integration-without-real-engine"]
+    },
+    {
+      "name": "clean behavioral unit test produces zero smells and zero push-downs",
+      "file": "src/discount.test.ts",
+      "content": "import { test, expect } from 'vitest';\nimport { applyDiscount } from './discount';\ntest.each([[100, 10, 90], [0, 10, 0]])('applies discount', (price, pct, expected) => {\n  expect(applyDiscount(price, pct)).toBe(expected);\n});",
+      "expectedRules": [],
+      "expectedPushDowns": []
+    }
+  ],
+  "ciCases": [
+    {
+      "name": "catches continue-on-error, swallowed failure, pull_request_target, and tail pipe",
+      "file": ".github/workflows/bad.yml",
+      "content": "on:\n  pull_request_target:\npermissions: write-all\njobs:\n  test:\n    runs-on: ubuntu-latest\n    timeout-minutes: 180\n    steps:\n      - run: npm test || true\n        continue-on-error: true\n      - run: pytest | tail -n 20\n",
+      "expectedRules": [
+        "ci-pull-request-target",
+        "ci-wide-permissions",
+        "ci-excessive-timeout",
+        "ci-swallowed-failure",
+        "ci-continue-on-error",
+        "ci-pipe-tail-head",
+        "ci-missing-concurrency"
+      ]
+    },
+    {
+      "name": "clean workflow passes with zero errors",
+      "file": ".github/workflows/good.yml",
+      "content": "on:\n  pull_request:\npermissions:\n  contents: read\nconcurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true\njobs:\n  test:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm test\n",
+      "expectedRules": []
+    }
+  ]
+}

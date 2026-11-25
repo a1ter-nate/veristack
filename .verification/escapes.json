@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "escapes": [
+    {
+      "id": "ESC-001",
+      "defectClass": "raw-string-fixture-false-positive",
+      "occurrenceCause": "maskStrings only masked single-line quotes, not C#/Python triple quotes or Rust raw strings",
+      "escapeRung": "R2",
+      "containmentRung": "R1",
+      "pokaYokeRef": "src/test-lexical.ts"
+    }
+  ]
+}

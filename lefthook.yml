@@ -1,0 +1,14 @@
+pre-commit:
+  parallel: true
+  commands:
+    no-comments:
+      run: bun run lint:no-comments
+    state-machines:
+      run: bun run lint:state-machines
+    diff-cheats:
+      run: bun src/cli.ts diff-cheats . --base HEAD --fail
+
+pre-push:
+  commands:
+    verify:
+      run: bun run check

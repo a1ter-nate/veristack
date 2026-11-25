@@ -1,0 +1,11 @@
+[
+  { "name": "pending_authorize_ok", "initial": "pending", "event": "authorize", "arg": "AUTH-42", "accepted": true, "expected": "authorized", "error_code": "" },
+  { "name": "pending_authorize_blank", "initial": "pending", "event": "authorize", "arg": " ", "accepted": false, "expected": "pending", "error_code": "INVALID_AUTH_CODE" },
+  { "name": "pending_ship_rejected", "initial": "pending", "event": "ship", "arg": "TRK-1", "accepted": false, "expected": "pending", "error_code": "CANNOT_SHIP_UNPAID" },
+  { "name": "pending_cancel_ok", "initial": "pending", "event": "cancel", "arg": "changed_mind", "accepted": true, "expected": "cancelled", "error_code": "" },
+  { "name": "authorized_ship_ok", "initial": "authorized", "event": "ship", "arg": "TRK-99", "accepted": true, "expected": "shipped", "error_code": "" },
+  { "name": "authorized_ship_blank", "initial": "authorized", "event": "ship", "arg": "", "accepted": false, "expected": "authorized", "error_code": "INVALID_TRACKING_ID" },
+  { "name": "authorized_reauthorize_rejected", "initial": "authorized", "event": "authorize", "arg": "AUTH-2", "accepted": false, "expected": "authorized", "error_code": "ALREADY_AUTHORIZED" },
+  { "name": "shipped_cancel_terminal", "initial": "shipped", "event": "cancel", "arg": "late", "accepted": false, "expected": "shipped", "error_code": "TERMINAL_SHIPPED" },
+  { "name": "cancelled_authorize_terminal", "initial": "cancelled", "event": "authorize", "arg": "AUTH-9", "accepted": false, "expected": "cancelled", "error_code": "TERMINAL_CANCELLED" }
+]

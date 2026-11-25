@@ -1,0 +1,18 @@
+{
+  "stryker-config": {
+    "project": "OrderLifecycle.Domain.csproj",
+    "mutate": [
+      "OrderState.cs"
+    ],
+    "thresholds": {
+      "high": 95,
+      "low": 85,
+      "break": 85
+    },
+    "reporters": [
+      "progress",
+      "cleartext",
+      "json"
+    ]
+  }
+}

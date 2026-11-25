@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+**/bin/
+**/obj/
+**/StrykerOutput/
+**/target/
+**/mutants.out*/
+**/.venv/
+**/__pycache__/
+**/.mypy_cache/
+**/.pytest_cache/
+**/.hypothesis/
+**/.ruff_cache/
+.DS_Store
