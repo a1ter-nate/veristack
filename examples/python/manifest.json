@@ -33,6 +33,13 @@
       "jwt-unsafe-alg-or-unverified-jwe",
       "http-cookie-vary-and-delete-attrs",
       "http-byte-length-and-encoding-drift"
+    ],
+    "titans_a_guards.py": [
+      "py-finalizer-import-or-unguarded-global",
+      "float-nan-unsafe-cmp",
+      "url-slash-check-missing-backslash",
+      "condvar-wait-without-loop",
+      "py-datetime-dst-replace-tzinfo"
     ]
   },
   "clean": [
@@ -40,6 +47,7 @@
     "clean_perf_and_jidoka.py",
     "test_clean_behavior.py",
     "safe_oss_hardening.py",
-    "safe_titans_b_http.py"
+    "safe_titans_b_http.py",
+    "safe_titans_a_guards.py"
   ]
 }

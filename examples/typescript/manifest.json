@@ -101,6 +101,12 @@
       "http-byte-length-and-encoding-drift",
       "secrets-untrusted-ref-eval-or-dto-leak",
       "cache-evict-on-fault"
+    ],
+    "titans_a_guards.ts": [
+      "ts-lifecycle-uncleared-timer",
+      "float-nan-unsafe-cmp",
+      "url-slash-check-missing-backslash",
+      "http-unnormalized-path-authz-match"
     ]
   },
   "clean": [
@@ -114,6 +120,7 @@
     "safe_ast_and_affine.ts",
     "safe_cve_and_postmortem.ts",
     "safe_ai_first_guards.ts",
-    "safe_titans_b_guards.ts"
+    "safe_titans_b_guards.ts",
+    "safe_titans_a_guards.ts"
   ]
 }

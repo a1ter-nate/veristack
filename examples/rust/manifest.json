@@ -32,6 +32,14 @@
       "rust-unchecked-utf8-or-osstr",
       "rust-drop-async-spawn-or-unwrap",
       "rust-reentrant-callback-under-borrow"
+    ],
+    "titans_a_rust.rs": [
+      "no-chained-or-any-cast",
+      "float-nan-unsafe-cmp",
+      "rust-let-underscore-lock-guard",
+      "rust-env-args-or-var-utf8-panic",
+      "condvar-wait-without-loop",
+      "atomic-check-then-mutate-toctou"
     ]
   },
   "clean": [
@@ -39,6 +47,7 @@
     "impl_for_and_str_match.rs",
     "clean_perf_and_jidoka.rs",
     "safe_oss_async_and_serde.rs",
-    "safe_titans_b_rust.rs"
+    "safe_titans_b_rust.rs",
+    "safe_titans_a_rust.rs"
   ]
 }

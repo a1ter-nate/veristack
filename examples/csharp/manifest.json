@@ -27,6 +27,15 @@
     "TitansBHardening.cs": [
       "cache-evict-on-fault",
       "http-byte-length-and-encoding-drift"
+    ],
+    "TitansAHardening.cs": [
+      "csharp-narrowing-cast-before-min",
+      "csharp-arraypool-unscoped-or-double-return",
+      "csharp-tryparse-unbounded-timespan",
+      "url-slash-check-missing-backslash",
+      "float-nan-unsafe-cmp",
+      "condvar-wait-without-loop",
+      "atomic-check-then-mutate-toctou"
     ]
   },
   "clean": [
@@ -34,6 +43,7 @@
     "CleanPerfAndJidoka.cs",
     "CleanBehaviorTests.Tests.cs",
     "SafeOssHardening.cs",
-    "SafeTitansBHardening.cs"
+    "SafeTitansBHardening.cs",
+    "SafeTitansAHardening.cs"
   ]
 }

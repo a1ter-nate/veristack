@@ -1,6 +1,7 @@
 import { analyzeLinearObligations } from "./ast/linear-obligations.ts";
 import { analyzeTsAstGuards, parseTsAst } from "./ast/ts-ast.ts";
 import { analyzeWave5AiFirstGuards } from "./ast/wave5-ai-first.ts";
+import { analyzeWave6TitansAGuards } from "./ast/wave6-titans-a.ts";
 import { analyzeWave7TitansBGuards } from "./ast/wave7-titans-b.ts";
 import type { DiscoveredRepo } from "./discover.ts";
 import { lineOf, maskCode } from "./test-lexical.ts";
@@ -36,6 +37,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
       if (/(?:^|\/)migrations?\//i.test(file.rel)) {
         findings.push(...analyzeCveAndPostmortemGuards(file));
       }
+      findings.push(...analyzeWave6TitansAGuards(file));
       findings.push(...analyzeWave7TitansBGuards(file));
       continue;
     }
@@ -217,6 +219,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     findings.push(...analyzeOssGuards(file));
     findings.push(...analyzeCveAndPostmortemGuards(file));
     findings.push(...analyzeWave5AiFirstGuards(file));
+    findings.push(...analyzeWave6TitansAGuards(file));
     findings.push(...analyzeWave7TitansBGuards(file));
     const ast = parseTsAst(file);
     findings.push(...analyzeTsAstGuards(file, ast));
