@@ -39,7 +39,7 @@
         "templates/rust-reference/src/lib.rs",
         "templates/python-reference/src/order_lifecycle/machine.py"
       ],
-      "syncCommit": "c385acf919a5ab88b19e34918a3d589fd90ea833",
+      "syncCommit": "04240ae27779018bbdd7b2caa92c4673ee72c882",
       "bounds": "All reachable order lifecycle states (Pending, Authorized, Shipped, Cancelled)"
     }
   ]
