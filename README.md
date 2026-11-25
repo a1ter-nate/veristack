@@ -1,6 +1,7 @@
 # Veristack (`vstack`)
 
 **Stop shipping test theater and AI slop.**
+Warning, veristack is "slop" :)
 
 Veristack is a deterministic **9-rung zero-defect verification ladder (`R0 → R8`)**, cross-language static analyzer (`vstack`), native compiler/linter kit, runnable formal proof suite, and portable agent skill for **TypeScript, C#/.NET, Rust, and Python**.
 
