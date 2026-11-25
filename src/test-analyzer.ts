@@ -1,5 +1,7 @@
 import path from "node:path";
+import { analyzeUniversalLandminesTest } from "./anti-slop/oxc-antislop-landmines.ts";
 import { analyzeT3TestGuards } from "./ast/t3-immune-rules.ts";
+import { parseTsAst } from "./ast/ts-ast.ts";
 import type { DiscoveredRepo, ScannedFile } from "./discover.ts";
 import { hasNonFrameworkImport, lineOf, maskStrings, scanTestHarnessGuards, scanVitestConfigs } from "./test-lexical.ts";
 import type { Finding, PushDownOpportunity, RungId, TestBoundary, TestFileRecord } from "./types.ts";
@@ -366,6 +368,7 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
   }
 
   findings.push(...scanTestHarnessGuards(file, raw, code, repoHasEmulator));
+  findings.push(...analyzeUniversalLandminesTest(file, code, parseTsAst(file)));
 
   if (boundary === "e2e" && hasNetworkMock) {
     pushDowns.push({

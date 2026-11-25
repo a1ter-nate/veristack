@@ -29,6 +29,7 @@
   "files": [
     "bin/",
     "dist/",
+    "lint/index.mjs",
     "lint/oxlint-no-comments.mjs",
     "lint/oxlint-explicit-state-machine.mjs",
     "skill/",
@@ -36,6 +37,7 @@
     "README.md"
   ],
   "exports": {
+    "./lint": "./lint/index.mjs",
     "./lint/no-comments": "./lint/oxlint-no-comments.mjs",
     "./lint/explicit-state-machine": "./lint/oxlint-explicit-state-machine.mjs"
   },

@@ -1,3 +1,5 @@
+import { analyzeUniversalAntiSlopProd } from "./anti-slop/oxc-antislop-landmines.ts";
+import { analyzeUniversalBendLaws } from "./anti-slop/universal-laws.ts";
 import { analyzeBlackHoleReplayGuards } from "./ast/blackhole-replay-guards.ts";
 import { analyzeBlackHoleArchGates } from "./ast/cross-file-graph.ts";
 import { analyzeDeviantInvariants } from "./ast/deviant-invariants.ts";
@@ -230,6 +232,8 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     findings.push(...analyzeWave6TitansAGuards(file));
     findings.push(...analyzeWave7TitansBGuards(file));
     const ast = parseTsAst(file);
+    findings.push(...analyzeUniversalBendLaws(file));
+    findings.push(...analyzeUniversalAntiSlopProd(file, ast));
     findings.push(...analyzeTsAstGuards(file, ast));
     findings.push(...analyzeLinearObligations(file, ast));
     findings.push(...analyzeBlackHoleReplayGuards(file, ast));
