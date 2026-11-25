@@ -1,0 +1,36 @@
+{
+  "language": "typescript",
+  "caught": {
+    "state_machine_soup.ts": [
+      "implicit-sm-boolean-soup",
+      "implicit-sm-optional-bag",
+      "implicit-sm-non-exhaustive-switch"
+    ],
+    "perf_and_clock.ts": [
+      "perf-quadratic-loop-scan",
+      "perf-loop-compile-or-deepcopy",
+      "cdc-wall-clock-duration",
+      "unbounded-loop-risk"
+    ],
+    "comments_and_escapes.ts": [
+      "no-comments",
+      "no-chained-or-any-cast",
+      "no-swallowing-catch"
+    ],
+    "bad_tests.test.ts": [
+      "no-test-doubles",
+      "no-fixed-sleep",
+      "test-discipline",
+      "weak-asserts-tautology",
+      "no-multi-status-assertion",
+      "no-test-nondeterminism",
+      "no-imported-mutation"
+    ]
+  },
+  "clean": [
+    "explicit_state_machine.ts",
+    "indexed_perf_and_clock.ts",
+    "allowed_comments.ts",
+    "check-coverage-policy.test.ts"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "language": "rust",
+  "caught": {
+    "state_machine_soup.rs": [
+      "implicit-sm-boolean-soup",
+      "implicit-sm-optional-bag",
+      "implicit-sm-non-exhaustive-switch"
+    ],
+    "perf_and_jidoka.rs": [
+      "no-release-stripped-assert",
+      "cdc-wall-clock-duration",
+      "perf-nplus1-io-in-loop",
+      "perf-loop-compile-or-deepcopy"
+    ],
+    "bad_tests_test.rs": [
+      "no-fixed-sleep",
+      "test-discipline",
+      "weak-asserts-tautology",
+      "no-imported-mutation",
+      "no-test-nondeterminism"
+    ]
+  },
+  "clean": [
+    "explicit_state_machine.rs",
+    "impl_for_and_str_match.rs",
+    "clean_perf_and_jidoka.rs"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "language": "csharp",
+  "caught": {
+    "StateMachineSoup.cs": [
+      "implicit-sm-boolean-soup",
+      "implicit-sm-optional-bag",
+      "implicit-sm-non-exhaustive-switch"
+    ],
+    "PerfAndJidoka.cs": [
+      "no-release-stripped-assert",
+      "cdc-wall-clock-duration",
+      "perf-quadratic-loop-scan",
+      "perf-loop-compile-or-deepcopy"
+    ],
+    "BadTests.Tests.cs": [
+      "no-fixed-sleep",
+      "test-discipline",
+      "weak-asserts-tautology",
+      "no-test-nondeterminism",
+      "no-imported-mutation"
+    ]
+  },
+  "clean": [
+    "ExplicitStateMachine.cs",
+    "CleanPerfAndJidoka.cs",
+    "CleanBehaviorTests.Tests.cs"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "language": "python",
+  "caught": {
+    "state_machine_soup.py": [
+      "implicit-sm-boolean-soup",
+      "implicit-sm-optional-bag",
+      "implicit-sm-non-exhaustive-switch"
+    ],
+    "perf_and_jidoka.py": [
+      "no-release-stripped-assert",
+      "cdc-wall-clock-duration",
+      "perf-quadratic-loop-scan",
+      "perf-loop-compile-or-deepcopy",
+      "unbounded-loop-risk"
+    ],
+    "test_bad_patterns.py": [
+      "no-fixed-sleep",
+      "test-discipline",
+      "weak-asserts-tautology",
+      "no-imported-mutation",
+      "no-test-nondeterminism"
+    ]
+  },
+  "clean": [
+    "explicit_state_machine.py",
+    "clean_perf_and_jidoka.py",
+    "test_clean_behavior.py"
+  ]
+}

@@ -29,7 +29,7 @@ const MODULE_MOCK = /\b(?:vi|jest)\.mock\s*\(|\b(?:vi|jest)\.unstable_mockModule
 const TEST_DOUBLE =
   /\bnew\s+Mock\s*<|\bSubstitute\.For\s*[<(]|\bA\.Fake\s*<|\bMock[A-Z][A-Za-z0-9_]*::new\s*\(|#\[automock\]|\b(?:MagicMock|AsyncMock|Mock)\s*\(|\bsinon\.(?:stub|mock)\s*\(|\bvi\.fn\s*\(\s*(?:\(|async|function)/g;
 const FIXED_SLEEP =
-  /\b(?:page|Page)\.waitForTimeout(?:Async)?\s*\(|\bcy\.wait\(\s*\d+|\bThread\.Sleep\s*\(|\bTask\.Delay\(\s*\d+|\b(?:std::)?thread::sleep\s*\(|\btokio::time::sleep\s*\(|\b(?:time|asyncio)\.sleep\s*\(|\bnew\s+Promise\s*\([^)]*setTimeout|\bnetworkidle\b/g;
+  /\b(?:page|Page)\.waitForTimeout(?:Async)?\s*\(|\bcy\.wait\(\s*\d+|\bThread\.Sleep\s*\(|\bTask\.Delay\(\s*\d+|\b(?:std::)?thread::sleep\s*\(|\btokio::time::sleep\s*\(|\b(?:time|asyncio)\.sleep\s*\(|\bnew\s+Promise\s*\((?:[^()]|\([^)]*\))*\bsetTimeout\b|\bnetworkidle\b/g;
 const FLAKE_MASK_ANYWHERE = /\bjest\.retryTimes\s*\(|\bpytest\.mark\.flaky\b|--reruns\b|\bconfigure\s*\(\s*\{[^}]*\bretries\s*:\s*[1-9]/g;
 const FLAKE_MASK_CONFIG = /\bretries\s*:\s*[1-9]/g;
 const SKIP_OR_ONLY =

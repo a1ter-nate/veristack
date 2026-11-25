@@ -91,6 +91,8 @@ Every rule is language-agnostic, backed by native compiler/linter plugins and ru
 
 Universal protocol spec: [templates/formal/order_lifecycle.qnt](templates/formal/order_lifecycle.qnt) (Quint / typed TLA+).
 
+**Living Examples & Accuracy Suite:** Browse [examples/](examples/README.md) for side-by-side `caught/` vs `clean/` code in TypeScript, C#, Rust, and Python — every example file is executed directly by [tests/examples-accuracy.test.ts](tests/examples-accuracy.test.ts) to enforce exact true-positive detection and zero false positives across all 4 languages.
+
 ---
 
 ## What `vstack` Catches Out of the Box

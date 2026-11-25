@@ -1,0 +1,2 @@
+# Intentionally broken examples tested individually by tests/examples-accuracy.test.ts
+examples/*/caught/

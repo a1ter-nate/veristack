@@ -71,7 +71,7 @@ export function isTestFilePath(rel: string): boolean {
   const base = path.posix.basename(lower);
   if (/\.(?:test|spec|e2e|cy|int|integration|contract)\.[cm]?[jt]sx?$/.test(base)) return true;
   if (/(?:^|[-_])tests?\.py$|^test[-_].*\.py$/.test(base)) return true;
-  if (/_test\.go$/.test(base)) return true;
+  if (/_test\.go$|_tests?\.rs$/.test(base)) return true;
   if (/tests?\.cs$|specs?\.cs$/.test(base)) return true;
   if (/(?:^|\/)[^/]+\.tests\//.test(lower) && lower.endsWith(".cs")) return true;
   if (/^(?:tests?|__tests__|specs?|e2e)\//.test(lower) || /\/(?:tests?|__tests__|specs?|e2e)\//.test(lower)) {
@@ -154,6 +154,31 @@ function readSafe(abs: string): string | undefined {
 const ARCHIVED_DOCS_PATH = /^docs\/.*\/(?:data|archive|snapshots|artifacts)\//i;
 const MINIFIED_FILE_PATH = /\.(?:min|bundle)\.[cm]?js$/i;
 
+function loadIgnoreMatchers(root: string): RegExp[] {
+  const ignorePath = path.join(root, ".vstackignore");
+  if (!fs.existsSync(ignorePath)) return [];
+  let raw = "";
+  try {
+    raw = fs.readFileSync(ignorePath, "utf8");
+  } catch {
+    return [];
+  }
+  const matchers: RegExp[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const isDir = trimmed.endsWith("/");
+    const body = (isDir ? trimmed.slice(0, -1) : trimmed).replace(/^\/+/, "");
+    const escaped = body
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*\*/g, "__DBLSTAR__")
+      .replace(/\*/g, "[^/]*")
+      .replace(/__DBLSTAR__/g, ".*");
+    matchers.push(new RegExp(`^${escaped}${isDir ? "(?:/.*)?$" : "$"}`));
+  }
+  return matchers;
+}
+
 function isMinifiedJs(rel: string, content: string, lines: number): boolean {
   if (MINIFIED_FILE_PATH.test(rel)) return true;
   if (!/\.[cm]?js$/i.test(rel)) return false;
@@ -166,6 +191,8 @@ function isMinifiedJs(rel: string, content: string, lines: number): boolean {
 
 export function discoverRepo(repoPath: string): DiscoveredRepo {
   const root = path.resolve(repoPath);
+  const ignoreMatchers = loadIgnoreMatchers(root);
+  const isIgnored = (rel: string): boolean => ignoreMatchers.some((re) => re.test(rel));
   const files: ScannedFile[] = [];
   const allRelPaths: string[] = [];
   const stack: string[] = [root];
@@ -183,13 +210,15 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
+        const dirRel = path.relative(root, path.join(dir, entry.name)).split(path.sep).join("/");
+        if (isIgnored(dirRel)) continue;
         stack.push(path.join(dir, entry.name));
         continue;
       }
       if (!entry.isFile()) continue;
       const abs = path.join(dir, entry.name);
       const rel = path.relative(root, abs).split(path.sep).join("/");
-      if (ARCHIVED_DOCS_PATH.test(rel)) continue;
+      if (ARCHIVED_DOCS_PATH.test(rel) || isIgnored(rel)) continue;
       allRelPaths.push(rel);
       if (!shouldReadText(rel)) continue;
       const content = readSafe(abs);

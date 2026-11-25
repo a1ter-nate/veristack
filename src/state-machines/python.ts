@@ -64,7 +64,9 @@ export function lintPythonStateMachines(file: ScannedFile): Finding[] {
         boolFlags.push(fieldName);
       }
       if (STATE_DISCRIMINANT.test(fieldName) && !/\bOptional\[|\|\s*None\b/.test(typeExpr)) {
-        discriminant = fieldName;
+        if (!(fieldName === "mode" && CONFIG_TYPE_SUFFIX.test(cls.name))) {
+          discriminant = fieldName;
+        }
       } else if (/\bOptional\[|\|\s*None\b/.test(typeExpr)) {
         optionalSiblings.push(fieldName);
       }
