@@ -149,7 +149,8 @@ test("Rust structure and test-analyzer catch prod slop and test landmines", () =
     assert.ok(ids.some((id) => id.startsWith("AS:rs-unwrap:")));
     assert.ok(ids.some((id) => id.startsWith("AS:rs-unsafe:")));
     assert.ok(rules.has("no-swallowing-catch"));
-    assert.ok(rules.has("no-chained-or-any-cast"));
+    assert.ok(rules.has("rust-unjustified-unsafe"));
+    assert.ok(rules.has("rust-prod-unwrap-or-expect"));
     assert.ok(rules.has("no-unexercised-test"));
     assert.ok(rules.has("no-fixed-sleep"));
     assert.ok(rules.has("test-discipline"));

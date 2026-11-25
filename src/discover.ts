@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Language, RepoArchetype, ToolSignals } from "./types.ts";
+import { loadRepoConfig } from "./zero-defect/repo-config.ts";
 
 export interface ScannedFile {
   rel: string;
@@ -29,6 +30,14 @@ const SKIP_DIRS = new Set([
   "coverage",
   ".next",
   ".nuxt",
+  ".output",
+  ".svelte-kit",
+  ".vercel",
+  ".netlify",
+  ".expo",
+  ".vite",
+  ".parcel-cache",
+  ".angular",
   ".turbo",
   ".cache",
   ".venv",
@@ -71,7 +80,7 @@ export function isTestFilePath(rel: string): boolean {
   const base = path.posix.basename(lower);
   if (/\.(?:test|spec|e2e|cy|int|integration|contract)\.[cm]?[jt]sx?$/.test(base)) return true;
   if (/(?:^|[-_])tests?\.py$|^test[-_].*\.py$/.test(base)) return true;
-  if (/_test\.go$|_tests?\.rs$/.test(base)) return true;
+  if (/_test\.go$|(?:^|[-_])tests?\.rs$|^test[-_].*\.rs$/.test(base)) return true;
   if (/tests?\.cs$|specs?\.cs$/.test(base)) return true;
   if (/(?:^|\/)[^/]+\.tests\//.test(lower) && lower.endsWith(".cs")) return true;
   if (/^(?:tests?|__tests__|specs?|e2e)\//.test(lower) || /\/(?:tests?|__tests__|specs?|e2e)\//.test(lower)) {
@@ -164,27 +173,39 @@ function readSafe(abs: string): string | undefined {
 const ARCHIVED_DOCS_PATH = /^docs\/.*\/(?:data|archive|snapshots|artifacts)\//i;
 const MINIFIED_FILE_PATH = /\.(?:min|bundle)\.[cm]?js$/i;
 
+function compileGlobMatcher(pattern: string): RegExp {
+  const isDir = pattern.endsWith("/");
+  const body = (isDir ? pattern.slice(0, -1) : pattern).replace(/^\/+/, "");
+  const escaped = body
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "__DBLSTAR__")
+    .replace(/\*/g, "[^/]*")
+    .replace(/__DBLSTAR__/g, ".*");
+  return new RegExp(`^${escaped}${isDir ? "(?:/.*)?$" : "$"}`);
+}
+
 function loadIgnoreMatchers(root: string): RegExp[] {
-  const ignorePath = path.join(root, ".vstackignore");
-  if (!fs.existsSync(ignorePath)) return [];
-  let raw = "";
-  try {
-    raw = fs.readFileSync(ignorePath, "utf8");
-  } catch {
-    return [];
-  }
   const matchers: RegExp[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const isDir = trimmed.endsWith("/");
-    const body = (isDir ? trimmed.slice(0, -1) : trimmed).replace(/^\/+/, "");
-    const escaped = body
-      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-      .replace(/\*\*/g, "__DBLSTAR__")
-      .replace(/\*/g, "[^/]*")
-      .replace(/__DBLSTAR__/g, ".*");
-    matchers.push(new RegExp(`^${escaped}${isDir ? "(?:/.*)?$" : "$"}`));
+  const ignorePath = path.join(root, ".vstackignore");
+  if (fs.existsSync(ignorePath)) {
+    try {
+      const raw = fs.readFileSync(ignorePath, "utf8");
+      for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        matchers.push(compileGlobMatcher(trimmed));
+      }
+    } catch {
+      return matchers;
+    }
+  }
+  try {
+    const cfg = loadRepoConfig(root);
+    for (const pat of cfg.ignore) {
+      matchers.push(compileGlobMatcher(pat));
+    }
+  } catch {
+    return matchers;
   }
   return matchers;
 }

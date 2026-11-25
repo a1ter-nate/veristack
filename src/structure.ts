@@ -27,6 +27,7 @@ const CSHARP_PRAGMA_DISABLE = /^\s*#pragma\s+warning\s+disable\b([^\n]*)/gm;
 const CSHARP_SUPPRESS_ATTR = /\[SuppressMessage\s*\(([^)\]]+)\)\]/g;
 const CSPROJ_WARN_FALSE = /<TreatWarningsAsErrors>\s*false\s*<\/TreatWarningsAsErrors>/gi;
 const CSPROJ_NOWARN = /<NoWarn>\s*([^<\s][^<]*)<\/NoWarn>/gi;
+const RUST_NON_PROD_HARNESS = /(?:^|\/)(?:tests\/(?:support|helpers|fixtures|mocks|stubs)|fuzz|benches)\//i;
 const RUST_TEST_ONLY_EXPORT = /\bpub(?:\([^)]*\))?\s+fn\s+[a-zA-Z0-9_]*(?:_for_testing|_test_only)\b/g;
 const RUST_UNSAFE_OR_TRANSMUTE = /\bstd::mem::transmute\b|\bmem::transmute\b|\bunsafe\s*\{/g;
 const RUST_SWALLOWING_ERR = /\bif\s+let\s+Err\s*\(\s*_\s*\)\s*=\s*[^\n{]+\{\s*\}|\bErr\s*\(\s*_\s*\)\s*=>\s*\{\s*\}/g;
@@ -258,7 +259,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
         if (!/SAFETY:/i.test(cur) && !/SAFETY:/i.test(prev)) {
           findings.push({
             id: `AS:rs-unsafe:${file.rel}:${line}`,
-            rule: "no-chained-or-any-cast",
+            rule: "rust-unjustified-unsafe",
             category: "structure",
             rung: "R0",
             severity: "error",
@@ -285,22 +286,24 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
         });
       }
 
-      let unwrapCount = 0;
-      for (const match of maskedProd.matchAll(RUST_PROD_UNWRAP)) {
-        unwrapCount += 1;
-        if (unwrapCount <= 5) {
-          const line = lineOf(prodContent, match.index ?? 0);
-          findings.push({
-            id: `AS:rs-unwrap:${file.rel}:${line}`,
-            rule: "no-chained-or-any-cast",
-            category: "structure",
-            rung: "R0",
-            severity: "error",
-            file: file.rel,
-            line,
-            message: `Production Rust ${match[0].trim()}) can panic at runtime instead of returning Result/Option.`,
-            fix: "Return a typed Result/Option with ? or enforce clippy::unwrap_used = \"deny\" and clippy::expect_used = \"deny\".",
-          });
+      if (!RUST_NON_PROD_HARNESS.test(file.rel)) {
+        let unwrapCount = 0;
+        for (const match of maskedProd.matchAll(RUST_PROD_UNWRAP)) {
+          unwrapCount += 1;
+          if (unwrapCount <= 5) {
+            const line = lineOf(prodContent, match.index ?? 0);
+            findings.push({
+              id: `AS:rs-unwrap:${file.rel}:${line}`,
+              rule: "rust-prod-unwrap-or-expect",
+              category: "structure",
+              rung: "R0",
+              severity: "error",
+              file: file.rel,
+              line,
+              message: `Production Rust ${match[0].trim()}) can panic at runtime instead of returning Result/Option.`,
+              fix: "Return a typed Result/Option with ? or enforce clippy::unwrap_used = \"deny\" and clippy::expect_used = \"deny\".",
+            });
+          }
         }
       }
 

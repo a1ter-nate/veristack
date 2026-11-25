@@ -4,6 +4,12 @@ import { lintNoComments } from "./no-comments.ts";
 import { analyzeStructure } from "./structure.ts";
 import { analyzeTests } from "./test-analyzer.ts";
 import type { Finding, RepoArchetype, RungStatus, ScanReport, TestFileRecord } from "./types.ts";
+import { applyRepoConfig, isRuleDisabled, loadRepoConfig } from "./zero-defect/repo-config.ts";
+
+export interface ScanOptions {
+  configPath?: string;
+  disableRules?: readonly string[];
+}
 
 interface E2eCap {
   max: number;
@@ -166,20 +172,26 @@ function recommendMissingLinters(repo: DiscoveredRepo): ScanReport["missingLinte
   return missing;
 }
 
-export function scanRepo(repoPath: string): ScanReport {
+export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanReport {
   const repo = discoverRepo(repoPath);
-  const findings: Finding[] = [];
+  const config = loadRepoConfig(repo.root, options.configPath);
+  const rawFindings: Finding[] = [];
 
-  for (const file of repo.files) {
-    if (file.language) {
-      findings.push(...lintNoComments(file.rel, file.content, file.language));
+  if (!isRuleDisabled("no-comments", config, options.disableRules)) {
+    for (const file of repo.files) {
+      if (file.language) {
+        rawFindings.push(...lintNoComments(file.rel, file.content, file.language));
+      }
     }
   }
 
-  findings.push(...analyzeStructure(repo));
+  rawFindings.push(...analyzeStructure(repo));
   const testResult = analyzeTests(repo);
-  findings.push(...testResult.findings);
-  findings.push(...auditCiWorkflows(repo));
+  rawFindings.push(...testResult.findings);
+  rawFindings.push(...auditCiWorkflows(repo));
+
+  const applied = applyRepoConfig(rawFindings, config, options.disableRules);
+  const findings = applied.findings;
 
   const rungs = buildRungStatuses(repo, testResult.inventory);
   const missingLinters = recommendMissingLinters(repo);
@@ -190,12 +202,22 @@ export function scanRepo(repoPath: string): ScanReport {
   const testLines = testFiles.reduce((sum, f) => sum + f.lines, 0);
   const e2eFiles = testResult.inventory.filter((t) => t.rung === "R7");
   const e2eTestCases = e2eFiles.reduce((sum, t) => sum + Math.max(1, t.testCaseCount), 0);
+  const hasActiveConfig = Boolean(config.configPath) || applied.disabledRules.length > 0;
 
   return {
     schemaVersion: 1,
     repo: repo.root,
     archetype: repo.archetype,
     languages: repo.languages,
+    ...(hasActiveConfig
+      ? {
+          config: {
+            path: config.configPath,
+            disabledRules: applied.disabledRules,
+            suppressedCount: applied.suppressedCount,
+          },
+        }
+      : {}),
     summary: {
       sourceFiles: sourceFiles.length,
       testFiles: testFiles.length,

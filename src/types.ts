@@ -122,11 +122,18 @@ export interface ScanSummary {
   holeCount: number;
 }
 
+export interface ScanConfigMeta {
+  path?: string;
+  disabledRules: string[];
+  suppressedCount: number;
+}
+
 export interface ScanReport {
   schemaVersion: 1;
   repo: string;
   archetype: RepoArchetype;
   languages: Language[];
+  config?: ScanConfigMeta;
   summary: ScanSummary;
   rungs: RungStatus[];
   pushDownOpportunities: PushDownOpportunity[];

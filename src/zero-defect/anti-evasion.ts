@@ -8,7 +8,7 @@ export interface DiffLineEvent {
   code: string;
 }
 
-const STRICT_CONFIG_PATH = /(?:^|\/)(?:tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|\.vstackignore|\.eslintignore)$/i;
+const STRICT_CONFIG_PATH = /(?:^|\/)(?:tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|\.vstackignore|\.eslintignore|(?:\.verification\/)?\.?vstack\.json)$/i;
 const TEST_FILE_PATH = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.go$|_tests?\.rs$|(?:^|\/)test_[^/]+\.py$|tests?\.cs$)/i;
 const ASSERT_CALL = /\b(?:assert|expect|Assert\.|assert_eq!|assert_ne!|assert!|require\.|should\.)/;
 const GATE_TOOL_LINE = /\b(?:vstack|fail-on-cheats|fail-on-errors|clippy|mypy|pyright|tsgo|oxlint|ruff|TreatWarningsAsErrors|red-before-fix)\b/;
@@ -88,7 +88,7 @@ export function auditDiffAntiEvasion(events: readonly DiffLineEvent[]): Finding[
             "Fix findings directly instead of excluding paths from verification.",
           );
         }
-        if (/(?:oxlint|biome|ruff|mypy|clippy|golangci)/i.test(lower) && /(?:"off"|\bdisallow_untyped_defs\s*=\s*false|\bstrict\s*=\s*false|\bignore\s*=\s*\[)/i.test(ev.raw)) {
+        if (/(?:oxlint|biome|ruff|mypy|clippy|golangci|vstack\.json)/i.test(lower) && /(?:"off"|\bdisallow_untyped_defs\s*=\s*false|\bstrict\s*=\s*false|\bignore\s*=\s*\[|"disabledRules"\s*:)/i.test(ev.raw)) {
           pushDiff(
             findings, ev.file, ev.line, "diff-config-strictness-downgrade",
             "Relaxed linter/typechecker strictness rule in config diff.",

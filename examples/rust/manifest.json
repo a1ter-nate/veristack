@@ -28,13 +28,13 @@
       "rust-select-non-cancel-safe"
     ],
     "titans_b_rust.rs": [
-      "no-chained-or-any-cast",
+      "rust-prod-unwrap-or-expect",
       "rust-unchecked-utf8-or-osstr",
       "rust-drop-async-spawn-or-unwrap",
       "rust-reentrant-callback-under-borrow"
     ],
     "titans_a_rust.rs": [
-      "no-chained-or-any-cast",
+      "rust-prod-unwrap-or-expect",
       "float-nan-unsafe-cmp",
       "rust-let-underscore-lock-guard",
       "rust-env-args-or-var-utf8-panic",

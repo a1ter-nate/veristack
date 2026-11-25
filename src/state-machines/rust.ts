@@ -6,6 +6,9 @@ const LIFECYCLE_BOOL_NAME =
 
 const STATE_DISCRIMINANT = /^(?:status|state|phase|stage|mode)$/;
 const CONFIG_TYPE_SUFFIX = /(?:Options|Config|Configuration|Settings|Flags|Args|Params|Props|Input|Query|Filter)$/;
+const WIRE_OR_ROW_TYPE_NAME =
+  /(?:Row|Dto|Request|Response|Report|Summary|Diagnostic|Record|Entry|Patch|Form|Save|Params|Args|Config|Configuration|Options|Settings|Flags|Input|Query|Filter|Payload)$|^(?:Row|Stored|New|Create|Update|Start|Prepared)[A-Z]/;
+const WIRE_ATTR_MARKER = /\b(?:Deserialize|Serialize|FromRow|Parser|Args)\b|#\[(?:serde|sqlx|clap)\(/;
 const CANONICAL_TRANSITION = /^(?:transition|reduce|apply_event|next_state|step|step_state|handle_event|new|default)$/i;
 const RUST_MATCH_TARGET = /^(?:(?:self\.)?[a-zA-Z_][a-zA-Z0-9_.]*\.)?(?:status|state|phase|stage|kind)$/;
 
@@ -22,7 +25,7 @@ function toCamel(snake: string): string {
 }
 
 function maskRust(source: string): string {
-  const out = [...source];
+  const out = source.split("");
   let inString = false;
   let escaped = false;
   let lineComment = false;
@@ -101,7 +104,7 @@ function findMatchingBrace(masked: string, openIdx: number): number {
 }
 
 function stripTestModules(masked: string): string {
-  const out = [...masked];
+  const out = masked.split("");
   const cfgTest = /#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/g;
   for (const match of masked.matchAll(cfgTest)) {
     const openIdx = (match.index ?? 0) + match[0].length - 1;
@@ -114,14 +117,38 @@ function stripTestModules(masked: string): string {
   return out.join("");
 }
 
+function findHeaderOpenBrace(masked: string, fromIdx: number, stopOnParenAtZero: boolean): number {
+  let parenDepth = 0;
+  let angleDepth = 0;
+  const limit = Math.min(masked.length, fromIdx + 2000);
+  for (let i = fromIdx; i < limit; i++) {
+    const ch = masked[i];
+    if (ch === "(") {
+      if (stopOnParenAtZero && angleDepth === 0 && parenDepth === 0) return -1;
+      parenDepth += 1;
+    } else if (ch === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+    } else if (ch === "<") {
+      angleDepth += 1;
+    } else if (ch === ">" && masked[i - 1] !== "-") {
+      angleDepth = Math.max(0, angleDepth - 1);
+    } else if (parenDepth === 0 && angleDepth === 0) {
+      if (ch === ";") return -1;
+      if (ch === "{") return i;
+    }
+  }
+  return -1;
+}
+
 function checkRustStructs(file: ScannedFile, prodMasked: string): Finding[] {
   const findings: Finding[] = [];
-  const structRegex = /\b(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)(?:<[^>{;]*>)?(?:\s*where[^{;]+)?\s*\{/g;
+  const structRegex = /\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
 
   for (const match of prodMasked.matchAll(structRegex)) {
     const name = match[1] ?? "";
     const start = match.index ?? 0;
-    const openIdx = start + match[0].length - 1;
+    const openIdx = findHeaderOpenBrace(prodMasked, start + match[0].length, true);
+    if (openIdx < 0) continue;
     const closeIdx = findMatchingBrace(prodMasked, openIdx);
     if (closeIdx < 0) continue;
 
@@ -168,7 +195,16 @@ function checkRustStructs(file: ScannedFile, prodMasked: string): Finding[] {
       });
     }
 
-    if (discriminantName && optionSiblings.size >= 2) {
+    const rawBody = file.content.slice(openIdx + 1, closeIdx);
+    const attrWindow = file.content.slice(Math.max(0, start - 360), start);
+    const lastDelimiter = Math.max(attrWindow.lastIndexOf("}"), attrWindow.lastIndexOf(";"));
+    const headerAttrs = lastDelimiter >= 0 ? attrWindow.slice(lastDelimiter + 1) : attrWindow;
+    const isWireOrRowStruct =
+      WIRE_OR_ROW_TYPE_NAME.test(name) ||
+      WIRE_ATTR_MARKER.test(headerAttrs) ||
+      /#\[(?:serde|sqlx|clap)\(/.test(rawBody);
+
+    if (discriminantName && optionSiblings.size >= 2 && !isWireOrRowStruct) {
       const optList = [...optionSiblings].slice(0, 5).join(", ");
       findings.push({
         id: `SM:rs-optional-bag:${file.rel}:${line}`,
@@ -188,12 +224,13 @@ function checkRustStructs(file: ScannedFile, prodMasked: string): Finding[] {
 }
 
 function checkRustScatteredMutations(file: ScannedFile, prodMasked: string): Finding[] {
-  const fnRegex = /\b(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:const\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)(?:<[^>{]*>)?\s*\([^)]*\)(?:\s*->[^{]+)?(?:\s*where[^{]+)?\s*\{/g;
+  const fnRegex = /\bfn\s+([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
   const spans: Array<{ name: string; start: number; end: number }> = [];
 
   for (const match of prodMasked.matchAll(fnRegex)) {
     const name = match[1] ?? "";
-    const openIdx = (match.index ?? 0) + match[0].length - 1;
+    const openIdx = findHeaderOpenBrace(prodMasked, (match.index ?? 0) + match[0].length, false);
+    if (openIdx < 0) continue;
     const closeIdx = findMatchingBrace(prodMasked, openIdx);
     if (closeIdx < 0) continue;
     spans.push({ name, start: openIdx, end: closeIdx });

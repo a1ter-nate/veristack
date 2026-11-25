@@ -34,7 +34,7 @@ function usage(): string {
     "vstack — Deterministic Verification Stack, Push-Down Analyzer, Formal Checks & JEV-Style System 1 Circuits",
     "",
     "Commands:",
-    "  vstack scan [dir] [--json | --md] [--ratchet <file>] [--update-ratchet] [--fail-on-cheats] [--fail-on-errors]",
+    "  vstack scan [dir] [--json | --md] [--config <file>] [--disable <rules>] [--ratchet <file>] [--update-ratchet] [--fail-on-cheats] [--fail-on-errors]",
     "  vstack no-comments [dir] [--json] [--fail]",
     "  vstack state-machines [dir] [--json] [--fail]",
     "  vstack diff-cheats [dir] [--base <ref>] [--json] [--fail]",
@@ -72,6 +72,8 @@ function firstPositional(args: readonly string[]): string {
     "--max-time-exp",
     "--max-space-exp",
     "--ratchet",
+    "--config",
+    "--disable",
     "--corpus",
     "--replay",
   ]);
@@ -119,7 +121,12 @@ async function run(): Promise<number> {
   const asMd = rest.includes("--md");
 
   if (cmd === "scan") {
-    const report = scanRepo(target);
+    const configPath = parseFlagValue(rest, "--config");
+    const disableRaw = parseFlagValue(rest, "--disable");
+    const disableRules = disableRaw
+      ? disableRaw.split(",").map((r) => r.trim()).filter(Boolean)
+      : undefined;
+    const report = scanRepo(target, { configPath, disableRules });
     const ratchetPath = parseFlagValue(rest, "--ratchet");
     const updateRatchet = rest.includes("--update-ratchet");
     let ratchetEval: ReturnType<typeof evaluateRatchet> | undefined;

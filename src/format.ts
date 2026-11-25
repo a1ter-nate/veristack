@@ -11,6 +11,11 @@ export function formatTerminalReport(report: ScanReport): string {
   out.push(
     `Summary: ${s.holeCount} rung hole/over-budget | ${s.pushDownCount} push-down opportunities | ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} no-comments) | ${s.warnCount} warnings`,
   );
+  if (report.config && (report.config.disabledRules.length > 0 || report.config.suppressedCount > 0)) {
+    const src = report.config.path ?? "CLI";
+    const disabled = report.config.disabledRules.length > 0 ? report.config.disabledRules.join(", ") : "none";
+    out.push(`Config (${src}): disabled=[${disabled}] | suppressed=${report.config.suppressedCount}`);
+  }
   out.push("");
   out.push("9-RUNG VERIFICATION LADDER (R0 -> R8)");
   for (const r of report.rungs) {
