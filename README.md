@@ -52,6 +52,7 @@ bunx veristack scan .
 npm install -D veristack        # or: pnpm add -D veristack / bun add -d veristack
 npx vstack scan . --json        # Machine-readable report for coding agents
 npx vstack diff-cheats . --base origin/main --fail
+npx vstack review-brief . --base origin/main --md  # Stakes-ranked human review brief & slop-asymmetry budget
 ```
 
 Run `npx veristack --help` (or `vstack --help`) for the complete command and flag list. From a local clone, run `bun run check` to self-verify Veristack.
@@ -107,6 +108,7 @@ Static pattern rules alone catch known footguns, not broken domain invariants. V
 ## Key Capabilities & Gates
 
 - **Anti-cheat & supply-chain locks:** catches `continue-on-error: true`, `|| true`, `--no-verify`, test skips/retries, unpinned third-party GitHub Actions, missing `permissions:`/`timeout-minutes`/`concurrency`, blanket suppressions, and stealth edits to `.vstack.json` / `.verification/invariants.json`.
+- **Anti-slop review & knowledge-base hygiene:** `vstack review-brief` measures PR slop-asymmetry (diff size, shotgun-surgery spread, additive-only bias, doc dumps, workaround wrappers), ranks the highest-stakes files for human review, and lists verifier blind spots; `vstack scan` audits `AGENTS.md`/`CLAUDE.md`/`.cursorrules` for bloat (`agent-doc-bloat`) and dead file references (`agent-doc-stale-path`).
 - **Brownfield ratchets & choke points:** auto-shrinking `--ratchet` baselines for legacy adoption, `.verification/chokepoints.json` for project-specific banned primitives, and `vstack formal-sync` commit-drift checks.
 - **Zero-defect engineering utilities:** `red-before-fix`, `mcdc` independence vectors, `spc` drift control charts, empirical `big-o` scaling fits, and 4 deterministic-first 90/10 BYO System 1 circuits (`vstack circuit list`).
 
@@ -144,7 +146,7 @@ bun run test:csharp  # Roslyn VStack.Analyzers + .NET 10 reference solution
 Veristack is an original, from-scratch MIT implementation synthesizing ideas from open-source tooling and reliability literature:
 
 - **Open-source inspiration:** [`deterministic-machines/deslop-please`](https://github.com/deterministic-machines/deslop-please), [`dmmulroy/anti-slop`](https://github.com/dmmulroy/anti-slop), [`@interfere/landmines`](https://github.com/interfere-inc/landmines), [`mattpocock/skills`](https://github.com/mattpocock/skills), [`cursor/plugins` (`pstack`)](https://github.com/cursor/plugins/tree/main/pstack), [`bendlang/bend`](https://github.com/bendlang/bend), [`antithesishq/bombadil`](https://github.com/antithesishq/bombadil), and [`tigerbeetle/tigerbeetle`](https://github.com/tigerbeetle/tigerbeetle) (`TIGER_STYLE.md`).
-- **Research & literature:** Dawson Engler et al. (*Bugs as Deviant Behavior*, SOSP 2001), Michael Ernst et al. (*Daikon Dynamic Invariant Detection*), Matteo Vaccari (*Tests as Data*), John Ousterhout (*A Philosophy of Software Design*), Meta Engineering (*Just-in-Time Catching Test Generation*, `arXiv:2601.22832`), TypeSafe AI (JEV), Shopify Packwerk, Shigeo Shingo (*Poka-Yoke*), Toyota (*Jidoka* / *A3*), Shewhart (*SPC*), NASA JPL (*Power of 10*), DO-178C (*MC/DC*), SQLite (*TH3*), and seL4.
+- **Research & literature:** [The No AI Slop Manifesto](https://gist.github.com/dexhorthy/4cc96f01be5b1208519e75dad250a948) (AIE Code Summit 2026 — Dex Horthy, Lauren Tan, et al.), Dawson Engler et al. (*Bugs as Deviant Behavior*, SOSP 2001), Michael Ernst et al. (*Daikon Dynamic Invariant Detection*), Matteo Vaccari (*Tests as Data*), John Ousterhout (*A Philosophy of Software Design*), Meta Engineering (*Just-in-Time Catching Test Generation*, `arXiv:2601.22832`), TypeSafe AI (JEV), Shopify Packwerk, Shigeo Shingo (*Poka-Yoke*), Toyota (*Jidoka* / *A3*), Shewhart (*SPC*), NASA JPL (*Power of 10*), DO-178C (*MC/DC*), SQLite (*TH3*), and seL4.
 
 See [skill/references/04-source-patterns-digest.md](skill/references/04-source-patterns-digest.md) for the full traceability map.
 

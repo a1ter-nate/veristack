@@ -8,6 +8,8 @@ description: "Zero-defect verification across 9 rungs (R0 static locks to R8 pro
 Select, author, and push down verification checks across 9 rungs (`R0` to `R8`) in any programming language.
 
 > **Prime Directive:** Place every check on the lowest rung that preserves its exact failure mechanism. Static types, deep modules, and fast deterministic checks cut CI time, flake rate, and agent token burn simultaneously.
+>
+> **Anti-Slop Discipline:** Optimize for *outcomes over output*, *understanding over speed*, *subtraction over addition*, and *improving the system over patching the output*. Linters and agent reviews are necessary, never sufficient — preserve finite human attention for the highest-stakes plan, design, or diff slice.
 
 ## Shared Vocabulary
 
@@ -40,15 +42,15 @@ Use these terms consistently across plans, PR evidence, and reviews:
 
 ### Phase 0: Measure Ground Truth
 
-Run `vstack scan . --json` before proposing or editing tests (on brownfield repos, pair with `--ratchet .verification/ratchet.json`; see `vstack --help` for `no-comments`, `state-machines`, `diff-cheats`, `formal-sync`, `laws`, `bench`, `red-before-fix`, `mcdc`, `spc`, `big-o`, and `circuit`).
+Run `vstack scan . --json` before proposing or editing tests (on brownfield repos, pair with `--ratchet .verification/ratchet.json`; see `vstack --help` for `no-comments`, `state-machines`, `diff-cheats`, `review-brief`, `formal-sync`, `laws`, `bench`, `red-before-fix`, `mcdc`, `spc`, `big-o`, and `circuit`).
 
-- **Done when:** you have the scanner's rung coverage, cheat/error counts, and ranked push-down candidates in hand. Clear all existing `cheat`, `no-comments`, `no-implicit-state-machine`, and `formal-spec-stale` errors before adding new checks.
+- **Done when:** you have read the relevant code and prior art yourself, and have the scanner's rung coverage, cheat/error counts, stale agent-doc checks, and ranked push-down candidates in hand. Clear all existing `cheat`, `no-comments`, `no-implicit-state-machine`, and `formal-spec-stale` errors before adding new checks.
 
 ### Phase 1: Agree Seams & Minimum Valid Rung
 
 For every requirement, bugfix, or test above `R2`:
 
-1. Name the failure mechanism in one sentence (*what wrong outcome, and what minimum boundary is required for it to exist?*).
+1. Name the failure mechanism in one sentence (*what wrong outcome, and what minimum boundary is required for it to exist?*) and ask what existing code, wrapper, or test can be **deleted or simplified** before adding anything new.
 2. Walk the 4 gates and stop at the first **YES**:
    - **Q1 (`R0`/`R1`):** Can a deep module, closed sum-type state machine, strict compiler option, or custom lint rule (`Rule / Why / Fix`) prevent the defect statically? Build the type/lint + red-green proof and delete the runtime test.
    - **Q2 (`R2`):** Pure calculation, validation, parsing, or transition matrix? Extract a pure seam and write one declarative Tests-as-Data table or PBT (skip trivial wrappers with no branching).
@@ -76,9 +78,9 @@ For every requirement, bugfix, or test above `R2`:
 
 1. For bugfixes, prove `vstack red-before-fix . --base <ref> --test-cmd "<cmd>"` fails on the unfixed base and passes on the fix. Record repeat defect classes (`>= 2×`) in `.verification/escapes.json` and promote them to `R0`/`R1`.
 2. For new checks or push-downs, inject one controlled fault (or run diff mutation) to confirm the check goes **red**, restore, and confirm **green**.
-3. Run the repo's full static + test gate (`vstack scan . --fail-on-cheats`, plus `vstack formal-sync . --fail` when formal models cover touched code and `--ratchet` on brownfield repos), delete redundant shallow tests replaced by stronger lower-rung checks, and emit a compact evidence line per moved/added check: `[ID | Old → New Rung | Failure Mechanism | Controlled-Fault Result | Residual Gap]`.
+3. Run the repo's full static + test gate (`vstack scan . --fail-on-cheats`, plus `vstack formal-sync . --fail` when formal models cover touched code and `--ratchet` on brownfield repos), delete redundant shallow tests replaced by stronger lower-rung checks, run `vstack review-brief . --base <ref> --md` to surface the highest-stakes slice and verifier blind spots for human review (disclosing AI-authored artifacts), and emit a compact evidence line per moved/added check: `[ID | Old → New Rung | Failure Mechanism | Controlled-Fault Result | Residual Gap]`.
 
-- **Done when:** `0` errors, `0` cheats, `0` prose comments, `0` implicit state machines, controlled-fault red→green is confirmed, and redundant higher-rung tests are pruned.
+- **Done when:** `0` errors, `0` cheats, `0` prose comments, `0` implicit state machines, controlled-fault red→green is confirmed, redundant higher-rung tests are pruned, and the human reviewer receives a bounded, stakes-ranked brief rather than an uncurated diff dump.
 
 ## Disclosed References (Load Only the Active Branch)
 

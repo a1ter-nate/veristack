@@ -28,6 +28,11 @@ import {
 import { auditFormalSync, formatFormalSyncReport } from "./zero-defect/formal-sync.ts";
 import { evaluateSpcSeries, generateMcdcVectors, runRedBeforeFix } from "./zero-defect/index.ts";
 import { auditLaws, formatLawsReport } from "./zero-defect/laws.ts";
+import {
+  buildReviewBrief,
+  formatReviewBriefMarkdown,
+  formatReviewBriefTerminal,
+} from "./anti-slop/review-brief.ts";
 
 const VALID_PROVIDERS = new Set<System1ProviderId>(["laya", "jev", "local", "command", "fixture"]);
 const VALID_CIRCUITS = new Set<CircuitId>([
@@ -46,6 +51,7 @@ function usage(): string {
     "  vstack no-comments [dir] [--json] [--fail]",
     "  vstack state-machines [dir] [--json] [--fail]",
     "  vstack diff-cheats [dir] [--base <ref>] [--json] [--fail]",
+    "  vstack review-brief [dir] [--base <ref>] [--max-lines <n>] [--max-dirs <n>] [--max-doc-lines <n>] [--json | --md] [--fail]",
     "  vstack formal-sync [dir] [--json] [--fail]",
     "  vstack laws [dir] [--verify] [--json] [--fail]",
     "  vstack bench [dir] [--corpus <dir>] [--replay <dir>] [--json] [--fail]",
@@ -70,6 +76,9 @@ function firstPositional(args: readonly string[]): string {
   const valueFlags = new Set([
     "--base",
     "--max",
+    "--max-lines",
+    "--max-dirs",
+    "--max-doc-lines",
     "--corroborate",
     "--provider",
     "--endpoint",
@@ -224,6 +233,23 @@ async function run(): Promise<number> {
     const findings = scanGitDiffCheats(target, baseRef);
     console.log(formatFindingsList(`diff-cheats (${baseRef})`, findings, asJson));
     return rest.includes("--fail") && findings.length > 0 ? 1 : 0;
+  }
+
+  if (cmd === "review-brief") {
+    const baseRef = parseFlagValue(rest, "--base") ?? "HEAD";
+    const maxLinesRaw = parseFlagValue(rest, "--max-lines");
+    const maxDirsRaw = parseFlagValue(rest, "--max-dirs");
+    const maxDocRaw = parseFlagValue(rest, "--max-doc-lines");
+    const report = buildReviewBrief(target, {
+      baseRef,
+      maxLines: maxLinesRaw ? Number(maxLinesRaw) : undefined,
+      maxDirs: maxDirsRaw ? Number(maxDirsRaw) : undefined,
+      maxDocLines: maxDocRaw ? Number(maxDocRaw) : undefined,
+    });
+    if (asJson) console.log(JSON.stringify(report, null, 2));
+    else if (asMd) console.log(formatReviewBriefMarkdown(report));
+    else console.log(formatReviewBriefTerminal(report));
+    return rest.includes("--fail") && !report.passed ? 1 : 0;
   }
 
   if (cmd === "classify") {

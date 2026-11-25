@@ -4,6 +4,7 @@ import { lintNoComments } from "./no-comments.ts";
 import { analyzeStructure } from "./structure.ts";
 import { analyzeTests } from "./test-analyzer.ts";
 import type { Finding, RepoArchetype, RungStatus, ScanReport, TestFileRecord } from "./types.ts";
+import { auditAgentDocs } from "./anti-slop/agent-docs.ts";
 import { applyRepoConfig, isRuleDisabled, loadRepoConfig } from "./zero-defect/repo-config.ts";
 
 export interface ScanOptions {
@@ -186,6 +187,7 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
   }
 
   rawFindings.push(...analyzeStructure(repo));
+  rawFindings.push(...auditAgentDocs(repo));
   const testResult = analyzeTests(repo);
   rawFindings.push(...testResult.findings);
   rawFindings.push(...auditCiWorkflows(repo));

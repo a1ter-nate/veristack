@@ -125,6 +125,8 @@ function shouldReadText(rel: string): boolean {
     base === "agents.md" ||
     base === "claude.md" ||
     base === "gemini.md" ||
+    base === ".cursorrules" ||
+    base === "copilot-instructions.md" ||
     base === "skill.md" ||
     base === "review.md" ||
     base === "gates.md" ||
