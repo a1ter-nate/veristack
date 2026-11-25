@@ -49,14 +49,17 @@ Stops agents from writing green-looking tests that lie, flake, or slow down CI:
 | `no-coverage-farm-file` & `no-unexercised-test` | `vstack` | Tests named `coverage-*`/`closeout`/`easy-wins`/`leftovers` or tests importing zero SUT symbols | Exercise observable production behavior with an independent oracle or delete the test. |
 | `no-fetch-stub` | `vstack` | `vi.stubGlobal("fetch", ...)`, `vi.spyOn(globalThis, "fetch")`, `globalThis.fetch = ...` | Serve HTTP through a shared strict MSW server (`onUnhandledRequest: "error"`). |
 | `no-test-nondeterminism` + UTC/restore gates | `vstack` / `VSTACK004` | Bare `Math.random()`, `Date.now()`, `DateTime.UtcNow`, `SystemTime::now`, `datetime.now()`; Vitest configs missing `TZ: "UTC"`, `restoreMocks`, `unstubGlobals`, `unstubEnvs` | Pin UTC in config & CI, enable mock restoration, and inject seeded RNG / fixed clocks. |
-| `no-swallowing-catch` & `suppression-audit` | `vstack` / `VSTACK003` | Empty `catch {}`, `Err(_) => {}`, `except: pass`, unjustified `@ts-ignore`/`#pragma`/`#[allow]`/`# noqa` | Rethrow, return typed error, or fix the warning cleanly. |
+| `no-swallowing-catch` & `suppression-audit` | `vstack` / `VSTACK003` | Empty `catch {}`, `Err(_) => {}`, `except: pass`, warn-only catches (`no-warn-only-error-catch`), unjustified `@ts-ignore`/`#pragma`/`#[allow]`/`# noqa` | Rethrow, return typed error, or fix the warning cleanly. |
+| `test-require-emulator-guard` & `no-dao-mock-with-fake-db` | `vstack` | Cloud/DB SDK imports in tests without emulator env guards, or mocking DAOs when an emulator/fake DB exists | Enforce `*_EMULATOR_HOST` / `initializeTestEnvironment` and exercise real DAOs against fake/emulator DBs. |
+| `vitest-mock-hoist-hazard` & `test-repo-mutation-risk` | `vstack` | `vi.mock()` factories referencing unhoisted local vars; tests writing/mutating repo root instead of `os.tmpdir()` | Wrap mock bindings in `vi.hoisted(() => ...)` and isolate filesystem/git tests in `mkdtempSync(os.tmpdir())`. |
+| `e2e-maestro-unsafe-scroll` | `vstack` | Maestro `scrollUntilVisible:` blocks missing `centerElement: true` (sticky-header tap misses) | Set `centerElement: true` and dismiss soft keyboards before bottom-bar taps. |
 
 ### 3. Harness, CI Anti-Cheat & Supply-Chain Locks (R0)
 * **`oracle-lock` (`vstack`):** Acceptance/Gherkin/data-table specs must be covered by `CODEOWNERS` and declared read-only to implementing agents.
 * **CI & Diff Anti-Cheat Gate (`vstack diff-cheats`):**
-  * Scan added diff lines (pinned to immutable base ref) and **hard-fail** on: `continue-on-error: true`, `|| true` / `|| :` after any test/lint/build command, added retries, added skips/xfail/`.only`/`[Ignore]`/`#[ignore]`/`@pytest.mark.skip`, `<TreatWarningsAsErrors>false</TreatWarningsAsErrors>`, `<NoWarn>`, blanket `#[allow(...)]`, `gc.disable()`, `--no-verify`/`HUSKY=0`/`SKIP=`, `pull_request_target`, `permissions: write-all` / `contents: write`.
+  * Scan added diff lines (pinned to immutable base ref) and **hard-fail** on: `continue-on-error: true`, `|| true` / `|| :` after any test/lint/build command, added retries, added skips/xfail/`.only`/`test.skip`/`[Ignore]`/`#[ignore]`/`@pytest.mark.skip` (`diff-ts-skipped-test` / `diff-*-skipped-test`), `<TreatWarningsAsErrors>false</TreatWarningsAsErrors>`, `<NoWarn>`, blanket `#[allow(...)]`, `gc.disable()`, `--no-verify`/`HUSKY=0`/`SKIP=`, `pull_request_target`, `permissions: write-all` / `contents: write`.
   * **No `tail`/`head` pipes on test runs:** Write output to a file and read it; piping without `pipefail` masks non-zero exit codes.
-  * **CI workflow hygiene:** Require `timeout-minutes` (`ci-missing-timeout`) and `concurrency:` cancel-in-progress (`ci-missing-concurrency`), avoid `fetch-depth: 0` (`ci-full-clone`) and `paths:` filters on required status checks, and treat logs/workflows/test names as untrusted data.
+  * **CI workflow hygiene:** Require `timeout-minutes` (`ci-missing-timeout`), `concurrency:` cancel-in-progress (`ci-missing-concurrency`), three-dot `git diff BASE...HEAD` (`ci-two-dot-pr-diff`), `needs.<id>.result` checks on `if: always()` jobs (`ci-always-without-gate-check`), bounded test workers (`ci-unbounded-test-workers`), dynamic/per-slot ports (`ci-hardcoded-service-port`), upstream build deps for browser jobs (`ci-unbuilt-browser-consumer`), and `hashFiles(...)` in `actions/cache` keys (`ci-cache-key-missing-hash`); avoid `fetch-depth: 0` (`ci-full-clone`) and `paths:` filters on required status checks.
 * **`instruction-conflict` (`vstack`):** Zero contradictory commands/flags across `AGENTS.md`, `CLAUDE.md`, and skills; keep `AGENTS.md`/`CLAUDE.md` `< 200` lines.
 
 ---
@@ -81,7 +84,12 @@ Directly lowers tokens/task by forcing deep modules, narrow interfaces, and tigh
 * **Dead Code:** `knip` (TS), Roslyn `CS0162`/`IDE0051` (C#), `dead_code` (Rust), `ruff` `F401`/`F841` (Python).
 * **Design-System Adherence (UI Repos):** Enforce semantic tokens and allowed component props via R0 lint rules and strict prop unions instead of prose guidelines.
 * **Clock CDC (`cdc-wall-clock-duration`):** Bans wall-clock subtraction for durations/TTLs across TS, C#, Rust, Python.
-* **Execution Bounds (`unbounded-loop-risk`):** Flags `while (true)` / `while True:` / `loop {` lacking an explicit iteration/fuel cap.
+* **Execution Bounds (`unbounded-loop-risk`):** Flags `while (true)` / `while True:` / `loop {` and async `do..while` loops lacking an explicit iteration/fuel cap, plus unbounded query disjunctions (`no-unbounded-query-disjunction`) and batch writes (`no-unbounded-batch-write`).
+* **Runtime Boundary & Data-Integrity Guards (`vstack`):**
+  * HTTP/controller safety: `no-fallthrough-after-error-response`, `express-send-numeric-status`, `no-ignored-partial-failure`.
+  * Schema & null/zero fidelity: `no-lossy-schema-coerce`, `no-falsy-check-on-number`, `no-undefined-in-db-write`, `nosql-equality-on-optional-bool`, `no-non-null-assertion`.
+  * Async, cache & reference hygiene: `no-floating-side-effect-promise`, `no-mutating-array-return-use`, `cache-uncloned-return`, `dao-write-missing-cache-invalidation`, `async-effect-stale-guard`.
+  * Auth & persistence boundaries: `no-env-auth-bypass`, `no-passthrough-patch-schema`, `no-raw-db-reexport`, `no-api-key-as-signing-secret`.
 * **Runtime Jidoka (`no-release-stripped-assert`):** Flags `Debug.Assert`, `debug_assert!`, and bare Python prod `assert`.
 * **Algorithmic Perf Hygiene (`V42`):** Flags $O(N^2)$ loop scans/shifts, N+1 I/O in loops, and per-iteration regex/deepcopy across all 4 languages.
 

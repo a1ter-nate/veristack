@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { DiscoveredRepo } from "./discover.ts";
+import type { DiscoveredRepo, ScannedFile } from "./discover.ts";
 import type { Finding } from "./types.ts";
 
 const IMPORT_SOURCE = /^\s*import\s+(?!type\b)[\s\S]*?\bfrom\s*["']([^"']+)["']/gm;
@@ -210,5 +210,110 @@ export function scanVitestConfigs(repo: DiscoveredRepo): Finding[] {
       });
     }
   }
+  return findings;
+}
+
+const CLOUD_SDK_IMPORT = /\bfrom\s*["'](?:firebase-admin|@google-cloud\/|@aws-sdk\/)|require\s*\(\s*["'](?:firebase-admin|@google-cloud\/)/;
+const EMULATOR_GUARD = /\b(?:FIRESTORE_EMULATOR_HOST|FIREBASE_AUTH_EMULATOR_HOST|PUBSUB_EMULATOR_HOST|STORAGE_EMULATOR_HOST|initializeTestEnvironment|vi\.mock|jest\.mock)\b/;
+const DAO_MOCK_PATH = /\b(?:vi|jest)\.mock\s*\(\s*["'][^"']*(?:\/dao\/|\/daos\/|\/repositories\/|\/repo\/)[^"']*["']/g;
+const REPO_MUTATION_CALL =
+  /\b(?:writeFileSync|writeFile|rmSync|unlinkSync|appendFileSync)\s*\(\s*(?:path\.(?:join|resolve)\s*\(\s*process\.cwd\(\)|["'](?:\.\.?\/)?(?:src|apps|packages|tools|\.github)\/)|\bexec(?:File)?Sync\s*\(\s*["']git["']\s*,\s*\[[^\]]*(?:commit|reset|checkout|clean|add)/g;
+
+export function scanTestHarnessGuards(
+  file: ScannedFile,
+  raw: string,
+  code: string,
+  repoHasEmulator: boolean,
+): Finding[] {
+  const findings: Finding[] = [];
+  if (file.language !== "typescript" && file.language !== "javascript") return findings;
+
+  if (CLOUD_SDK_IMPORT.test(raw) && !EMULATOR_GUARD.test(raw)) {
+    const idx = raw.search(CLOUD_SDK_IMPORT);
+    const line = lineOf(raw, Math.max(0, idx));
+    findings.push({
+      id: `TH:emulator-guard:${file.rel}:${line}`,
+      rule: "test-require-emulator-guard",
+      category: "test-smell",
+      rung: "R4",
+      severity: "error",
+      file: file.rel,
+      line,
+      message: "Test imports a cloud/Firebase SDK without an emulator-host guard or test-environment bootstrap (risks hitting live cloud).",
+      fix: "Require *_EMULATOR_HOST / initializeTestEnvironment before initializing cloud SDKs in tests.",
+    });
+  }
+
+  if (repoHasEmulator) {
+    for (const m of code.matchAll(/\b(?:vi|jest)\.mock\s*\(/g)) {
+      const idx = m.index ?? 0;
+      const slice = raw.slice(idx, idx + 120);
+      if (!DAO_MOCK_PATH.test(slice)) continue;
+      DAO_MOCK_PATH.lastIndex = 0;
+      const line = lineOf(raw, idx);
+      findings.push({
+        id: `TH:dao-mock:${file.rel}:${line}`,
+        rule: "no-dao-mock-with-fake-db",
+        category: "test-smell",
+        rung: "R3",
+        severity: "warn",
+        file: file.rel,
+        line,
+        message: "Test mocks a DAO/repository module in a repo that already provides an emulator or in-memory fake DB.",
+        fix: "Exercise the real DAO against the in-memory fake DB or emulator so persistence/merge contracts stay verified.",
+      });
+    }
+  }
+
+  if (!/\b(?:mkdtemp|tmpdir|os\.tmpdir)\b/.test(raw)) {
+    for (const m of raw.matchAll(REPO_MUTATION_CALL)) {
+      const line = lineOf(raw, m.index ?? 0);
+      findings.push({
+        id: `TH:repo-mutate:${file.rel}:${line}`,
+        rule: "test-repo-mutation-risk",
+        category: "test-smell",
+        rung: "R2",
+        severity: "warn",
+        file: file.rel,
+        line,
+        message: "Test writes files or mutates git inside the enclosing repo root without mkdtemp/tmpdir isolation.",
+        fix: "Create an isolated directory with fs.mkdtempSync(path.join(os.tmpdir(), ...)) and clean it up in afterEach.",
+      });
+    }
+  }
+
+  if (/\bvi\.mock\s*\(/.test(code) && !/\bvi\.hoisted\s*\(/.test(code)) {
+    const topDecls = new Set<string>();
+    const mockIdx = code.search(/\bvi\.mock\s*\(/);
+    const beforeMock = code.slice(0, Math.max(0, mockIdx));
+    for (const d of beforeMock.matchAll(/^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/gm)) {
+      if (d[1]) topDecls.add(d[1]);
+    }
+    if (topDecls.size > 0) {
+      const factoryMatch = /\bvi\.mock\s*\([^,\n]+,\s*(?:async\s*)?\(\s*[^)]*\)\s*=>\s*\{?([\s\S]{0,400})/.exec(
+        code.slice(mockIdx),
+      );
+      const factoryBody = factoryMatch?.[1] ?? "";
+      const referencedIds = new Set(factoryBody.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? []);
+      for (const name of topDecls) {
+        if (referencedIds.has(name)) {
+          const line = lineOf(raw, mockIdx);
+          findings.push({
+            id: `TH:vi-hoist:${file.rel}:${line}`,
+            rule: "vitest-mock-hoist-hazard",
+            category: "test-smell",
+            rung: "R0",
+            severity: "error",
+            file: file.rel,
+            line,
+            message: `vi.mock() factory references unhoisted local binding '${name}' (hoisting causes runtime ReferenceError or broken cleanup).`,
+            fix: `Declare '${name}' inside vi.hoisted(() => ...) so it is initialized before vi.mock executes.`,
+          });
+          break;
+        }
+      }
+    }
+  }
+
   return findings;
 }

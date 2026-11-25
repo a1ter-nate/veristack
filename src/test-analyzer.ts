@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { DiscoveredRepo, ScannedFile } from "./discover.ts";
-import { hasNonFrameworkImport, lineOf, maskStrings, scanVitestConfigs } from "./test-lexical.ts";
+import { hasNonFrameworkImport, lineOf, maskStrings, scanTestHarnessGuards, scanVitestConfigs } from "./test-lexical.ts";
 import type { Finding, PushDownOpportunity, RungId, TestBoundary, TestFileRecord } from "./types.ts";
 
 export interface TestAnalysisResult {
@@ -353,6 +353,8 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
       fix: "Assert exact expected output values or externally observable state.",
     });
   }
+
+  findings.push(...scanTestHarnessGuards(file, raw, code, repoHasEmulator));
 
   if (boundary === "e2e" && hasNetworkMock) {
     pushDowns.push({

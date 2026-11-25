@@ -1,6 +1,7 @@
 import type { DiscoveredRepo } from "./discover.ts";
 import { lineOf, maskStrings } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
+import { analyzeRuntimeGuards } from "./zero-defect/runtime-guards.ts";
 
 const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
 
@@ -192,6 +193,8 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
         fix: "Bound the loop with an explicit maxIterations/fuel ceiling or finite iterator.",
       });
     }
+
+    findings.push(...analyzeRuntimeGuards(file));
   }
 
   return findings;

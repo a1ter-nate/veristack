@@ -25,12 +25,33 @@
       "no-multi-status-assertion",
       "no-test-nondeterminism",
       "no-imported-mutation"
+    ],
+    "runtime_guards.ts": [
+      "no-raw-db-reexport",
+      "no-falsy-check-on-number",
+      "no-fallthrough-after-error-response",
+      "express-send-numeric-status",
+      "no-mutating-array-return-use",
+      "no-non-null-assertion",
+      "cache-uncloned-return",
+      "dao-write-missing-cache-invalidation",
+      "no-unbounded-query-disjunction",
+      "nosql-equality-on-optional-bool",
+      "no-undefined-in-db-write",
+      "no-lossy-schema-coerce",
+      "no-passthrough-patch-schema",
+      "no-env-auth-bypass",
+      "no-api-key-as-signing-secret",
+      "no-floating-side-effect-promise",
+      "unbounded-loop-risk",
+      "no-warn-only-error-catch"
     ]
   },
   "clean": [
     "explicit_state_machine.ts",
     "indexed_perf_and_clock.ts",
     "allowed_comments.ts",
-    "check-coverage-policy.test.ts"
+    "check-coverage-policy.test.ts",
+    "safe_runtime_guards.ts"
   ]
 }

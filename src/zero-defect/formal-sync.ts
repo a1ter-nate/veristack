@@ -8,10 +8,29 @@ export interface FormalCheckEntry {
   coveredPaths: string[];
   syncCommit: string;
   bounds?: string;
+  kind?: "formal" | "contract";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseEntries(rawList: unknown, kind: "formal" | "contract"): FormalCheckEntry[] {
+  if (!Array.isArray(rawList)) return [];
+  const entries: FormalCheckEntry[] = [];
+  for (const raw of rawList) {
+    if (!isRecord(raw)) continue;
+    const id = typeof raw.id === "string" ? raw.id : "unknown";
+    const fileField = kind === "contract" ? raw.artifactFile ?? raw.specFile : raw.specFile;
+    const specFile = typeof fileField === "string" ? fileField.trim() : "";
+    const syncCommit = typeof raw.syncCommit === "string" ? raw.syncCommit.trim() : "";
+    const coveredPaths = Array.isArray(raw.coveredPaths)
+      ? raw.coveredPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+      : [];
+    const bounds = typeof raw.bounds === "string" ? raw.bounds : undefined;
+    entries.push({ id, specFile, coveredPaths, syncCommit, bounds, kind });
+  }
+  return entries;
 }
 
 function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: FormalCheckEntry[] } | null {
@@ -21,19 +40,12 @@ function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: Fo
   if (!planFile) return null;
   try {
     const parsed: unknown = JSON.parse(planFile.content);
-    if (!isRecord(parsed) || !Array.isArray(parsed.formalChecks)) return null;
-    const entries: FormalCheckEntry[] = [];
-    for (const raw of parsed.formalChecks) {
-      if (!isRecord(raw)) continue;
-      const id = typeof raw.id === "string" ? raw.id : "unknown";
-      const specFile = typeof raw.specFile === "string" ? raw.specFile.trim() : "";
-      const syncCommit = typeof raw.syncCommit === "string" ? raw.syncCommit.trim() : "";
-      const coveredPaths = Array.isArray(raw.coveredPaths)
-        ? raw.coveredPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
-        : [];
-      const bounds = typeof raw.bounds === "string" ? raw.bounds : undefined;
-      entries.push({ id, specFile, coveredPaths, syncCommit, bounds });
-    }
+    if (!isRecord(parsed)) return null;
+    const entries = [
+      ...parseEntries(parsed.formalChecks, "formal"),
+      ...parseEntries(parsed.contractChecks, "contract"),
+    ];
+    if (entries.length === 0) return null;
     return { planRel: planFile.rel, entries };
   } catch {
     return null;
@@ -48,17 +60,21 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
   const allPathSet = new Set(repo.allRelPaths);
 
   for (const entry of parsed.entries) {
+    const isContract = entry.kind === "contract";
+    const label = isContract ? "Contract check" : "Formal check";
     if (!entry.specFile || !allPathSet.has(entry.specFile)) {
       findings.push({
         id: `FS:missing:${entry.id}`,
-        rule: "formal-spec-missing",
+        rule: isContract ? "contract-artifact-missing" : "formal-spec-missing",
         category: "oracle-lock",
-        rung: "R5",
+        rung: isContract ? "R3" : "R5",
         severity: "error",
         file: parsed.planRel,
         line: 1,
-        message: `Formal check '${entry.id}' references missing spec '${entry.specFile}'.`,
-        fix: "Restore the formal spec or update formalChecks[].specFile in the control plan.",
+        message: `${label} '${entry.id}' references missing artifact '${entry.specFile}'.`,
+        fix: isContract
+          ? "Regenerate the contract/OpenAPI/index baseline or update contractChecks[].artifactFile in the control plan."
+          : "Restore the formal spec or update formalChecks[].specFile in the control plan.",
       });
       continue;
     }
@@ -118,14 +134,16 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
     if (commits.length > 0) {
       findings.push({
         id: `FS:stale:${entry.id}`,
-        rule: "formal-spec-stale",
+        rule: isContract ? "contract-artifact-stale" : "formal-spec-stale",
         category: "oracle-lock",
-        rung: "R5",
+        rung: isContract ? "R3" : "R5",
         severity: "error",
         file: entry.specFile,
         line: 1,
-        message: `Formal check '${entry.id}' is stale: ${commits.length} commit(s) modified covered code since ${entry.syncCommit.slice(0, 7)} (${commits[0]}).`,
-        fix: "Re-audit covered paths against the formal spec, rerun the verifier, prove a scratch break fails, and advance syncCommit.",
+        message: `${label} '${entry.id}' is stale: ${commits.length} commit(s) modified covered code since ${entry.syncCommit.slice(0, 7)} (${commits[0]}).`,
+        fix: isContract
+          ? "Regenerate/verify the OpenAPI baseline, consumer manifest, or DB index file against HEAD and advance syncCommit."
+          : "Re-audit covered paths against the formal spec, rerun the verifier, prove a scratch break fails, and advance syncCommit.",
       });
     }
   }

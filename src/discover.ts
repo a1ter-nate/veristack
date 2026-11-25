@@ -96,6 +96,9 @@ function shouldReadText(rel: string): boolean {
   const base = path.posix.basename(lower);
   if (detectLanguage(rel) !== undefined) return true;
   if (isWorkflowPath(rel)) return true;
+  if ((lower.endsWith(".yml") || lower.endsWith(".yaml")) && /(?:^|\/)(?:maestro|e2e|mobile-e2e|flows)\//.test(lower)) {
+    return true;
+  }
   return (
     base === "package.json" ||
     base === "tsconfig.json" ||

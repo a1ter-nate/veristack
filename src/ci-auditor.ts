@@ -4,6 +4,7 @@ import path from "node:path";
 import type { DiscoveredRepo } from "./discover.ts";
 import { maskStrings } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
+import { auditExtendedCiRules, auditMaestroFlow } from "./zero-defect/ci-workflow-rules.ts";
 
 const CHECK_TOOL =
   /\b(?:pnpm|npm|yarn|npx|bun|pytest|vitest|jest|tsc|tsgo|eslint|oxlint|prettier|ruff|mypy|cargo|go|make|gradle|mvn|dotnet|unittest|vstack)\b/i;
@@ -63,7 +64,10 @@ export function auditCiWorkflows(repo: DiscoveredRepo): Finding[] {
   const findings: Finding[] = [];
 
   for (const file of repo.files) {
-    if (!file.isWorkflow) continue;
+    if (!file.isWorkflow) {
+      findings.push(...auditMaestroFlow(file));
+      continue;
+    }
     const lines = file.content.split(/\r?\n/);
 
     for (let idx = 0; idx < lines.length; idx++) {
@@ -159,6 +163,8 @@ export function auditCiWorkflows(repo: DiscoveredRepo): Finding[] {
         });
       }
     }
+
+    findings.push(...auditExtendedCiRules(file));
   }
 
   return findings;
@@ -379,6 +385,25 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
         line: currentLine,
         message: "Added bare '# type: ignore' or '# noqa' suppression in Python diff.",
         fix: "Fix the diagnostic or attach an explicit error code and concrete reason.",
+      });
+    }
+
+    if (
+      /\b(?:describe|test|it)(?:\.concurrent)?\.(?:skip|only|todo|fixme)\s*\(|\b(?:xdescribe|xit|xtest|fdescribe|fit)\s*\(/.test(
+        codeLine,
+      ) &&
+      /\.[cm]?[jt]sx?$/.test(lowerFile)
+    ) {
+      findings.push({
+        id: `DIFF:ts-skip:${currentFile}:${currentLine}`,
+        rule: "diff-ts-skipped-test",
+        category: "cheat",
+        rung: "R0",
+        severity: "error",
+        file: currentFile,
+        line: currentLine,
+        message: "Added skipped/focused TS/JS test (.skip/.only/.todo) in diff.",
+        fix: "Fix or delete the test instead of skipping or focusing it.",
       });
     }
 
