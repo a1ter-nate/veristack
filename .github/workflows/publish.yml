@@ -2,6 +2,8 @@ name: Publish to npm
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -11,7 +13,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: publish-npm
   cancel-in-progress: false
 
 jobs:
@@ -24,8 +26,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+          node-version: "24"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
@@ -33,20 +34,49 @@ jobs:
       - run: bun run check
       - run: bun src/cli.ts bench . --fail
       - run: bun run build && node bin/vstack.mjs --help > /dev/null && node bin/vstack.mjs scan . --fail-on-cheats > /dev/null
-      - name: Verify tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          PKG_VERSION="$(node -p 'require("./package.json").version')"
-          EXPECTED_TAG="v${PKG_VERSION}"
-          if [ "$TAG_NAME" != "$EXPECTED_TAG" ]; then
-            echo "Tag ${TAG_NAME} does not match package.json version ${PKG_VERSION}" >&2
-            exit 1
-          fi
       - name: Ensure npm supports Trusted Publishing OIDC
         run: npm install -g npm@latest
+      - name: Resolve next monotonic version
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          NEXT_VERSION="$(node -e '
+            const fs = require("node:fs");
+            const { execFileSync } = require("node:child_process");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            let published = "0.0.0";
+            try {
+              published = execFileSync("npm", ["view", pkg.name, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "0.0.0";
+            } catch {}
+            const parse = (v) => v.split("-")[0].split(".").map((n) => Number(n) || 0);
+            const cmp = (a, b) => {
+              for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+              return 0;
+            };
+            if (process.env.GITHUB_REF_TYPE === "tag" && process.env.GITHUB_REF_NAME.startsWith("v")) {
+              const expected = `v${pkg.version}`;
+              if (process.env.GITHUB_REF_NAME !== expected) {
+                console.error(`Tag ${process.env.GITHUB_REF_NAME} does not match package.json version ${pkg.version}`);
+                process.exit(1);
+              }
+            }
+            const pkgV = parse(pkg.version);
+            const pubV = parse(published);
+            const next = cmp(pkgV, pubV) > 0 ? pkg.version : `${pubV[0]}.${pubV[1]}.${pubV[2] + 1}`;
+            console.error(`Published: ${published} | package.json: ${pkg.version} | Publishing: ${next}`);
+            console.log(next);
+          ')"
+          PKG_VERSION="$(node -p 'require("./package.json").version')"
+          if [ "$NEXT_VERSION" != "$PKG_VERSION" ]; then
+            npm version "$NEXT_VERSION" --no-git-tag-version --allow-same-version
+          fi
       - name: Publish package to npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > ~/.npmrc
+            chmod 600 ~/.npmrc
+          fi
+          npm publish --provenance --access public

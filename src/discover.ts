@@ -288,12 +288,17 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
     .map((f) => f.content)
     .join("\n");
 
+  const manifestText = files
+    .filter((f) => !f.isTest && !f.isWorkflow && !f.language && !f.rel.toLowerCase().endsWith(".md"))
+    .map((f) => f.content)
+    .join("\n");
+
   const hasReactOrUi =
-    /\b(?:react|next|vue|svelte|@angular\/core|solid-js)\b/i.test(configText) ||
+    /(?:["'](?:react|next|vue|svelte|@angular\/core|solid-js)["']|\b(?:react-dom|next\.config)\b)/i.test(manifestText) ||
     lowerPaths.some((p) => p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".vue") || p.endsWith(".svelte"));
   const hasBackendService =
     /\b(?:express|fastify|hono|nestjs|koa|fastapi|django|flask|actix-web|axum|gin-gonic|microsoft\.aspnetcore)\b/i.test(
-      configText,
+      manifestText,
     ) ||
     files.some((f) => f.language === "csharp" && !f.isTest && /\bWebApplication\.CreateBuilder\b/.test(f.content)) ||
     lowerPaths.some((p) => p.includes("dockerfile") || p.includes("controllers/") || p.includes("routes/"));
