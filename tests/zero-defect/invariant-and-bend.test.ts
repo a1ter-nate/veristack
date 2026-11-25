@@ -4,10 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { auditDiffInvariantLoss, buildSyntheticRevertEvents } from "../../src/ast/invariant-loss.ts";
+import { auditDiffInvariantLoss, auditTsAstPredicateDrop, buildSyntheticRevertEvents } from "../../src/ast/invariant-loss.ts";
 import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
 import { discoverRepo } from "../../src/discover.ts";
+import { scanRepo } from "../../src/ladder.ts";
 import { runPrecisionBench } from "../../src/zero-defect/bench.ts";
+import { compareInvariantSnapshots, inferDynamicInvariants } from "../../src/zero-defect/daikon-invariants.ts";
 import { auditLaws } from "../../src/zero-defect/laws.ts";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..");
@@ -73,4 +75,126 @@ test("scanGitDiffCheats detects when a commit silently removes a guard invariant
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("AST control-flow and predicate-weakening diff catches dropped if-branch, stripped && clause, and relaxed bounds", () => {
+  const safeTs = [
+    "export function allow(a: number, b: number, limit: number): boolean {",
+    "  if (a >= 0 && b <= limit) {",
+    "    return true;",
+    "  }",
+    "  return false;",
+    "}",
+  ].join("\n");
+  const weakenedTs = [
+    "export function allow(a: number, b: number, limit: number): boolean {",
+    "  if (a >= 0) {",
+    "    return true;",
+    "  }",
+    "  return false;",
+    "}",
+  ].join("\n");
+
+  const astHits = auditTsAstPredicateDrop("src/policy.ts", safeTs, weakenedTs);
+  assert.ok(astHits.some((h) => h.message.includes("ast-logical-clause-stripped")));
+  assert.ok(astHits.some((h) => h.message.includes("ast-comparison-bound-dropped")));
+
+  const evs = buildSyntheticRevertEvents("src/policy.ts", safeTs, weakenedTs);
+  const diffHits = auditDiffInvariantLoss(evs);
+  assert.ok(diffHits.some((h) => h.rule === "diff-predicate-weakened"));
+
+  const withTest = [
+    ...evs,
+    { file: "tests/policy.test.ts", line: 5, kind: "add" as const, raw: "expect(allow(1, 99, 10)).toBe(true);", code: "expect(allow(1, 99, 10)).toBe(true);" },
+  ];
+  assert.deepEqual(
+    auditDiffInvariantLoss(withTest, { allowTestedPredicateRefactor: true }).filter((h) => h.rule === "diff-predicate-weakened"),
+    [],
+  );
+});
+
+test("repo-wide Engler deviant-behavior miner catches outlier null-check, cleanup, and route-auth omissions", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-deviant-"));
+  try {
+    const mk = (rel: string, content: string): void => {
+      const full = path.join(tmp, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content, "utf8");
+    };
+
+    mk(
+      "src/users.ts",
+      [
+        "export function a(id: string) { const u = findUser(id); if (!u) return ''; return u.name; }",
+        "export function b(id: string) { const u = findUser(id); if (u === null) return ''; return u.name; }",
+        "export function c(id: string) { const u = findUser(id); return u?.name ?? ''; }",
+        "export function d(id: string) { const u = findUser(id); return u.name; }",
+      ].join("\n"),
+    );
+
+    mk(
+      "src/locks.ts",
+      [
+        "export function l1() { const g = acquireLease(); try { work(g); } finally { g.release(); } }",
+        "export function l2() { const g = acquireLease(); try { work(g); } finally { g.release(); } }",
+        "export function l3() { const g = acquireLease(); try { work(g); } finally { g.release(); } }",
+        "export function l4() { const g = acquireLease(); work(g); g.release(); }",
+      ].join("\n"),
+    );
+
+    mk("src/routes/orders.ts", "export function orders(req: unknown) { requireAuth(req); return 1; }\n");
+    mk("src/routes/invoices.ts", "export function invoices(req: unknown) { requireAuth(req); return 2; }\n");
+    mk("src/routes/billing.ts", "export function billing(req: unknown) { requireAuth(req); return 3; }\n");
+    mk("src/routes/export.ts", "export function exportData() { return 4; }\n");
+
+    const report = scanRepo(tmp);
+    const rules = new Set(report.findings.map((f) => f.rule));
+    assert.ok(rules.has("invariant-deviant-null-check"));
+    assert.ok(rules.has("invariant-deviant-paired-cleanup"));
+    assert.ok(rules.has("invariant-deviant-route-auth"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Daikon-style dynamic invariant capture infers bounds/domain/sorted/relational invariants and catches violations", () => {
+  const baseline = inferDynamicInvariants([
+    { fn: "applyDiscount", args: { amount: 1000, pct: 10 }, result: 900, throws: false },
+    { fn: "applyDiscount", args: { amount: 500, pct: 20 }, result: 400, throws: false },
+    { fn: "applyDiscount", args: { amount: 200, pct: 0 }, result: 200, throws: false },
+    { fn: "nextStatus", args: { ev: "pay" }, result: "paid", throws: false },
+    { fn: "nextStatus", args: { ev: "ship" }, result: "shipped", throws: false },
+    { fn: "nextStatus", args: { ev: "cancel" }, result: "cancelled", throws: false },
+    { fn: "nextStatus", args: { ev: "pay" }, result: "paid", throws: false },
+    { fn: "sortIds", args: { input: [3, 1, 2] }, result: [1, 2, 3], throws: false },
+    { fn: "sortIds", args: { input: [9, 4] }, result: [4, 9], throws: false },
+    { fn: "sortIds", args: { input: [5, 2, 8] }, result: [2, 5, 8], throws: false },
+  ]);
+
+  assert.ok(baseline.invariants.some((i) => i.fn === "applyDiscount" && i.kind === "relational-le-arg" && i.detail === "amount"));
+  assert.ok(baseline.invariants.some((i) => i.fn === "applyDiscount" && i.kind === "non-negative-result"));
+  assert.ok(baseline.invariants.some((i) => i.fn === "nextStatus" && i.kind === "enum-domain"));
+  assert.ok(baseline.invariants.some((i) => i.fn === "sortIds" && i.kind === "sorted-numeric-array"));
+  assert.ok(baseline.invariants.some((i) => i.fn === "sortIds" && i.kind === "length-le-arg-length" && i.detail === "input"));
+
+  const regressed = inferDynamicInvariants([
+    { fn: "applyDiscount", args: { amount: 1000, pct: 10 }, result: 1200, throws: false },
+    { fn: "applyDiscount", args: { amount: 500, pct: 20 }, result: -5, throws: false },
+    { fn: "applyDiscount", args: { amount: 200, pct: 0 }, result: 200, throws: true },
+    { fn: "nextStatus", args: { ev: "pay" }, result: "paid", throws: false },
+    { fn: "nextStatus", args: { ev: "ship" }, result: "corrupted", throws: false },
+    { fn: "nextStatus", args: { ev: "cancel" }, result: "cancelled", throws: false },
+    { fn: "nextStatus", args: { ev: "pay" }, result: "paid", throws: false },
+    { fn: "sortIds", args: { input: [3, 1, 2] }, result: [3, 1, 2], throws: false },
+    { fn: "sortIds", args: { input: [9, 4] }, result: [4, 9], throws: false },
+    { fn: "sortIds", args: { input: [5, 2, 8] }, result: [2, 5, 8], throws: false },
+  ]);
+
+  const diff = compareInvariantSnapshots(baseline, regressed);
+  assert.equal(diff.passed, false);
+  assert.ok(diff.violations.some((v) => v.message.includes("relational-le-arg")));
+  assert.ok(diff.violations.some((v) => v.message.includes("non-negative-result")));
+  assert.ok(diff.violations.some((v) => v.message.includes("never-throws")));
+  assert.ok(diff.violations.some((v) => v.message.includes("enum-domain")));
+  assert.ok(diff.violations.some((v) => v.message.includes("sorted-numeric-array")));
 });

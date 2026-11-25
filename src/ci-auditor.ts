@@ -471,7 +471,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   }
 
   findings.push(...auditDiffAntiEvasion(diffEvents));
-  findings.push(...auditDiffInvariantLoss(diffEvents));
+  findings.push(...auditDiffInvariantLoss(diffEvents, { allowTestedPredicateRefactor: true }));
 
   return findings;
 }

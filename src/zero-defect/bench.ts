@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { auditDiffInvariantLoss, buildSyntheticRevertEvents } from "../ast/invariant-loss.ts";
+import { auditDiffInvariantLoss, auditTsAstPredicateDrop, buildSyntheticRevertEvents } from "../ast/invariant-loss.ts";
 import { scanRepo } from "../ladder.ts";
 import { auditDiffAntiEvasion } from "./anti-evasion.ts";
 
@@ -176,7 +176,11 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
     const beforeRaw = fs.readFileSync(path.join(replayDir, "before", entry.beforeRel), "utf8");
     const afterRaw = fs.readFileSync(path.join(replayDir, "after", entry.afterRel), "utf8");
     const revertEvents = buildSyntheticRevertEvents(entry.afterRel, afterRaw, beforeRaw);
-    const revertFindings = [...auditDiffInvariantLoss(revertEvents), ...auditDiffAntiEvasion(revertEvents)];
+    const revertFindings = [
+      ...auditDiffInvariantLoss(revertEvents),
+      ...auditTsAstPredicateDrop(entry.afterRel, afterRaw, beforeRaw),
+      ...auditDiffAntiEvasion(revertEvents),
+    ];
     const regressionCaught = revertFindings.length > 0;
     for (const rf of revertFindings) {
       const m = /removed a '([^']+)' invariant/.exec(rf.message);

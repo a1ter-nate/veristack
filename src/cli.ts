@@ -17,6 +17,14 @@ import { runSystem1Provider } from "./system1-providers.ts";
 import type { CircuitId, Finding, System1ModelAnswer, System1ProviderId } from "./types.ts";
 import { formatBenchReport, runPrecisionBench } from "./zero-defect/bench.ts";
 import { fitEmpiricalBigO, type ScalingSample } from "./zero-defect/big-o.ts";
+import {
+  compareInvariantSnapshots,
+  formatInvariantDiffReport,
+  inferDynamicInvariants,
+  type InvariantSnapshot,
+  type TraceSample,
+  writeInvariantSnapshot,
+} from "./zero-defect/daikon-invariants.ts";
 import { auditFormalSync, formatFormalSyncReport } from "./zero-defect/formal-sync.ts";
 import { evaluateSpcSeries, generateMcdcVectors, runRedBeforeFix } from "./zero-defect/index.ts";
 import { auditLaws, formatLawsReport } from "./zero-defect/laws.ts";
@@ -48,6 +56,7 @@ function usage(): string {
     '  vstack mcdc "<boolean expression>" [--json]',
     "  vstack spc <metrics.json> [--json] [--fail]",
     "  vstack big-o <samples.json> [--max-time-exp <num>] [--max-space-exp <num>] [--json] [--fail]",
+    "  vstack invariants <traces.json> [--baseline <file>] [--update] [--json] [--fail]",
   ].join("\n");
 }
 
@@ -76,6 +85,7 @@ function firstPositional(args: readonly string[]): string {
     "--disable",
     "--corpus",
     "--replay",
+    "--baseline",
   ]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -365,6 +375,33 @@ async function run(): Promise<number> {
       for (const r of result.reasons) console.log(`  - ${r}`);
     }
     return rest.includes("--fail") && !result.passed ? 1 : 0;
+  }
+
+  if (cmd === "invariants") {
+    const tracesPath = firstPositional(rest);
+    if (!tracesPath || tracesPath === ".") {
+      throw new Error("vstack invariants requires a JSON traces file ({ samples: [{ fn, args?, result?, throws? }] }).");
+    }
+    const parsed = JSON.parse(fs.readFileSync(tracesPath, "utf8")) as { samples?: TraceSample[] } | TraceSample[];
+    const samples = Array.isArray(parsed) ? parsed : (parsed.samples ?? []);
+    const current = inferDynamicInvariants(samples);
+    const baselinePath = parseFlagValue(rest, "--baseline");
+    const update = rest.includes("--update");
+    let diff: ReturnType<typeof compareInvariantSnapshots> | undefined;
+
+    if (baselinePath) {
+      if (update || !fs.existsSync(baselinePath)) {
+        writeInvariantSnapshot(baselinePath, current);
+        diff = compareInvariantSnapshots(current, current, baselinePath);
+      } else {
+        const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8")) as InvariantSnapshot;
+        diff = compareInvariantSnapshots(baseline, current, baselinePath);
+      }
+    }
+
+    if (asJson) console.log(JSON.stringify(diff ? { snapshot: current, diff } : { snapshot: current }, null, 2));
+    else console.log(formatInvariantDiffReport(current, diff));
+    return rest.includes("--fail") && diff && !diff.passed ? 1 : 0;
   }
 
   console.error(`Unknown command: ${cmd}\n`);

@@ -8,7 +8,7 @@ export interface DiffLineEvent {
   code: string;
 }
 
-const STRICT_CONFIG_PATH = /(?:^|\/)(?:tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|\.vstackignore|\.eslintignore|(?:\.verification\/)?\.?vstack\.json)$/i;
+const STRICT_CONFIG_PATH = /(?:^|\/)(?:tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|\.vstackignore|\.eslintignore|(?:\.verification\/)?\.?vstack\.json|\.verification\/invariants\.json)$/i;
 const TEST_FILE_PATH = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.go$|_tests?\.rs$|(?:^|\/)test_[^/]+\.py$|tests?\.cs$)/i;
 const ASSERT_CALL = /\b(?:assert|expect|Assert\.|assert_eq!|assert_ne!|assert!|require\.|should\.)/;
 const GATE_TOOL_LINE = /\b(?:vstack|fail-on-cheats|fail-on-errors|clippy|mypy|pyright|tsgo|oxlint|ruff|TreatWarningsAsErrors|red-before-fix)\b/;
@@ -108,6 +108,13 @@ export function auditDiffAntiEvasion(events: readonly DiffLineEvent[]): Finding[
       }
 
       const isCiOrHook = /(?:^|\/)(?:\.github\/workflows\/|lefthook\.yml|\.husky\/|package\.json)/i.test(ev.file);
+      if (/\.verification\/invariants\.json$/i.test(ev.file) && /"kind"\s*:/.test(ev.raw)) {
+        pushDiff(
+          findings, ev.file, ev.line, "diff-config-strictness-downgrade",
+          "Deleted dynamic invariant entry from .verification/invariants.json in diff.",
+          "Keep locked dynamic invariants intact; update .verification/invariants.json only via human-reviewed baseline changes.",
+        );
+      }
       if (isCiOrHook && GATE_TOOL_LINE.test(ev.raw) && !ev.raw.trim().startsWith("#")) {
         const hasMatchingAdd = events.some(
           (other) => other.kind === "add" && other.file === ev.file && GATE_TOOL_LINE.test(other.raw),

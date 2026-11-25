@@ -2,6 +2,7 @@ import type { ScannedFile } from "../discover.ts";
 import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 import type { DiffLineEvent } from "../zero-defect/anti-evasion.ts";
+import { parseTsAst, walkAst } from "./ts-ast.ts";
 
 const PY_IPV6_HOST_HEADER = /headers\s*\[\s*["']Host["']\s*\]\s*=\s*[^\n]*(?:\.hostname|host\b)/gi;
 const PY_CACHE_NONE_TO_EMPTY = /\bif\s+([A-Za-z_][A-Za-z0-9_]*)\s+is\s+None\s*:\s*\r?\n[ \t]+\1\s*=\s*(?:""|'')/g;
@@ -80,6 +81,13 @@ const INVARIANT_CLASSES: readonly InvariantClass[] = [
   },
 ];
 
+const IF_BRANCH_LINE = /^\s*(?:else\s+if\b|elif\b|if\b)/;
+const BOOL_CLAUSE_OP = /&&|\|\||\band\b|\bor\b/g;
+const CMP_BOUND_OP = /<=|>=|===|!==|==|!=| < | > /g;
+const TRY_OR_ARM_LINE = /^\s*(?:try\s*[:{]|case\s+[^\n:]{1,80}:|[^=\n]{1,80}=>)/;
+const CYCLE_OR_VALIDATE_GUARD =
+  /\b(?:seen|visited|inProgress|recursion|maxDepth|max_depth|validate[A-Z_][A-Za-z0-9_]*|verify[A-Z_][A-Za-z0-9_]*|ensure[A-Z_][A-Za-z0-9_]*|sanitize[A-Z_][A-Za-z0-9_]*|Math\.(?:round|floor|ceil|trunc)\s*\()|\.(?:has|contains|startsWith|endsWith)\s*\(/;
+
 function push(
   findings: Finding[],
   file: string,
@@ -104,6 +112,22 @@ function classifyLineInvariants(codeLine: string): Set<string> {
     if (inv.regex.test(codeLine)) found.add(inv.name);
   }
   return found;
+}
+
+function countPattern(lines: readonly DiffLineEvent[], regex: RegExp): number {
+  let total = 0;
+  for (const ev of lines) {
+    if (regex.global) {
+      for (const _ of ev.code.matchAll(regex)) total += 1;
+    } else if (regex.test(ev.code)) {
+      total += 1;
+    }
+  }
+  return total;
+}
+
+export interface InvariantLossOptions {
+  allowTestedPredicateRefactor?: boolean;
 }
 
 export function analyzeInvariantGuards(file: ScannedFile): Finding[] {
@@ -188,17 +212,88 @@ export function analyzeInvariantGuards(file: ScannedFile): Finding[] {
   return findings;
 }
 
-export function auditDiffInvariantLoss(events: readonly DiffLineEvent[]): Finding[] {
+interface AstGuardCounts {
+  ifBranches: number;
+  logicalClauses: number;
+  comparisons: number;
+  switchCases: number;
+  tryBlocks: number;
+}
+
+function countTsAstGuards(rel: string, content: string): AstGuardCounts | null {
+  const lower = rel.toLowerCase();
+  const lang = /\.[cm]?tsx?$/.test(lower) ? "typescript" : /\.[cm]?jsx?$/.test(lower) ? "javascript" : undefined;
+  if (!lang) return null;
+  const ast = parseTsAst({ rel, abs: rel, language: lang, isTest: false, isWorkflow: false, content, lines: 1 });
+  if (!ast) return null;
+  const counts: AstGuardCounts = { ifBranches: 0, logicalClauses: 0, comparisons: 0, switchCases: 0, tryBlocks: 0 };
+  walkAst(ast, (node) => {
+    if (node.type === "IfStatement") counts.ifBranches += 1;
+    else if (node.type === "LogicalExpression" && (node.operator === "&&" || node.operator === "||")) {
+      counts.logicalClauses += 1;
+    } else if (
+      node.type === "BinaryExpression" &&
+      typeof node.operator === "string" &&
+      ["<", "<=", ">", ">=", "===", "!==", "==", "!="].includes(node.operator)
+    ) {
+      counts.comparisons += 1;
+    } else if (node.type === "SwitchCase" && node.test) counts.switchCases += 1;
+    else if (node.type === "TryStatement") counts.tryBlocks += 1;
+  });
+  return counts;
+}
+
+export function auditTsAstPredicateDrop(rel: string, prevContent: string, nextContent: string): Finding[] {
+  if (TEST_OR_DOC_PATH.test(rel)) return [];
+  const before = countTsAstGuards(rel, prevContent);
+  const after = countTsAstGuards(rel, nextContent);
+  if (!before || !after) return [];
+  const checks: Array<[string, number, number]> = [
+    ["ast-if-branch-dropped", before.ifBranches, after.ifBranches],
+    ["ast-logical-clause-stripped", before.logicalClauses, after.logicalClauses],
+    ["ast-comparison-bound-dropped", before.comparisons, after.comparisons],
+    ["ast-switch-case-dropped", before.switchCases, after.switchCases],
+    ["ast-try-block-dropped", before.tryBlocks, after.tryBlocks],
+  ];
+  const findings: Finding[] = [];
+  for (const [label, bVal, aVal] of checks) {
+    if (bVal > aVal) {
+      findings.push({
+        id: `DIFF:${label}:${rel}:1`,
+        rule: "diff-predicate-weakened",
+        category: "cheat",
+        rung: "R0",
+        severity: "warn",
+        file: rel,
+        line: 1,
+        message: `AST diff removed a '${label}' invariant in ${rel} (${bVal} -> ${aVal}) without preserving guard topology.`,
+        fix: "Restore the removed control-flow guard/predicate or pair the intentional refactor with a regression test.",
+      });
+    }
+  }
+  return findings;
+}
+
+export function auditDiffInvariantLoss(
+  events: readonly DiffLineEvent[],
+  options: InvariantLossOptions = {},
+): Finding[] {
   const findings: Finding[] = [];
   const byFile = new Map<string, DiffLineEvent[]>();
+  let hasAddedTestAssertions = false;
 
   for (const ev of events) {
+    if (ev.kind === "add" && TEST_OR_DOC_PATH.test(ev.file) && /\b(?:assert|expect|Assert\.|assert_eq!|require\.)/.test(ev.code)) {
+      hasAddedTestAssertions = true;
+    }
     if (TEST_OR_DOC_PATH.test(ev.file)) continue;
     if (isCommentLine(ev.raw)) continue;
     const list = byFile.get(ev.file) ?? [];
     list.push(ev);
     byFile.set(ev.file, list);
   }
+
+  const suppressStructuralPredicates = Boolean(options.allowTestedPredicateRefactor) && hasAddedTestAssertions;
 
   for (const [file, fileEvents] of byFile.entries()) {
     const hunks: DiffLineEvent[][] = [];
@@ -226,11 +321,13 @@ export function auditDiffInvariantLoss(events: readonly DiffLineEvent[]): Findin
         for (const inv of classifyLineInvariants(a.code)) addedInvariants.add(inv);
       }
 
+      let explicitCaughtInHunk = false;
       for (const d of dels) {
         const lost = classifyLineInvariants(d.code);
         for (const inv of lost) {
           if (addedInvariants.has(inv) || reportedForFile.has(inv)) continue;
           reportedForFile.add(inv);
+          explicitCaughtInHunk = true;
           findings.push({
             id: `DIFF:inv-lost:${file}:${d.line}:${inv}`,
             rule: "diff-invariant-guard-dropped",
@@ -243,6 +340,59 @@ export function auditDiffInvariantLoss(events: readonly DiffLineEvent[]): Findin
             fix: `Restore the '${inv}' invariant or add a regression test proving the invariant is now enforced by types or a higher boundary.`,
           });
         }
+      }
+
+      if (explicitCaughtInHunk || suppressStructuralPredicates) continue;
+
+      const firstDelLine = dels[0]?.line ?? 1;
+      const emitWeakened = (kind: string, detail: string): void => {
+        if (reportedForFile.has(kind)) return;
+        reportedForFile.add(kind);
+        findings.push({
+          id: `DIFF:pred-weak:${file}:${firstDelLine}:${kind}`,
+          rule: "diff-predicate-weakened",
+          category: "cheat",
+          rung: "R0",
+          severity: "warn",
+          file,
+          line: firstDelLine,
+          message: `Diff removed a '${kind}' invariant in ${file}:${firstDelLine} (${detail}).`,
+          fix: "Preserve the removed branch/clause/comparison guard or add a regression test proving the narrowed condition is intentional.",
+        });
+      };
+
+      const delIfs = countPattern(dels, IF_BRANCH_LINE);
+      const addIfs = countPattern(adds, IF_BRANCH_LINE);
+      if (delIfs > addIfs) {
+        emitWeakened("guard-branch-dropped", `if/elif branches ${delIfs} -> ${addIfs}`);
+        continue;
+      }
+
+      const delBool = countPattern(dels, BOOL_CLAUSE_OP);
+      const addBool = countPattern(adds, BOOL_CLAUSE_OP);
+      if (delBool > addBool) {
+        emitWeakened("predicate-clause-stripped", `boolean guard clauses ${delBool} -> ${addBool}`);
+        continue;
+      }
+
+      const delCmp = countPattern(dels, CMP_BOUND_OP);
+      const addCmp = countPattern(adds, CMP_BOUND_OP);
+      if (delCmp > addCmp) {
+        emitWeakened("boundary-comparison-dropped", `comparison bounds ${delCmp} -> ${addCmp}`);
+        continue;
+      }
+
+      const delArms = countPattern(dels, TRY_OR_ARM_LINE);
+      const addArms = countPattern(adds, TRY_OR_ARM_LINE);
+      if (delArms > addArms) {
+        emitWeakened("try-catch-or-match-arm-dropped", `try/case/match arms ${delArms} -> ${addArms}`);
+        continue;
+      }
+
+      const delCycle = countPattern(dels, CYCLE_OR_VALIDATE_GUARD);
+      const addCycle = countPattern(adds, CYCLE_OR_VALIDATE_GUARD);
+      if (delCycle > addCycle) {
+        emitWeakened("cycle-or-validation-guard-dropped", `cycle/validation guards ${delCycle} -> ${addCycle}`);
       }
     }
   }

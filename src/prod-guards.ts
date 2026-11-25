@@ -1,5 +1,6 @@
 import { analyzeBlackHoleReplayGuards } from "./ast/blackhole-replay-guards.ts";
 import { analyzeBlackHoleArchGates } from "./ast/cross-file-graph.ts";
+import { analyzeDeviantInvariants } from "./ast/deviant-invariants.ts";
 import { analyzeImmuneSystemGates } from "./ast/immune-gates.ts";
 import { analyzeInvariantGuards } from "./ast/invariant-loss.ts";
 import { analyzeLinearObligations } from "./ast/linear-obligations.ts";
@@ -239,6 +240,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
   findings.push(...analyzeEcosystemGuards(repo));
   findings.push(...analyzeBlackHoleArchGates(repo));
   findings.push(...analyzeImmuneSystemGates(repo));
+  findings.push(...analyzeDeviantInvariants(repo));
 
   return findings;
 }
