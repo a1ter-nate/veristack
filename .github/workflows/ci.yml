@@ -59,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
-      - run: uv run --project templates/python-reference ruff check templates/python-reference
-      - run: uv run --project templates/python-reference ruff format --check templates/python-reference
-      - run: uv run --project templates/python-reference mypy templates/python-reference/src templates/python-reference/tests
-      - run: uv run --project templates/python-reference pytest templates/python-reference
+      - run: uv run --project templates/python-reference ruff check templates/python-reference examples/python/clean
+      - run: uv run --project templates/python-reference ruff format --check templates/python-reference examples/python/clean
+      - run: uv run --project templates/python-reference mypy templates/python-reference/src templates/python-reference/tests examples/python/clean
+      - run: PYTHONPATH=examples/python/clean uv run --project templates/python-reference pytest templates/python-reference examples/python/clean

@@ -1,6 +1,6 @@
-from collections import deque
 import re
 import time
+from collections import deque
 
 
 class InvariantViolationError(RuntimeError):

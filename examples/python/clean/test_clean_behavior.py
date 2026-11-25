@@ -1,5 +1,11 @@
 import pytest
-from explicit_state_machine import Captured, Failed, Pending, PaymentState, describe_payment
+from explicit_state_machine import (
+    Captured,
+    Failed,
+    PaymentState,
+    Pending,
+    describe_payment,
+)
 
 
 @pytest.mark.parametrize(
