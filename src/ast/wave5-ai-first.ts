@@ -231,8 +231,12 @@ export function analyzeWave5AiFirstGuards(file: ScannedFile): Finding[] {
     }
   }
 
+  const usesNodeChildProcess = /\bchild_process\b|\bimport\s*\{[^}]*\bspawn\b[^}]*\}\s*from\s*["'](?:node:)?child_process["']/.test(raw);
   for (const m of prodCode.matchAll(AGENT_SPAWN_CALL)) {
     const idx = m.index ?? 0;
+    if (!usesNodeChildProcess && !m[0].startsWith("child_process.")) continue;
+    const beforeChar = idx > 0 ? prodCode[idx - 1] ?? "" : "";
+    if (beforeChar === "." && !m[0].startsWith("child_process.")) continue;
     const after = prodCode.slice(idx, idx + 450);
     const rawAfter = prodRaw.slice(idx, idx + 450);
     if (!/\.on\s*\(\s*["']error["']|\.once\s*\(\s*["']error["']/.test(rawAfter) && !/\bspawnSync\b/.test(after)) {

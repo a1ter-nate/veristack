@@ -26,7 +26,8 @@ const REAL_DB_SIGNAL =
 const REAL_BUS_SIGNAL = /\b(?:ServiceBusClient|RabbitMQ|KafkaContainer|DeadLetter|MaxDeliveryCount)\b/i;
 const NETWORK_MOCK_SIGNAL = /\b(?:page\.route|cy\.intercept|setupServer|nock|wiremock::MockServer|mockito::Server|respx\.mock)\s*\(|\b(?:msw|respx)\b/i;
 
-const MODULE_MOCK = /\b(?:vi|jest)\.mock\s*\(|\b(?:vi|jest)\.unstable_mockModule\s*\(|\bmock\.module\s*\(|\b(?:unittest\.mock\.)?patch(?:\.object)?\s*\(/g;
+const JS_MODULE_MOCK = /\b(?:vi|jest)\.mock\s*\(|\b(?:vi|jest)\.unstable_mockModule\s*\(|\bmock\.module\s*\(/g;
+const PY_MODULE_MOCK = /@\s*(?:unittest\.mock\.)?patch(?:\.object)?\s*\(|\b(?:unittest\.mock|mock)\.patch(?:\.object)?\s*\(/g;
 const TEST_DOUBLE =
   /\bnew\s+Mock\s*<|\bSubstitute\.For\s*[<(]|\bA\.Fake\s*<|\bMock[A-Z][A-Za-z0-9_]*::new\s*\(|#\[automock\]|\b(?:MagicMock|AsyncMock|Mock)\s*\(|\bsinon\.(?:stub|mock)\s*\(|\bvi\.fn\s*\(\s*(?:\(|async|function)/g;
 const FIXED_SLEEP =
@@ -102,9 +103,11 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
   ): number => {
     let count = 0;
     for (const m of target.matchAll(regex)) {
+      const idx = m.index ?? 0;
+      if (target === raw && code[idx] === " ") continue;
       count += 1;
       if (count <= limit) {
-        const line = lineOf(target, m.index ?? 0);
+        const line = lineOf(target, idx);
         findings.push({
           id: `TS:${rule}:${file.rel}:${line}`,
           rule,
@@ -166,7 +169,7 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
 
   addMatches(
     code,
-    MODULE_MOCK,
+    file.language === "python" ? PY_MODULE_MOCK : JS_MODULE_MOCK,
     "no-test-doubles",
     "test-smell",
     "error",

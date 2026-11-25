@@ -66,12 +66,14 @@ function inspectVarUsageAfter(after: string, varName: string): { isGuarded: bool
     const prev = pos > 0 ? after[pos - 1] : "";
     const next = after[pos + varName.length];
     if (!isIdentChar(prev) && !isIdentChar(next)) {
-      const beforeSlice = after.slice(Math.max(0, pos - 16), pos);
+      const beforeSlice = after.slice(Math.max(0, pos - 36), pos);
       const afterSlice = after.slice(pos + varName.length, pos + varName.length + 28);
       const explicitNullish = /^\s*(?:\?\.|\?\?|===?\s*(?:null|undefined)\b|!==?\s*(?:null|undefined)\b)/.test(afterSlice);
       if (
         explicitNullish ||
         /\bif\s*\(\s*!?\s*$/.test(beforeSlice) ||
+        /(?:&&|\|\|)\s*!?\s*$/.test(beforeSlice) ||
+        /\b(?:is|has)[A-Z][A-Za-z0-9_]*\s*\(\s*$/.test(beforeSlice) ||
         /^\s*(?:&&|\?(?!\?|\.))/.test(afterSlice) ||
         (/!\s*$/.test(beforeSlice) && /^\s*\|\|/.test(afterSlice))
       ) {
