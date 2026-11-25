@@ -84,16 +84,23 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       encoding: "utf8",
     });
     if (revCheck.status !== 0) {
+      const isShallow =
+        (spawnSync("git", ["-C", repo.root, "rev-parse", "--is-shallow-repository"], { encoding: "utf8" }).stdout ?? "")
+          .trim() === "true";
       findings.push({
         id: `FS:unknown-commit:${entry.id}`,
         rule: "formal-sync-unknown-commit",
         category: "oracle-lock",
         rung: "R5",
-        severity: "warn",
+        severity: isShallow ? "info" : "warn",
         file: parsed.planRel,
         line: 1,
-        message: `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' not found in local git history (shallow clone or rebased).`,
-        fix: "Re-verify the formal model against HEAD and update syncCommit.",
+        message: isShallow
+          ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history.`
+          : `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' not found in local git history (rebased or pruned).`,
+        fix: isShallow
+          ? "Fetch deeper history in CI or advance syncCommit after re-verifying covered code."
+          : "Re-verify the formal model against HEAD and update syncCommit.",
       });
       continue;
     }

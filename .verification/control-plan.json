@@ -29,5 +29,18 @@
       "controlRef": "tests/formal-verification.test.ts",
       "reqId": "REQ-CIRCUIT-SAFETY-01"
     }
+  ],
+  "formalChecks": [
+    {
+      "id": "FM-001",
+      "specFile": "templates/formal/order_lifecycle.qnt",
+      "coveredPaths": [
+        "templates/csharp-reference/OrderLifecycle.Domain/OrderState.cs",
+        "templates/rust-reference/src/lib.rs",
+        "templates/python-reference/src/order_lifecycle/machine.py"
+      ],
+      "syncCommit": "c385acf919a5ab88b19e34918a3d589fd90ea833",
+      "bounds": "All reachable order lifecycle states (Pending, Authorized, Shipped, Cancelled)"
+    }
   ]
 }

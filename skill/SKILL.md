@@ -40,9 +40,9 @@ Use these terms consistently across plans, PR evidence, and reviews:
 
 ### Phase 0: Measure Ground Truth
 
-Run `vstack scan . --json` before proposing or editing tests (see `vstack --help` for subcommands like `no-comments`, `state-machines`, `diff-cheats`, `red-before-fix`, `mcdc`, `spc`, `big-o`, and `circuit`).
+Run `vstack scan . --json` before proposing or editing tests (on brownfield repos, pair with `--ratchet .verification/ratchet.json`; see `vstack --help` for `no-comments`, `state-machines`, `diff-cheats`, `formal-sync`, `red-before-fix`, `mcdc`, `spc`, `big-o`, and `circuit`).
 
-- **Done when:** you have the scanner's rung coverage, cheat/error counts, and ranked push-down candidates in hand. Clear all existing `cheat`, `no-comments`, and `no-implicit-state-machine` errors before adding new checks.
+- **Done when:** you have the scanner's rung coverage, cheat/error counts, and ranked push-down candidates in hand. Clear all existing `cheat`, `no-comments`, `no-implicit-state-machine`, and `formal-spec-stale` errors before adding new checks.
 
 ### Phase 1: Agree Seams & Minimum Valid Rung
 
@@ -76,7 +76,7 @@ For every requirement, bugfix, or test above `R2`:
 
 1. For bugfixes, prove `vstack red-before-fix . --base <ref> --test-cmd "<cmd>"` fails on the unfixed base and passes on the fix. Record repeat defect classes (`>= 2×`) in `.verification/escapes.json` and promote them to `R0`/`R1`.
 2. For new checks or push-downs, inject one controlled fault (or run diff mutation) to confirm the check goes **red**, restore, and confirm **green**.
-3. Run the repo's full static + test gate (and `vstack scan . --fail-on-cheats`), delete any redundant shallow tests replaced by stronger lower-rung checks, and emit a compact evidence line per moved/added check: `[ID | Old → New Rung | Failure Mechanism | Controlled-Fault Result | Residual Gap]`.
+3. Run the repo's full static + test gate (`vstack scan . --fail-on-cheats`, plus `vstack formal-sync . --fail` when formal models cover touched code and `--ratchet` on brownfield repos), delete redundant shallow tests replaced by stronger lower-rung checks, and emit a compact evidence line per moved/added check: `[ID | Old → New Rung | Failure Mechanism | Controlled-Fault Result | Residual Gap]`.
 
 - **Done when:** `0` errors, `0` cheats, `0` prose comments, `0` implicit state machines, controlled-fault red→green is confirmed, and redundant higher-rung tests are pruned.
 

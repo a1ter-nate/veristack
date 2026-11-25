@@ -96,7 +96,8 @@ Universal protocol spec: [templates/formal/order_lifecycle.qnt](templates/formal
 ## What `vstack` Catches Out of the Box
 
 - **Zero-slop static locks:** `no-comments` (prose/excuse comments banned; `WARNING:`, `SAFETY:`, directives, and public docs allowed), `no-implicit-state-machine` (boolean soup, optional state bags, scattered mutations, non-exhaustive switches), escape hatches, swallowing catches, and unjustified suppressions.
-- **Anti-cheat CI & test integrity:** `continue-on-error: true`, `|| true`, `--no-verify`, retries/skips, `<NoWarn>`, blanket `#[allow]`, tautological/self-derived/multi-status asserts, fixed sleeps, coverage-farm files, and unexercised tests.
+- **Anti-cheat CI & test integrity:** `continue-on-error: true`, `|| true`, `--no-verify`, retries/skips, missing `timeout-minutes`/`concurrency`, `<NoWarn>`, blanket `#[allow]`, tautological/self-derived/multi-status asserts, fixed sleeps, coverage-farm files, and unexercised tests.
+- **Brownfield ratchets & formal sync (`V07`, `V25`):** Packwerk-style auto-shrinking `--ratchet` baselines for day-1 legacy adoption and `vstack formal-sync` commit-drift checks so formal models never silently pass on changed code.
 - **Cross-discipline zero-defect gates (`V30`–`V42`):** wall-clock duration CDC, unbounded loops, release-stripped prod asserts (`Debug.Assert` / `debug_assert!` / bare Python `assert`), `.verification/control-plan.json` FMEA & `REQ-*` traceability, `.verification/escapes.json` A3 repeat-defect Poka-Yoke ratchet, `red-before-fix`, `mcdc`, `spc`, `big-o`, and deterministic $O(N^2)$/N+1 perf-hygiene lints.
 - **4 plug-and-play 90/10 System 1 circuits:** deterministic static facts resolve ~90% at $0; only ambiguous items invoke a BYO System 1 model under a formally verified 3-band confidence + contradiction-escalation policy (`test-triage`, `pr-risk-router`, `instruction-lint-promoter`, `perf-architecture-advisor`).
 
@@ -145,6 +146,7 @@ Veristack synthesizes ideas from public engineering literature, open-source tool
 - **John Ousterhout — *A Philosophy of Software Design*** — deep modules, narrow interfaces, and code locality.
 - **Meta Engineering (Mark Harman, Matthew Becker et al.) — [*Just-in-Time Catching Test Generation at Meta* (`arXiv:2601.22832`)](https://arxiv.org/abs/2601.22832)** — diff-time catching tests without permanent regression-suite bloat.
 - **TypeSafe AI (JEV)** — non-autoregressive, calibrated System 1 decision primitives composed with deterministic code.
+- **Shopify Packwerk & C++26 Contracts (`P2900R14`)** — auto-shrinking baseline ratchets for day-1 brownfield adoption and per-invariant `ignore`/`observe`/`enforce` modes.
 - **Lean, Silicon & Safety-Critical Classics** — Shigeo Shingo (*Zero Quality Control / Poka-Yoke*), Toyota Production System (*Jidoka*, *A3*), Walter Shewhart (*SPC / Nelson rules*), Genichi Taguchi (*orthogonal arrays*), Philip Crosby (*Rolled Throughput Yield*), NASA JPL (*Power of 10*), DO-178C (*MC/DC & bidirectional traceability*), SQLite (*TH3 & `1..N` fault sweeps*), and seL4 (*non-interference*).
 
 *Clean-room notice: Veristack is an original, from-scratch MIT implementation. No third-party source code was copied from any project listed above; every referenced open-source repository is cited openly for the ideas, rules, and engineering principles it inspired. See [skill/references/04-source-patterns-digest.md](skill/references/04-source-patterns-digest.md) for the full traceability map.*

@@ -56,7 +56,7 @@ Stops agents from writing green-looking tests that lie, flake, or slow down CI:
 * **CI & Diff Anti-Cheat Gate (`vstack diff-cheats`):**
   * Scan added diff lines (pinned to immutable base ref) and **hard-fail** on: `continue-on-error: true`, `|| true` / `|| :` after any test/lint/build command, added retries, added skips/xfail/`.only`/`[Ignore]`/`#[ignore]`/`@pytest.mark.skip`, `<TreatWarningsAsErrors>false</TreatWarningsAsErrors>`, `<NoWarn>`, blanket `#[allow(...)]`, `gc.disable()`, `--no-verify`/`HUSKY=0`/`SKIP=`, `pull_request_target`, `permissions: write-all` / `contents: write`.
   * **No `tail`/`head` pipes on test runs:** Write output to a file and read it; piping without `pipefail` masks non-zero exit codes.
-  * **CI workflow hygiene:** Avoid `paths:` filters on required status checks; treat logs/workflows/test names as untrusted data.
+  * **CI workflow hygiene:** Require `timeout-minutes` (`ci-missing-timeout`) and `concurrency:` cancel-in-progress (`ci-missing-concurrency`), avoid `fetch-depth: 0` (`ci-full-clone`) and `paths:` filters on required status checks, and treat logs/workflows/test names as untrusted data.
 * **`instruction-conflict` (`vstack`):** Zero contradictory commands/flags across `AGENTS.md`, `CLAUDE.md`, and skills; keep `AGENTS.md`/`CLAUDE.md` `< 200` lines.
 
 ---
@@ -77,8 +77,9 @@ Directly lowers tokens/task by forcing deep modules, narrow interfaces, and tigh
 | `no-prefix-cluster` | `landmines` / `vstack` | 0 sibling prefix clusters (`foo-a.ts`, `foo-b.ts`) | Groups cohesive files into a feature folder with an explicit entry point. |
 | `max-file-lines` / `long-file` | `landmines` / `vstack` | ≤ 500 prod / ≤ 2,000 hard | Prevents mega-files that overflow agent context windows. |
 
-### 2. Zero-Defect Performance & Runtime Safety Lints (`vstack` `V30`/`V31`/`V36`/`V42`)
+### 2. Zero-Defect Performance, UI Token & Runtime Safety Lints (`vstack` `V30`/`V31`/`V36`/`V42`)
 * **Dead Code:** `knip` (TS), Roslyn `CS0162`/`IDE0051` (C#), `dead_code` (Rust), `ruff` `F401`/`F841` (Python).
+* **Design-System Adherence (UI Repos):** Enforce semantic tokens and allowed component props via R0 lint rules and strict prop unions instead of prose guidelines.
 * **Clock CDC (`cdc-wall-clock-duration`):** Bans wall-clock subtraction for durations/TTLs across TS, C#, Rust, Python.
 * **Execution Bounds (`unbounded-loop-risk`):** Flags `while (true)` / `while True:` / `loop {` lacking an explicit iteration/fuel cap.
 * **Runtime Jidoka (`no-release-stripped-assert`):** Flags `Debug.Assert`, `debug_assert!`, and bare Python prod `assert`.
@@ -95,7 +96,7 @@ Directly lowers tokens/task by forcing deep modules, narrow interfaces, and tigh
 
 ## Adoption & Promotion Rules (How to Roll Out Without Blocking Legacy Repos)
 
-1. **Auto-Shrinking Allowlists (Mandatory for Legacy Code):** Use exact-count allowlists that fail if the count increases *or* decreases without tightening the baseline.
+1. **Auto-Shrinking Ratchets (Mandatory for Legacy Code):** Run `vstack scan . --ratchet .verification/ratchet.json` (Packwerk-style exact-count baseline) so CI fails if any rule count increases *or* decreases without tightening via `--update-ratchet`.
 2. **Agent-Ready Error Messages (`Rule / Why / Fix`):** Every custom rule must name the exact replacement pattern or helper so the agent fixes it in the same turn.
 3. **The Repeat-to-Rule Promotion Loop (`V33`):**
    * 1st occurrence → fix it + prove Red-Before-Fix (`vstack red-before-fix`).
