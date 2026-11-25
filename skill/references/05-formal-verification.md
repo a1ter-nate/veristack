@@ -27,6 +27,9 @@ Formal verification proves safety and reachability invariants across **every rea
    - Verifies actual implementation functions directly (no spec↔code drift) for panic freedom, arithmetic bounds, and postconditions.
 4. **Concurrency Schedule Exploration (`Loom` / `Shuttle`):**
    - Exhaustively explores thread/async interleavings to catch data races, deadlocks, and lost wakeups deterministically.
+5. **Sub-Second Constructive Laws (`Bend 2` / `LAWS.bend` + `vstack laws`):**
+   - Declares human-owned algebraic laws (`law cancel_idempotent(o: Order): {cancel(cancel(o)) == cancel(o) : Order}`) locked in `CODEOWNERS` so agents cannot weaken invariants, paired with explicit constructive proofs (`def cancel_idempotent`) verified sub-second via `bend check LAWS.bend --safe`.
+   - Reference template: [templates/bend2-reference/LAWS.bend](../../templates/bend2-reference/LAWS.bend). Audit ownership, proof witnesses, and escape hatches (`sorry`/`admit`/`unsafe`) via `vstack laws . --verify --fail`.
 
 ---
 
@@ -44,7 +47,7 @@ A formal spec that drifts from production code is worse than no spec because it 
 
 | Language | Universal / Native Tools | Runnable Proof in This Repo |
 | :--- | :--- | :--- |
-| **Universal (Protocol)** | **Quint** (`.qnt`), **TLA+** (`.tla` / `everystate`), **Alloy** (`.als`) | `templates/formal/order_lifecycle.qnt` |
+| **Universal (Protocol)** | **Quint** (`.qnt`), **TLA+** (`.tla` / `everystate`), **Alloy** (`.als`), **Bend 2** (`LAWS.bend`) | `templates/formal/order_lifecycle.qnt`, `templates/bend2-reference/LAWS.bend` |
 | **TypeScript / JS** | Exhaustive state-space model check, `z3-solver` (WASM SMT), Quint trace replay | `tests/formal-verification.test.ts` (proves 160/160 Circuit 3-band safety states) |
 | **C# / .NET** | Exhaustive BFS model check, **Dafny** (`.dfy` → C#), `Microsoft.Z3` | `templates/csharp-reference/OrderLifecycle.Tests/OrderFormalProofTests.cs` + `templates/csharp-reference/formal/OrderLifecycle.dfy` |
 | **Rust** | **`stateright`** (exhaustive BFS model checker), **`kani`** (`#[kani::proof]`), **`loom`** / **`shuttle`**, **`verus`** | `templates/rust-reference/tests/formal_model_check.rs` (`stateright`) + `#[cfg(kani)]` harnesses in `templates/rust-reference/src/lib.rs` |

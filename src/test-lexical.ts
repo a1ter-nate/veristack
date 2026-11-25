@@ -25,7 +25,8 @@ const MOCK_RESTORATION_CHECKS = [
   { key: "unstubEnvs", regex: /\bunstubEnvs\s*:\s*true\b/ },
 ] as const;
 
-export function maskStrings(text: string): string {
+function maskLexical(text: string, stripComments: boolean, language?: string): string {
+  const isPython = language === "python";
   const out = [...text];
   let quote = "";
   let tripleQuote = "";
@@ -35,6 +36,7 @@ export function maskStrings(text: string): string {
   let escaped = false;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i] ?? "";
+    const next = text[i + 1] ?? "";
     if (tripleQuote) {
       if (ch !== "\n" && ch !== "\r") out[i] = " ";
       if (ch === tripleQuote) {
@@ -52,7 +54,7 @@ export function maskStrings(text: string): string {
     if (verbatimCSharp) {
       if (ch !== "\n" && ch !== "\r") out[i] = " ";
       if (ch === '"') {
-        if (text[i + 1] === '"') {
+        if (next === '"') {
           out[i + 1] = " ";
           i += 1;
         } else {
@@ -75,7 +77,37 @@ export function maskStrings(text: string): string {
       continue;
     }
     if (!quote) {
-      if (ch === "@" && text[i + 1] === '"') {
+      if (stripComments && isPython && ch === "#") {
+        while (i < text.length && text[i] !== "\n") {
+          out[i] = " ";
+          i += 1;
+        }
+        continue;
+      }
+      if (stripComments && !isPython && ch === "/" && next === "/") {
+        while (i < text.length && text[i] !== "\n") {
+          out[i] = " ";
+          i += 1;
+        }
+        continue;
+      }
+      if (stripComments && !isPython && ch === "/" && next === "*") {
+        out[i] = " ";
+        out[i + 1] = " ";
+        i += 2;
+        while (i < text.length) {
+          if (text[i] === "*" && text[i + 1] === "/") {
+            out[i] = " ";
+            out[i + 1] = " ";
+            i += 1;
+            break;
+          }
+          if (text[i] !== "\n" && text[i] !== "\r") out[i] = " ";
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === "@" && next === '"') {
         out[i] = " ";
         out[i + 1] = " ";
         i += 1;
@@ -92,7 +124,7 @@ export function maskStrings(text: string): string {
           continue;
         }
       }
-      if ((ch === '"' || ch === "'") && text[i + 1] === ch && text[i + 2] === ch) {
+      if ((ch === '"' || ch === "'") && next === ch && text[i + 2] === ch) {
         let count = 3;
         while (text[i + count] === ch) count += 1;
         for (let k = 0; k < count; k++) out[i + k] = " ";
@@ -102,6 +134,9 @@ export function maskStrings(text: string): string {
         continue;
       }
       if (ch === '"' || ch === "'" || ch === "`") {
+        if (language === "rust" && ch === "'" && (next === "_" || /[A-Za-z]/.test(next)) && (text[i + 2] ?? "") !== "'") {
+          continue;
+        }
         quote = ch;
         out[i] = " ";
       }
@@ -124,6 +159,14 @@ export function maskStrings(text: string): string {
     if (ch === quote) quote = "";
   }
   return out.join("");
+}
+
+export function maskStrings(text: string): string {
+  return maskLexical(text, false);
+}
+
+export function maskCode(text: string, language?: string): string {
+  return maskLexical(text, true, language);
 }
 
 export function lineOf(content: string, index: number): number {

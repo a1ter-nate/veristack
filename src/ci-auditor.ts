@@ -421,6 +421,23 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
       });
     }
 
+    if (
+      (/\bgit\s+(?:log\s+--all|show\s+origin\/|rev-list\s+--all)\b/.test(added) && /test|spec/i.test(lowerFile)) ||
+      /\bprocess\.env\.NODE_ENV\s*===?\s*["']test["']\s*&&\s*[A-Za-z0-9_.]+\s*===?\s*["']/.test(added)
+    ) {
+      findings.push({
+        id: `DIFF:agent-cheat:${currentFile}:${currentLine}`,
+        rule: "diff-agent-oracle-tampering",
+        category: "cheat",
+        rung: "R0",
+        severity: "error",
+        file: currentFile,
+        line: currentLine,
+        message: "Added agent reward-hacking pattern (test-specific input hardcoding in prod or git history mining in tests).",
+        fix: "Implement the genuine general fix without branching on test inputs or inspecting git history.",
+      });
+    }
+
     if (isWorkflowOrScript) {
       for (const rule of WORKFLOW_CHEATS) {
         if (!rule.regex.test(stripped)) continue;

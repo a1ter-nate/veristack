@@ -65,6 +65,26 @@
       "math-floor-ceiling-inversion",
       "http-case-sensitive-header-directive",
       "require-try-finally-around-teardown"
+    ],
+    "ast_and_affine.ts": [
+      "ast-unsanitized-object-index",
+      "ast-taint-to-sink",
+      "ast-unsafe-eval-or-function",
+      "ast-duplicate-switch-case",
+      "ast-missing-await-in-try",
+      "affine-unreleased-resource",
+      "affine-use-after-close",
+      "affine-uncleaned-effect-subscription"
+    ],
+    "cve_and_postmortem.ts": [
+      "ast-unbounded-size-alloc",
+      "ast-archive-or-symlink-escape",
+      "ast-redos-superlinear-pattern",
+      "ast-incomplete-quote-escape-codegen",
+      "ast-unguarded-slice-or-auth-type",
+      "ast-ssrf-toctou-or-unpinned-fetch",
+      "jepsen-wall-clock-lease",
+      "node-timer-int32-overflow"
     ]
   },
   "clean": [
@@ -74,6 +94,8 @@
     "check-coverage-policy.test.ts",
     "safe_runtime_guards.ts",
     "safe_ecosystem_guards.ts",
-    "safe_oss_hardening.ts"
+    "safe_oss_hardening.ts",
+    "safe_ast_and_affine.ts",
+    "safe_cve_and_postmortem.ts"
   ]
 }

@@ -3,6 +3,7 @@ import type { DiscoveredRepo } from "./discover.ts";
 import { analyzeOracleAndInstructions } from "./oracle-audit.ts";
 import { analyzeProdZeroDefectRules } from "./prod-guards.ts";
 import { analyzeStateMachines } from "./state-machines/index.ts";
+import { maskCode } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
 import { auditZeroDefectArtifacts } from "./zero-defect/index.ts";
 import { analyzePerfHygiene } from "./zero-defect/perf-lints.ts";
@@ -82,7 +83,8 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
     }
 
     if ((file.language === "typescript" || file.language === "javascript") && !file.isTest && !isGenerated) {
-      const exports = file.content.match(EXPORT_DECL);
+      const codeOnly = maskCode(file.content, file.language);
+      const exports = codeOnly.match(EXPORT_DECL);
       if (exports && exports.length > MAX_EXPORTS) {
         findings.push({
           id: `ST:max-exports:${file.rel}`,
@@ -97,7 +99,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
         });
       }
 
-      for (const match of file.content.matchAll(TEST_ONLY_EXPORT)) {
+      for (const match of codeOnly.matchAll(TEST_ONLY_EXPORT)) {
         const line = lineOf(file.content, match.index ?? 0);
         findings.push({
           id: `ST:test-seam:${file.rel}:${line}`,
@@ -112,7 +114,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
         });
       }
 
-      for (const match of file.content.matchAll(SWALLOWING_CATCH)) {
+      for (const match of codeOnly.matchAll(SWALLOWING_CATCH)) {
         const line = lineOf(file.content, match.index ?? 0);
         findings.push({
           id: `ST:swallow-catch:${file.rel}:${line}`,
@@ -128,7 +130,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
       }
 
       if (file.language === "typescript") {
-        for (const match of file.content.matchAll(CHAINED_AS)) {
+        for (const match of codeOnly.matchAll(CHAINED_AS)) {
           const line = lineOf(file.content, match.index ?? 0);
           findings.push({
             id: `AS:cast:${file.rel}:${line}`,

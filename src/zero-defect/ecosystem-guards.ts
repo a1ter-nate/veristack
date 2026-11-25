@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
-import { lineOf, maskStrings } from "../test-lexical.ts";
+import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const TS_ANY_ANNOTATION = /(?:[,({]\s*[A-Za-z_$][A-Za-z0-9_$]*\??\s*:\s*any\b|\)\s*:\s*any\b|<\s*any\s*>)/g;
@@ -78,6 +78,8 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
 
   if (/^\.env\.(?:example|sample|template|dist)$/i.test(baseLower)) {
     for (const m of raw.matchAll(ENV_REAL_SECRET)) {
+      const tok = m[0] ?? "";
+      if (/0{6,}|X{6,}|EXAMPLE|PLACEHOLDER/i.test(tok)) continue;
       push(
         findings,
         file.rel,
@@ -93,17 +95,21 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
   }
 
   if (baseLower === "dockerfile" || baseLower.startsWith("dockerfile.")) {
-    if (DOCKER_CA_UPDATE.test(raw) && /\bnode\b/i.test(raw) && !/--use-system-ca|NODE_EXTRA_CA_CERTS/.test(raw)) {
-      push(
-        findings,
-        file.rel,
-        1,
-        "docker-node-missing-system-ca",
-        "R4",
-        "warn",
-        "Dockerfile updates system CA certificates for a Node image without setting NODE_OPTIONS=--use-system-ca or NODE_EXTRA_CA_CERTS.",
-        "Set ENV NODE_OPTIONS=--use-system-ca (Node 22.9+) or NODE_EXTRA_CA_CERTS so Node honors installed system CAs.",
-      );
+    const stages = raw.split(/^\s*FROM\s+/im).slice(1);
+    for (const stage of stages.length > 0 ? stages : [raw]) {
+      if (DOCKER_CA_UPDATE.test(stage) && /\bnode\b/i.test(stage) && !/--use-system-ca|NODE_EXTRA_CA_CERTS/.test(stage)) {
+        push(
+          findings,
+          file.rel,
+          1,
+          "docker-node-missing-system-ca",
+          "R4",
+          "warn",
+          "Dockerfile stage updates system CA certificates for a Node image without setting NODE_OPTIONS=--use-system-ca or NODE_EXTRA_CA_CERTS.",
+          "Set ENV NODE_OPTIONS=--use-system-ca (Node 22.9+) or NODE_EXTRA_CA_CERTS so Node honors installed system CAs.",
+        );
+        break;
+      }
     }
     return;
   }
@@ -142,7 +148,7 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
 
   if (!file.language || file.isTest) return;
 
-  const masked = maskStrings(raw);
+  const masked = maskCode(raw, file.language);
 
   if (file.language === "rust") {
     const cfgTestIdx = raw.search(/#\[cfg\(test\)\]/);
@@ -253,6 +259,7 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
 
   for (const m of raw.matchAll(EVALUATOR_PASS_LITERAL)) {
     const idx = m.index ?? 0;
+    if (masked[idx] === " ") continue;
     const win = raw.slice(Math.max(0, idx - 260), idx + 200);
     if (/\b(?:violators|violations)\b/.test(win) && !/\b(?:violators|violations)\.length\s*(?:===?|<=?|>)\s*0/.test(win)) {
       push(
@@ -300,7 +307,7 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
 
     for (const m of raw.matchAll(JSX_ANCHOR_TAG)) {
       const attrs = m[1] ?? "";
-      if (!/\bhref\s*=|\{\s*\.\.\./.test(attrs)) {
+      if (!/\b(?:href|render)\s*=|\{\s*\.\.\./.test(attrs)) {
         push(
           findings,
           file.rel,
@@ -330,10 +337,12 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
   }
 
   for (const m of raw.matchAll(POPSTATE_LISTENER)) {
+    const idx = m.index ?? 0;
+    if (masked[idx] === " ") continue;
     push(
       findings,
       file.rel,
-      lineOf(raw, m.index ?? 0),
+      lineOf(raw, idx),
       "ui-popstate-pushstate-loop",
       "R1",
       "error",
@@ -362,6 +371,7 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
 
   for (const m of raw.matchAll(DATETIMEFORMAT_RAW_NEW_DATE)) {
     const idx = m.index ?? 0;
+    if (masked[idx] === " ") continue;
     const win = raw.slice(Math.max(0, idx - 220), idx + 120);
     if (/\b(?:isNaN|Number\.isNaN)\b/.test(win)) continue;
     push(

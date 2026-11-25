@@ -1,5 +1,5 @@
 import type { ScannedFile } from "../discover.ts";
-import { lineOf, maskStrings } from "../test-lexical.ts";
+import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const UNESCAPED_SCRIPT_INTERP =
@@ -125,9 +125,13 @@ function scanPythonOss(file: ScannedFile, raw: string, masked: string, findings:
   }
 
   for (const m of raw.matchAll(PY_CASE_SENSITIVE_HEADER)) {
+    const idx = m.index ?? 0;
     if ((m[1] ?? "").includes(".lower")) continue;
+    const lineStart = raw.lastIndexOf("\n", idx) + 1;
+    if (/^\s*#/.test(raw.slice(lineStart, idx))) continue;
+    if (masked[idx + (m[0]?.indexOf(" in ") ?? 0) + 1] === " ") continue;
     push(
-      findings, file.rel, lineOf(raw, m.index ?? 0), "http-case-sensitive-header-directive", "R1", "warn",
+      findings, file.rel, lineOf(raw, idx), "http-case-sensitive-header-directive", "R1", "warn",
       "HTTP header directive check is case-sensitive without normalizing via .lower()/.toLowerCase().",
       "Normalize HTTP header values to lowercase before matching directives.",
     );
@@ -136,11 +140,10 @@ function scanPythonOss(file: ScannedFile, raw: string, masked: string, findings:
 
 function scanRustOss(file: ScannedFile, raw: string, masked: string, findings: Finding[]): void {
   const cfgTestIdx = raw.search(/#\[cfg\(test\)\]/);
-  const prodRaw = cfgTestIdx >= 0 ? raw.slice(0, cfgTestIdx) : raw;
   const prodMasked = cfgTestIdx >= 0 ? masked.slice(0, cfgTestIdx) : masked;
 
-  if (/#\[serde\([^\]]*deny_unknown_fields[^\]]*\)\]/.test(prodRaw) && /#\[serde\([^\]]*flatten[^\]]*\)\]/.test(prodRaw)) {
-    const idx = prodRaw.search(/#\[serde\([^\]]*deny_unknown_fields[^\]]*\)\]/);
+  if (/#\[serde\([^\]]*deny_unknown_fields[^\]]*\)\]/.test(prodMasked) && /#\[serde\([^\]]*flatten[^\]]*\)\]/.test(prodMasked)) {
+    const idx = prodMasked.search(/#\[serde\([^\]]*deny_unknown_fields[^\]]*\)\]/);
     push(
       findings, file.rel, lineOf(raw, Math.max(0, idx)), "serde-deny-unknown-with-flatten", "R0", "error",
       "Combining #[serde(deny_unknown_fields)] with #[serde(flatten)] is unsupported in Serde and rejects valid payloads at runtime.",
@@ -164,9 +167,9 @@ function scanRustOss(file: ScannedFile, raw: string, masked: string, findings: F
     );
   }
 
-  for (const m of prodRaw.matchAll(RUST_POLL_FN)) {
+  for (const m of prodMasked.matchAll(RUST_POLL_FN)) {
     const start = m.index ?? 0;
-    const body = extractBlock(prodRaw, start + m[0].length - 1);
+    const body = extractBlock(prodMasked, start + m[0].length - 1);
     if (!body || !/\bPoll::Pending\b/.test(body) || /\b(?:cx|waker|Context)\b/.test(body.slice(1))) continue;
     push(
       findings, file.rel, lineOf(raw, start), "rust-poll-pending-no-waker", "R1", "error",
@@ -202,7 +205,7 @@ function scanRustOss(file: ScannedFile, raw: string, masked: string, findings: F
 export function analyzeOssGuards(file: ScannedFile): Finding[] {
   const findings: Finding[] = [];
   const raw = file.content;
-  const masked = maskStrings(raw);
+  const masked = maskCode(raw, file.language);
 
   if (file.language === "python") {
     scanPythonOss(file, raw, masked, findings);

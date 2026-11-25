@@ -40,7 +40,7 @@ Use these terms consistently across plans, PR evidence, and reviews:
 
 ### Phase 0: Measure Ground Truth
 
-Run `vstack scan . --json` before proposing or editing tests (on brownfield repos, pair with `--ratchet .verification/ratchet.json`; see `vstack --help` for `no-comments`, `state-machines`, `diff-cheats`, `formal-sync`, `red-before-fix`, `mcdc`, `spc`, `big-o`, and `circuit`).
+Run `vstack scan . --json` before proposing or editing tests (on brownfield repos, pair with `--ratchet .verification/ratchet.json`; see `vstack --help` for `no-comments`, `state-machines`, `diff-cheats`, `formal-sync`, `laws`, `bench`, `red-before-fix`, `mcdc`, `spc`, `big-o`, and `circuit`).
 
 - **Done when:** you have the scanner's rung coverage, cheat/error counts, and ranked push-down candidates in hand. Clear all existing `cheat`, `no-comments`, `no-implicit-state-machine`, and `formal-spec-stale` errors before adding new checks.
 

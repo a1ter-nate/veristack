@@ -1,0 +1,194 @@
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
+import { lineOf } from "../test-lexical.ts";
+import type { Finding } from "../types.ts";
+
+export interface LawCheckResult {
+  lawFiles: string[];
+  declaredLaws: number;
+  verifiedBackends: Array<{ file: string; backend: string; status: "passed" | "failed" | "skipped"; detail: string }>;
+  findings: Finding[];
+}
+
+const BEND_LAW_DECL = /^\s*(?:law|theorem)\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm;
+const BEND_DEF_DECL = /^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm;
+const BEND_UNSAFE_ESCAPE = /\b(?:unsafe|sorry|admit|todo!|panic!)\b/g;
+
+function isLawFile(rel: string): boolean {
+  const base = path.posix.basename(rel);
+  return (
+    base === "LAWS.bend" ||
+    base.endsWith(".laws.bend") ||
+    base.endsWith(".laws.json") ||
+    /(?:^|\/)\.verification\/laws\//.test(rel)
+  );
+}
+
+function hasCodeownersCoverage(repo: DiscoveredRepo, lawRel: string): boolean {
+  const co = repo.files.find((f) => /(?:^|\/)codeowners$/i.test(f.rel));
+  if (!co) return false;
+  const lines = co.content
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("#"));
+  for (const line of lines) {
+    const pattern = line.split(/\s+/)[0] ?? "";
+    const norm = pattern.replace(/^\/+/, "");
+    if (norm === "*" || norm === lawRel || (norm.endsWith("/") && lawRel.startsWith(norm))) return true;
+    if (norm.endsWith("*.bend") && lawRel.endsWith(".bend")) return true;
+    if (norm.includes("LAWS.bend") && lawRel.endsWith("LAWS.bend")) return true;
+  }
+  return false;
+}
+
+function auditBendLawFile(file: ScannedFile, findings: Finding[]): number {
+  const declared: Array<{ name: string; offset: number }> = [];
+  for (const m of file.content.matchAll(BEND_LAW_DECL)) {
+    if (m[1]) declared.push({ name: m[1], offset: m.index ?? 0 });
+  }
+  const defs = new Set<string>();
+  for (const m of file.content.matchAll(BEND_DEF_DECL)) {
+    if (m[1]) defs.add(m[1]);
+  }
+  for (const law of declared) {
+    if (!defs.has(law.name)) {
+      const line = lineOf(file.content, law.offset);
+      findings.push({
+        id: `LAW:missing-witness:${file.rel}:${line}`,
+        rule: "laws-missing-witness",
+        category: "oracle-lock",
+        rung: "R5",
+        severity: "error",
+        file: file.rel,
+        line,
+        message: `Bend 2 law '${law.name}' has no matching constructive proof definition ('def ${law.name}').`,
+        fix: `Provide a total proof function 'def ${law.name}(...)' that inhabits the law type and check with 'bend ${file.rel} --safe'.`,
+      });
+    }
+  }
+  for (const m of file.content.matchAll(BEND_UNSAFE_ESCAPE)) {
+    const line = lineOf(file.content, m.index ?? 0);
+    findings.push({
+      id: `LAW:unsafe-escape:${file.rel}:${line}`,
+      rule: "laws-bend-unsafe-escape",
+      category: "cheat",
+      rung: "R0",
+      severity: "error",
+      file: file.rel,
+      line,
+      message: `Proof escape hatch '${m[0]}' inside law file undermines mechanical verification.`,
+      fix: "Complete the constructive proof without unsafe/sorry/admit escapes.",
+    });
+  }
+  return declared.length;
+}
+
+function auditJsonLawFile(file: ScannedFile, repo: DiscoveredRepo, findings: Finding[]): number {
+  try {
+    const parsed = JSON.parse(file.content) as { laws?: Array<{ id?: string; witnessRef?: string; invariant?: string }> };
+    const laws = Array.isArray(parsed.laws) ? parsed.laws : [];
+    const allPaths = new Set(repo.allRelPaths);
+    for (const law of laws) {
+      const id = law.id ?? "unnamed";
+      if (!law.witnessRef || !allPaths.has(law.witnessRef)) {
+        findings.push({
+          id: `LAW:json-witness:${file.rel}:${id}`,
+          rule: "laws-missing-witness",
+          category: "oracle-lock",
+          rung: "R3",
+          severity: "error",
+          file: file.rel,
+          line: 1,
+          message: `Executable law '${id}' in ${file.rel} references missing witness '${law.witnessRef ?? ""}'.`,
+          fix: "Point witnessRef to an existing Bend 2 proof, Quint spec, Kani harness, or PBT/MBT test file.",
+        });
+      }
+    }
+    return laws.length;
+  } catch {
+    findings.push({
+      id: `LAW:invalid-json:${file.rel}`,
+      rule: "laws-invalid-json",
+      category: "oracle-lock",
+      rung: "R1",
+      severity: "error",
+      file: file.rel,
+      line: 1,
+      message: `Law manifest ${file.rel} is not valid JSON.`,
+      fix: "Fix JSON syntax with { laws: [{ id, invariant, witnessRef }] }.",
+    });
+    return 0;
+  }
+}
+
+export function auditLaws(repo: DiscoveredRepo, options?: { verify?: boolean }): LawCheckResult {
+  const findings: Finding[] = [];
+  const lawFiles: string[] = [];
+  const verifiedBackends: LawCheckResult["verifiedBackends"] = [];
+  let declaredLaws = 0;
+
+  const hasCodeowners = repo.files.some((f) => /(?:^|\/)codeowners$/i.test(f.rel));
+
+  for (const file of repo.files) {
+    if (!isLawFile(file.rel)) continue;
+    lawFiles.push(file.rel);
+
+    if (hasCodeowners && !hasCodeownersCoverage(repo, file.rel) && !file.rel.startsWith("templates/")) {
+      findings.push({
+        id: `LAW:unowned:${file.rel}`,
+        rule: "laws-unowned-by-codeowners",
+        category: "oracle-lock",
+        rung: "R0",
+        severity: "error",
+        file: file.rel,
+        line: 1,
+        message: `Law file ${file.rel} is not protected by CODEOWNERS — implementing agents could weaken invariants.`,
+        fix: `Lock ${file.rel} (or .verification/laws/ / LAWS.bend) in CODEOWNERS so only human reviewers can modify laws.`,
+      });
+    }
+
+    if (file.rel.endsWith(".bend")) {
+      declaredLaws += auditBendLawFile(file, findings);
+      if (options?.verify) {
+        const probe = spawnSync("bend", ["check", path.join(repo.root, file.rel), "--safe"], { encoding: "utf8", timeout: 15000 });
+        if (probe.error) {
+          verifiedBackends.push({ file: file.rel, backend: "bend2", status: "skipped", detail: "bend CLI not installed on PATH" });
+        } else if (probe.status === 0) {
+          verifiedBackends.push({ file: file.rel, backend: "bend2", status: "passed", detail: "bend --safe verified" });
+        } else {
+          const detail = (probe.stderr || probe.stdout || "verification failed").trim().slice(0, 200);
+          verifiedBackends.push({ file: file.rel, backend: "bend2", status: "failed", detail });
+          findings.push({
+            id: `LAW:bend-fail:${file.rel}`,
+            rule: "laws-bend-check-failed",
+            category: "oracle-lock",
+            rung: "R5",
+            severity: "error",
+            file: file.rel,
+            line: 1,
+            message: `Bend 2 proof verification failed for ${file.rel}: ${detail}`,
+            fix: "Fix the failing Bend 2 proof definition or implementation until 'bend check --safe' exits 0.",
+          });
+        }
+      }
+    } else if (file.rel.endsWith(".laws.json")) {
+      declaredLaws += auditJsonLawFile(file, repo, findings);
+    }
+  }
+
+  return { lawFiles, declaredLaws, verifiedBackends, findings };
+}
+
+export function formatLawsReport(result: LawCheckResult): string {
+  const lines = [
+    `laws: ${result.lawFiles.length} law file(s), ${result.declaredLaws} declared law(s), ${result.findings.length} finding(s).`,
+  ];
+  for (const b of result.verifiedBackends) {
+    lines.push(`  [${b.status.toUpperCase()}] ${b.backend} ${b.file} — ${b.detail}`);
+  }
+  for (const f of result.findings) {
+    lines.push(`  - [${f.severity.toUpperCase()}] ${f.rule} ${f.file}:${f.line} — ${f.message}\n      Fix: ${f.fix}`);
+  }
+  return lines.join("\n");
+}

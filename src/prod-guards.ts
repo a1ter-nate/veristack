@@ -1,6 +1,9 @@
+import { analyzeLinearObligations } from "./ast/linear-obligations.ts";
+import { analyzeTsAstGuards, parseTsAst } from "./ast/ts-ast.ts";
 import type { DiscoveredRepo } from "./discover.ts";
-import { lineOf, maskStrings } from "./test-lexical.ts";
+import { lineOf, maskCode } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
+import { analyzeCveAndPostmortemGuards } from "./zero-defect/cve-and-agent-guards.ts";
 import { analyzeEcosystemGuards } from "./zero-defect/ecosystem-guards.ts";
 import { analyzeOssGuards } from "./zero-defect/oss-guards.ts";
 import { analyzeRuntimeGuards } from "./zero-defect/runtime-guards.ts";
@@ -27,9 +30,13 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
   const findings: Finding[] = [];
 
   for (const file of repo.files) {
+    if (file.rel.endsWith(".sql") && /(?:^|\/)migrations?\//i.test(file.rel)) {
+      findings.push(...analyzeCveAndPostmortemGuards(file));
+      continue;
+    }
     if (!file.language || file.isTest || GENERATED_PATH.test(file.rel)) continue;
     const raw = file.content;
-    const maskedAll = maskStrings(raw);
+    const maskedAll = maskCode(raw, file.language);
     const cfgTestIdx = file.language === "rust" ? raw.search(/#\[cfg\(test\)\]/) : -1;
     const masked = cfgTestIdx >= 0 ? maskedAll.slice(0, cfgTestIdx) : maskedAll;
 
@@ -198,6 +205,10 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
 
     findings.push(...analyzeRuntimeGuards(file));
     findings.push(...analyzeOssGuards(file));
+    findings.push(...analyzeCveAndPostmortemGuards(file));
+    const ast = parseTsAst(file);
+    findings.push(...analyzeTsAstGuards(file, ast));
+    findings.push(...analyzeLinearObligations(file, ast));
   }
 
   findings.push(...analyzeEcosystemGuards(repo));

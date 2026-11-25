@@ -15,9 +15,11 @@ import { analyzeStateMachines } from "./state-machines/index.ts";
 import { buildSystem1Packet, corroborateSystem1Batch } from "./system1-classifier.ts";
 import { runSystem1Provider } from "./system1-providers.ts";
 import type { CircuitId, Finding, System1ModelAnswer, System1ProviderId } from "./types.ts";
+import { formatBenchReport, runPrecisionBench } from "./zero-defect/bench.ts";
 import { fitEmpiricalBigO, type ScalingSample } from "./zero-defect/big-o.ts";
 import { auditFormalSync, formatFormalSyncReport } from "./zero-defect/formal-sync.ts";
 import { evaluateSpcSeries, generateMcdcVectors, runRedBeforeFix } from "./zero-defect/index.ts";
+import { auditLaws, formatLawsReport } from "./zero-defect/laws.ts";
 
 const VALID_PROVIDERS = new Set<System1ProviderId>(["laya", "jev", "local", "command", "fixture"]);
 const VALID_CIRCUITS = new Set<CircuitId>([
@@ -37,6 +39,8 @@ function usage(): string {
     "  vstack state-machines [dir] [--json] [--fail]",
     "  vstack diff-cheats [dir] [--base <ref>] [--json] [--fail]",
     "  vstack formal-sync [dir] [--json] [--fail]",
+    "  vstack laws [dir] [--verify] [--json] [--fail]",
+    "  vstack bench [dir] [--corpus <dir>] [--json] [--fail]",
     "  vstack classify [dir] [--max <n>] [--emit-requests] [--provider <laya|jev|local|command|fixture>] [--endpoint <url>] [--model <name>] [--command <cmd>] [--corroborate <answers.json>] [--json]",
     "  vstack circuit list [--json]",
     "  vstack circuit run <test-triage|pr-risk-router|instruction-lint-promoter|perf-architecture-advisor> [dir] [--provider <jev|laya|local|command|fixture>] [--endpoint <url>] [--model <name>] [--command <cmd>] [--base <ref>] [--max <n>] [--json]",
@@ -68,6 +72,7 @@ function firstPositional(args: readonly string[]): string {
     "--max-time-exp",
     "--max-space-exp",
     "--ratchet",
+    "--corpus",
   ]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -158,6 +163,22 @@ async function run(): Promise<number> {
     if (asJson) console.log(JSON.stringify({ findings }, null, 2));
     else console.log(formatFormalSyncReport(findings));
     return rest.includes("--fail") && findings.length > 0 ? 1 : 0;
+  }
+
+  if (cmd === "laws") {
+    const repo = discoverRepo(target);
+    const result = auditLaws(repo, { verify: rest.includes("--verify") });
+    if (asJson) console.log(JSON.stringify(result, null, 2));
+    else console.log(formatLawsReport(result));
+    return rest.includes("--fail") && result.findings.length > 0 ? 1 : 0;
+  }
+
+  if (cmd === "bench") {
+    const corpus = parseFlagValue(rest, "--corpus");
+    const report = runPrecisionBench(target, corpus);
+    if (asJson) console.log(JSON.stringify(report, null, 2));
+    else console.log(formatBenchReport(report));
+    return rest.includes("--fail") && !report.passed ? 1 : 0;
   }
 
   if (cmd === "no-comments") {

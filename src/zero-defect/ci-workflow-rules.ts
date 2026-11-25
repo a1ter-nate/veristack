@@ -212,6 +212,34 @@ export function auditExtendedCiRules(file: ScannedFile): Finding[] {
           fix: "Run the app build step in this job or depend on a build-artifact producer via needs: + download-artifact.",
         });
       }
+
+      if (/\b(?:linkcheck|lychee|markdown-link-check)\b/i.test(job.body) && /^\s*pull_request\s*:/m.test(file.content) && !/^\s*schedule\s*:/m.test(file.content)) {
+        findings.push({
+          id: `CI:ext-linkcheck:${file.rel}:${job.startLine}`,
+          rule: "ci-blocking-external-linkcheck",
+          category: "ci-hygiene",
+          rung: "R6",
+          severity: "warn",
+          file: file.rel,
+          line: job.startLine,
+          message: `Job '${job.name}' runs live external link-checking on pull_request — transient third-party 429/5xx errors flake unrelated PRs.`,
+          fix: "Move external link-checking to a scheduled nightly workflow or make it advisory on pull_request.",
+        });
+      }
+
+      if (/\bstrategy:\s*\r?\n\s*matrix:/m.test(job.body) && /\b(?:playwright|android|ios|webkit|firefox|emulator)\b/i.test(job.body) && !/upload-artifact/i.test(job.body)) {
+        findings.push({
+          id: `CI:matrix-artifacts:${file.rel}:${job.startLine}`,
+          rule: "ci-matrix-missing-failure-artifacts",
+          category: "ci-hygiene",
+          rung: "R6",
+          severity: "warn",
+          file: file.rel,
+          line: job.startLine,
+          message: `Cross-platform browser/emulator matrix job '${job.name}' does not upload traces/crash logs on failure.`,
+          fix: "Add an 'if: failure()' actions/upload-artifact step capturing Playwright traces, screenshots, or crash logs.",
+        });
+      }
     }
   }
 

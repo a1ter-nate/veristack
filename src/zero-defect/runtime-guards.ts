@@ -1,5 +1,5 @@
 import type { ScannedFile } from "../discover.ts";
-import { lineOf, maskStrings } from "../test-lexical.ts";
+import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const ERR_RESPONSE_STMT =
@@ -28,7 +28,6 @@ const RAW_DB_REEXPORT =
 const API_KEY_SIGNING = /\b(?:createHmac|jwt\.sign|signJwt)\s*\([^;\n]*\b[A-Z0-9_]*API_KEY\b/g;
 const UNDEFINED_IN_DB_WRITE = /\.\s*(?:set|update|add)\s*\(\s*\{[^}]{0,400}(?:\?\?\s*undefined\b|:\s*undefined\b)/g;
 const NOSQL_EQ_FALSE = /\.\s*where\s*\([^,\n]+,\s*(?:"=="|'==')\s*,\s*false\s*\)/g;
-const NON_NULL_ASSERT = /(?:\)|\]|[A-Za-z0-9_$])!(?=\s*(?:\.|\[|\)|,|;|\n|\r|$))/g;
 const WARN_ONLY_CATCH =
   /\bcatch\s*\([^)]*\)\s*\{\s*(?:logger|log|console)\s*\.\s*(?:warn|info|debug)\s*\([^}]*\)\s*;?\s*\}/g;
 const IGNORED_PARTIAL_STATUS = /\b(?:status\s*===?\s*207|multiStatus|partialFailure)\b/i;
@@ -192,12 +191,14 @@ function push(
 export function analyzeRuntimeGuards(file: ScannedFile): Finding[] {
   const findings: Finding[] = [];
   const raw = file.content;
-  const code = stripCommentsAndRegexes(maskStrings(raw));
+  const code = stripCommentsAndRegexes(maskCode(raw, file.language));
 
   if (file.language === "python") {
     for (const m of raw.matchAll(ENV_AUTH_BYPASS)) {
+      const idx = m.index ?? 0;
+      if (code[idx] === " ") continue;
       push(
-        findings, file, raw, m.index ?? 0, "no-env-auth-bypass", "R0", "error",
+        findings, file, raw, idx, "no-env-auth-bypass", "R0", "error",
         `Environment-variable auth bypass detected (${m[0].trim()}).`,
         "Remove environment-based auth short-circuits; use signed test credentials or DI auth adapters.",
       );
@@ -317,8 +318,10 @@ export function analyzeRuntimeGuards(file: ScannedFile): Finding[] {
 
   if (AUTH_PATH_OR_NAME.test(file.rel) || /\b(?:auth|verifyToken|requireRole|authenticate)\b/i.test(code)) {
     for (const m of raw.matchAll(ENV_AUTH_BYPASS)) {
+      const idx = m.index ?? 0;
+      if (code[idx] === " ") continue;
       push(
-        findings, file, raw, m.index ?? 0, "no-env-auth-bypass", "R0", "error",
+        findings, file, raw, idx, "no-env-auth-bypass", "R0", "error",
         `Environment-variable auth bypass detected (${m[0].trim()}).`,
         "Remove environment-based auth short-circuits; use signed test credentials or DI auth adapters.",
       );
@@ -335,8 +338,10 @@ export function analyzeRuntimeGuards(file: ScannedFile): Finding[] {
 
   if (!DB_ADAPTER_PATH.test(file.rel)) {
     for (const m of raw.matchAll(RAW_DB_REEXPORT)) {
+      const idx = m.index ?? 0;
+      if (code[idx] === " ") continue;
       push(
-        findings, file, raw, m.index ?? 0, "no-raw-db-reexport", "R1", "warn",
+        findings, file, raw, idx, "no-raw-db-reexport", "R1", "warn",
         "Re-exporting a raw database SDK client lets callers bypass audited DAO/repository boundaries.",
         "Keep raw DB client access internal to the single persistence adapter module.",
       );
@@ -344,8 +349,10 @@ export function analyzeRuntimeGuards(file: ScannedFile): Finding[] {
   }
 
   for (const m of raw.matchAll(API_KEY_SIGNING)) {
+    const idx = m.index ?? 0;
+    if (code[idx] === " ") continue;
     push(
-      findings, file, raw, m.index ?? 0, "no-api-key-as-signing-secret", "R0", "error",
+      findings, file, raw, idx, "no-api-key-as-signing-secret", "R0", "error",
       "Third-party API key reused as a cryptographic HMAC/JWT signing secret.",
       "Provision a dedicated signing secret env var independent of vendor API keys so rotation stays decoupled.",
     );
@@ -371,20 +378,6 @@ export function analyzeRuntimeGuards(file: ScannedFile): Finding[] {
       "Explicit undefined property passed into document .set()/.update()/.add() crashes strict document stores.",
       "Conditionally spread optional properties (...(val !== undefined ? { key: val } : {})) or strip undefined keys.",
     );
-  }
-
-  if (file.language === "typescript") {
-    let nonNullCount = 0;
-    for (const m of code.matchAll(NON_NULL_ASSERT)) {
-      const idx = m.index ?? 0;
-      const after = code.slice(idx + 1, idx + 3);
-      if (after.startsWith("!=") || after.startsWith("==") || ++nonNullCount > 5) continue;
-      push(
-        findings, file, raw, idx, "no-non-null-assertion", "R0", "warn",
-        "Postfix non-null assertion ('!') silences null/undefined checks at compile time and hides contract bugs.",
-        "Narrow explicitly with an invariant guard or handle the missing value.",
-      );
-    }
   }
 
   for (const m of code.matchAll(WARN_ONLY_CATCH)) {
