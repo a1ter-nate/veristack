@@ -219,3 +219,53 @@ test("System 1 classifier extracts C# SUT imports and classifies templates/cshar
   assert.ok(propJudgment);
   assert.equal(propJudgment.staticLabel, "BEHAVIOR");
 });
+
+test("C# calibration avoids false positives on XML docs, non-EF Skip, address State DTOs, symmetric bounds, UnitTests namespaces, and guarded Assert.Pass", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-cs-cal-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "Geometry.cs"),
+      [
+        "using System;",
+        "using System.Collections.Generic;",
+        "using System.Linq;",
+        "namespace Demo.Core;",
+        "public sealed record Address(string City, string State);",
+        "public sealed record Box(int Min, int Max);",
+        "public static class Geometry {",
+        "  /// <summary>Supports dynamic input types in XML docs.</summary>",
+        "  public static Box Intersect(Box a, Box b) => new(Math.Min(a.Min, b.Min), Math.Max(a.Max, b.Max));",
+        "  public static IEnumerable<int> Tail(IEnumerable<int> items) => items.Skip(1).Take(2);",
+        "  public static Address Build() => new Address(\"Denver\", \"CO\") { State = \"CO\" };",
+        "  public static Address BuildAlt() => new Address(\"Austin\", \"TX\") { State = \"TX\" };",
+        "}",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(tmp, "GeometryTests.cs"),
+      [
+        "using NUnit.Framework;",
+        "namespace Demo.Core.UnitTests;",
+        "public sealed class GeometryTests {",
+        "  [Test]",
+        "  public void GuardsAssertPassWithFail() {",
+        "    var box = Geometry.Intersect(new Box(1, 5), new Box(2, 4));",
+        "    if (box.Min == 1) { Assert.Pass(); }",
+        '    Assert.Fail("Unexpected min");',
+        "  }",
+        "}",
+      ].join("\n"),
+    );
+
+    const report = scanRepo(tmp);
+    const rules = new Set(report.findings.map((f) => f.rule));
+    assert.equal(rules.has("no-chained-or-any-cast"), false);
+    assert.equal(rules.has("efcore-unordered-skip-or-assert"), false);
+    assert.equal(rules.has("math-floor-ceiling-inversion"), false);
+    assert.equal(rules.has("implicit-sm-scattered-mutation"), false);
+    assert.equal(rules.has("no-unexercised-test"), false);
+    assert.equal(rules.has("weak-asserts-tautology"), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

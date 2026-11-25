@@ -297,6 +297,9 @@ function checkCsharpScatteredMutations(file: ScannedFile, masked: string): Findi
     const pos = match.index ?? 0;
     const before = masked.slice(Math.max(0, pos - 40), pos);
     if (/\b(?:new\s+[A-Za-z_]|with\s*\{|var\s+|bool\s+|string\s+|int\s+)/.test(before)) continue;
+    const lineEnd = masked.indexOf("\n", pos);
+    const restOfLine = masked.slice(pos, lineEnd < 0 ? pos + 120 : lineEnd);
+    if (/,\s*$/.test(restOfLine) || /\bEntityState\./.test(restOfLine) || /\bAddress\.State\b/.test(restOfLine)) continue;
     const containing = spans
       .filter((s) => s.start < pos && pos < s.end)
       .sort((a, b) => a.end - a.start - (b.end - b.start))[0];

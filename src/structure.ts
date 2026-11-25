@@ -149,7 +149,8 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
     }
 
     if (file.language === "csharp" && !file.isTest && !isGenerated) {
-      for (const match of file.content.matchAll(CSHARP_TEST_ONLY_EXPORT)) {
+      const csharpCode = maskCode(file.content, "csharp");
+      for (const match of csharpCode.matchAll(CSHARP_TEST_ONLY_EXPORT)) {
         const line = lineOf(file.content, match.index ?? 0);
         findings.push({
           id: `ST:cs-test-seam:${file.rel}:${line}`,
@@ -164,7 +165,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
         });
       }
 
-      for (const match of file.content.matchAll(SWALLOWING_CATCH)) {
+      for (const match of csharpCode.matchAll(SWALLOWING_CATCH)) {
         const line = lineOf(file.content, match.index ?? 0);
         findings.push({
           id: `ST:cs-swallow-catch:${file.rel}:${line}`,
@@ -179,7 +180,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
         });
       }
 
-      for (const match of file.content.matchAll(CSHARP_DYNAMIC)) {
+      for (const match of csharpCode.matchAll(CSHARP_DYNAMIC)) {
         const line = lineOf(file.content, match.index ?? 0);
         findings.push({
           id: `AS:cs-dynamic:${file.rel}:${line}`,

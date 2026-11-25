@@ -100,11 +100,13 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
     message: string,
     fix: string,
     limit = 5,
+    skip?: (m: RegExpExecArray) => boolean,
   ): number => {
     let count = 0;
     for (const m of target.matchAll(regex)) {
       const idx = m.index ?? 0;
       if (target === raw && code[idx] === " ") continue;
+      if (skip?.(m)) continue;
       count += 1;
       if (count <= limit) {
         const line = lineOf(target, idx);
@@ -260,6 +262,11 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
     "error",
     "Tautological assertion cannot fail when behavior breaks.",
     "Compare a computed SUT output against an independently derived expected value.",
+    5,
+    (m) => {
+      const idx = m.index ?? 0;
+      return /^Assert\.Pass\b/.test(m[0]) && /\bAssert\.Fail\s*\(/.test(code.slice(Math.max(0, idx - 300), idx + 300));
+    },
   );
 
   addMatches(

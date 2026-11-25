@@ -13,7 +13,8 @@ const RUST_FRAMEWORK_USE = /^(?:std|core|alloc|proptest|rstest|tokio|serde|serde
 const PY_IMPORT = /^\s*(?:from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import|import\s+([A-Za-z_][A-Za-z0-9_.]*))/gm;
 const PY_FRAMEWORK_IMPORT =
   /^(?:pytest|unittest|hypothesis|mock|respx|httpx|json|os|sys|re|math|time|datetime|pathlib|collections|dataclasses|typing|random|functools|itertools|tempfile|subprocess|asyncio|inspect)$/;
-const CSHARP_PARENT_NS_TEST = /^\s*namespace\s+[A-Za-z_][A-Za-z0-9_.]*\.(?:Tests?|Specs?)\b/m;
+const CSHARP_PARENT_NS_TEST =
+  /^\s*namespace\s+[A-Za-z_][A-Za-z0-9_.]*\.(?:Unit|Integration|Functional|Component)?(?:Tests?|Specs?)\b/m;
 const CSHARP_FRAMEWORK_TYPE =
   /^(?:Assert|Fact|Theory|Task|DateTime|DateTimeOffset|TimeSpan|Random|Thread|Environment|JsonSerializer|File|Path|Guid|Console|Math|String|Enumerable|List|Dictionary|HashSet|Array|Object|Exception|InvalidOperationException|ArgumentException|StringComparison|CancellationToken|HttpStatusCode|Stopwatch|Mock|Substitute)$/;
 
@@ -184,10 +185,18 @@ export function hasNonFrameworkImport(raw: string, language?: string): boolean {
       if (!CSHARP_FRAMEWORK_USING.test(ns)) return true;
     }
     if (CSHARP_PARENT_NS_TEST.test(raw)) {
-      const masked = maskStrings(raw);
+      const masked = maskCode(raw, "csharp");
       for (const match of masked.matchAll(/\bnew\s+([A-Z][A-Za-z0-9_]*)\s*[<(]/g)) {
         const typeName = match[1] ?? "";
         if (!CSHARP_FRAMEWORK_TYPE.test(typeName)) return true;
+      }
+      for (const match of masked.matchAll(/\b([A-Z][A-Za-z0-9_]*)\.[A-Z][A-Za-z0-9_]*\s*[<(]/g)) {
+        const typeName = match[1] ?? "";
+        if (!CSHARP_FRAMEWORK_TYPE.test(typeName)) return true;
+      }
+      for (const match of masked.matchAll(/\bclass\s+[A-Za-z0-9_]+\s*:\s*([A-Z][A-Za-z0-9_]*)/g)) {
+        const baseName = match[1] ?? "";
+        if (!CSHARP_FRAMEWORK_TYPE.test(baseName)) return true;
       }
     }
     return false;

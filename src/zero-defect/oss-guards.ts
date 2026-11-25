@@ -34,6 +34,19 @@ const RUST_POLL_FN = /\bfn\s+poll(?:_next|_read|_write)?\s*\([^)]*\)[^{]*\{/g;
 const RUST_HASHMAP_ENVS = /\.\s*envs\s*\(\s*&?\s*[A-Za-z0-9_.]*hash_?map[A-Za-z0-9_]*\s*\)/gi;
 
 const CS_UNORDERED_SKIP = /\.\s*Skip\s*\(\s*[^)\n]+\)/g;
+const CS_EF_CONTEXT =
+  /\b(?:Microsoft\.EntityFrameworkCore|DbContext|DbSet|IQueryable|AsNoTracking|ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync)\b/;
+
+function isSymmetricBoundMath(callText: string): boolean {
+  const open = callText.indexOf("(");
+  const comma = callText.indexOf(",", open + 1);
+  if (open < 0 || comma < 0) return false;
+  const firstArg = callText.slice(open + 1, comma);
+  const isMin = /\bMath\.(?:min|Min)\b/.test(callText.slice(0, open));
+  return isMin
+    ? /(?:min|Min|floor|Floor)/.test(firstArg)
+    : /(?:max|Max|cap|Cap|ceiling|Ceiling)/.test(firstArg);
+}
 const CS_UNDISPOSED_NEW =
   /^[ \t]*(?!using\b|await\s+using\b|return\b)(?:var|[A-Za-z0-9_.<>]+)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*new\s+(?:SqlConnection|NpgsqlConnection|FileStream|StreamReader|StreamWriter|DbCommand|SqlCommand)\s*\(/gm;
 const GO_HTTP_CALL = /\b(?:http\.(?:Get|Post|PostForm|Head)|[A-Za-z_][A-Za-z0-9_]*\.Do)\s*\(/g;
@@ -237,14 +250,16 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
   }
 
   if (file.language === "csharp") {
-    for (const m of masked.matchAll(CS_UNORDERED_SKIP)) {
-      const idx = m.index ?? 0;
-      if (/\.\s*OrderBy(?:Descending)?\s*\(/.test(masked.slice(Math.max(0, idx - 220), idx))) continue;
-      push(
-        findings, file.rel, lineOf(raw, idx), "efcore-unordered-skip-or-assert", "R1", "warn",
-        ".Skip() called without a preceding .OrderBy() produces non-deterministic query pagination across DB engines.",
-        "Chain a deterministic .OrderBy(...) (with a unique tie-breaker) before .Skip()/.Take().",
-      );
+    if (CS_EF_CONTEXT.test(masked)) {
+      for (const m of masked.matchAll(CS_UNORDERED_SKIP)) {
+        const idx = m.index ?? 0;
+        if (/\.\s*OrderBy(?:Descending)?\s*\(/.test(masked.slice(Math.max(0, idx - 220), idx))) continue;
+        push(
+          findings, file.rel, lineOf(raw, idx), "efcore-unordered-skip-or-assert", "R1", "warn",
+          ".Skip() called without a preceding .OrderBy() produces non-deterministic query pagination across DB engines.",
+          "Chain a deterministic .OrderBy(...) (with a unique tie-breaker) before .Skip()/.Take().",
+        );
+      }
     }
     for (const m of masked.matchAll(CS_UNDISPOSED_NEW)) {
       const idx = m.index ?? 0;
@@ -256,6 +271,7 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
       );
     }
     for (const m of masked.matchAll(FLOOR_CEILING_INVERSION)) {
+      if (isSymmetricBoundMath(m[0])) continue;
       push(
         findings, file.rel, lineOf(raw, m.index ?? 0), "math-floor-ceiling-inversion", "R1", "warn",
         `Possible floor/ceiling clamp inversion (${m[0].trim()}).`,
@@ -449,6 +465,7 @@ function findEmptyAltRegexOffsets(masked: string): number[] {
   }
 
   for (const m of masked.matchAll(FLOOR_CEILING_INVERSION)) {
+    if (isSymmetricBoundMath(m[0])) continue;
     push(
       findings, file.rel, lineOf(raw, m.index ?? 0), "math-floor-ceiling-inversion", "R1", "warn",
       `Possible floor/ceiling clamp inversion (${m[0].trim()}).`,
