@@ -117,6 +117,20 @@ export function auditCiWorkflows(repo: DiscoveredRepo): Finding[] {
         });
       }
 
+      if (/^\s*jobs:/m.test(file.content) && !/timeout-minutes:\s*\d+/.test(file.content)) {
+        findings.push({
+          id: `CI:missing-timeout:${file.rel}`,
+          rule: "ci-missing-timeout",
+          category: "ci-hygiene",
+          rung: "R6",
+          severity: "warn",
+          file: file.rel,
+          line: 1,
+          message: "Workflow omits timeout-minutes; hung jobs default to 6 hours and burn runner minutes.",
+          fix: "Set explicit timeout-minutes (e.g. 10-20) on every job matching its critical path.",
+        });
+      }
+
       if (/fetch-depth:\s*0/.test(file.content)) {
         findings.push({
           id: `CI:full-clone:${file.rel}`,

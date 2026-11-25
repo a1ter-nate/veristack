@@ -121,8 +121,10 @@ export async function runRepoCircuit(
     hitsByFile.set(f.file, list);
   }
 
+  const generatedPath =
+    /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
   const prodFiles = repo.files
-    .filter((f) => Boolean(f.language) && !f.isTest)
+    .filter((f) => Boolean(f.language) && !f.isTest && !generatedPath.test(f.rel))
     .sort((a, b) => (hitsByFile.get(b.rel)?.length ?? 0) - (hitsByFile.get(a.rel)?.length ?? 0) || b.lines - a.lines)
     .slice(0, options.maxCandidates ?? 25);
 

@@ -75,6 +75,8 @@ export function isTestFilePath(rel: string): boolean {
   if (/tests?\.cs$|specs?\.cs$/.test(base)) return true;
   if (/(?:^|\/)[^/]+\.tests\//.test(lower) && lower.endsWith(".cs")) return true;
   if (/^(?:tests?|__tests__|specs?|e2e)\//.test(lower) || /\/(?:tests?|__tests__|specs?|e2e)\//.test(lower)) {
+    if (/(?:^|\.)config\.[cm]?[jt]sx?$/.test(base)) return false;
+    if (/\/(?:contracts|fixtures|helpers|support|mocks|stubs)\//.test(lower)) return false;
     return detectLanguage(rel) !== undefined;
   }
   return false;

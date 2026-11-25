@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
 import type { Finding, RungId } from "../types.ts";
+import { auditFormalSync } from "./formal-sync.ts";
 import { generateMcdcVectors, type McdcResult, type McdcVector } from "./mcdc.ts";
 
 export { generateMcdcVectors, type McdcResult, type McdcVector };
@@ -181,6 +182,7 @@ export function auditZeroDefectArtifacts(repo: DiscoveredRepo): Finding[] {
     }
   }
 
+  findings.push(...auditFormalSync(repo));
   return findings;
 }
 

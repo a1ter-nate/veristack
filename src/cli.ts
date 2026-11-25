@@ -5,11 +5,18 @@ import { discoverRepo } from "./discover.ts";
 import { formatFindingsList, formatMarkdownReport, formatSystem1Report, formatTerminalReport } from "./format.ts";
 import { scanRepo } from "./ladder.ts";
 import { lintNoComments } from "./no-comments.ts";
+import {
+  buildRatchetBaseline,
+  evaluateRatchet,
+  type RatchetBaseline,
+  writeRatchetBaseline,
+} from "./ratchet.ts";
 import { analyzeStateMachines } from "./state-machines/index.ts";
 import { buildSystem1Packet, corroborateSystem1Batch } from "./system1-classifier.ts";
 import { runSystem1Provider } from "./system1-providers.ts";
 import type { CircuitId, Finding, System1ModelAnswer, System1ProviderId } from "./types.ts";
 import { fitEmpiricalBigO, type ScalingSample } from "./zero-defect/big-o.ts";
+import { auditFormalSync, formatFormalSyncReport } from "./zero-defect/formal-sync.ts";
 import { evaluateSpcSeries, generateMcdcVectors, runRedBeforeFix } from "./zero-defect/index.ts";
 
 const VALID_PROVIDERS = new Set<System1ProviderId>(["laya", "jev", "local", "command", "fixture"]);
@@ -25,10 +32,11 @@ function usage(): string {
     "vstack — Deterministic Verification Stack, Push-Down Analyzer, Formal Checks & JEV-Style System 1 Circuits",
     "",
     "Commands:",
-    "  vstack scan [dir] [--json | --md] [--fail-on-cheats] [--fail-on-errors]",
+    "  vstack scan [dir] [--json | --md] [--ratchet <file>] [--update-ratchet] [--fail-on-cheats] [--fail-on-errors]",
     "  vstack no-comments [dir] [--json] [--fail]",
     "  vstack state-machines [dir] [--json] [--fail]",
     "  vstack diff-cheats [dir] [--base <ref>] [--json] [--fail]",
+    "  vstack formal-sync [dir] [--json] [--fail]",
     "  vstack classify [dir] [--max <n>] [--emit-requests] [--provider <laya|jev|local|command|fixture>] [--endpoint <url>] [--model <name>] [--command <cmd>] [--corroborate <answers.json>] [--json]",
     "  vstack circuit list [--json]",
     "  vstack circuit run <test-triage|pr-risk-router|instruction-lint-promoter|perf-architecture-advisor> [dir] [--provider <jev|laya|local|command|fixture>] [--endpoint <url>] [--model <name>] [--command <cmd>] [--base <ref>] [--max <n>] [--json]",
@@ -59,6 +67,7 @@ function firstPositional(args: readonly string[]): string {
     "--test-cmd",
     "--max-time-exp",
     "--max-space-exp",
+    "--ratchet",
   ]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -105,15 +114,50 @@ async function run(): Promise<number> {
 
   if (cmd === "scan") {
     const report = scanRepo(target);
-    if (asJson) console.log(JSON.stringify(report, null, 2));
-    else if (asMd) console.log(formatMarkdownReport(report));
-    else console.log(formatTerminalReport(report));
+    const ratchetPath = parseFlagValue(rest, "--ratchet");
+    const updateRatchet = rest.includes("--update-ratchet");
+    let ratchetEval: ReturnType<typeof evaluateRatchet> | undefined;
 
+    if (ratchetPath) {
+      if (updateRatchet || !fs.existsSync(ratchetPath)) {
+        const nextBaseline = buildRatchetBaseline(report.findings);
+        writeRatchetBaseline(ratchetPath, nextBaseline);
+        ratchetEval = evaluateRatchet(report.findings, nextBaseline);
+      } else {
+        const baseline = JSON.parse(fs.readFileSync(ratchetPath, "utf8")) as RatchetBaseline;
+        ratchetEval = evaluateRatchet(report.findings, baseline);
+      }
+    }
+
+    if (asJson) console.log(JSON.stringify(ratchetEval ? { ...report, ratchet: ratchetEval } : report, null, 2));
+    else if (asMd) console.log(formatMarkdownReport(report));
+    else {
+      console.log(formatTerminalReport(report));
+      if (ratchetEval) {
+        console.log(`\nRATCHET (${ratchetPath}): ${ratchetEval.passed ? "PASS" : "FAIL"}`);
+        for (const r of ratchetEval.regressions) {
+          console.log(`  - [REGRESSION] ${r.rule}: ${r.baseline} -> ${r.current} (+${r.delta})`);
+        }
+        for (const t of ratchetEval.tightenAvailable) {
+          console.log(`  - [TIGHTEN] ${t.rule}: ${t.baseline} -> ${t.current} (${t.delta}) — rerun with --update-ratchet`);
+        }
+      }
+    }
+
+    if (ratchetEval && !ratchetEval.passed) return 1;
     if (rest.includes("--fail-on-errors") && report.summary.errorCount > 0) return 1;
     if (rest.includes("--fail-on-cheats") && (report.summary.cheatCount > 0 || report.summary.noCommentCount > 0)) {
       return 1;
     }
     return 0;
+  }
+
+  if (cmd === "formal-sync") {
+    const repo = discoverRepo(target);
+    const findings = auditFormalSync(repo);
+    if (asJson) console.log(JSON.stringify({ findings }, null, 2));
+    else console.log(formatFormalSyncReport(findings));
+    return rest.includes("--fail") && findings.length > 0 ? 1 : 0;
   }
 
   if (cmd === "no-comments") {

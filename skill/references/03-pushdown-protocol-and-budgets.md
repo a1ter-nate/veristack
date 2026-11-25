@@ -92,7 +92,11 @@ Before claiming completion, verify:
 
 Plus:
 1. **Controlled-Fault Proof:** Inject 1 plausible defect (or run targeted mutation) → confirm the check goes **red**, restore → confirm **green**.
-2. **PR Evidence Bundle:** Emit for each moved/added check: `[ID | Old Rung → New Rung | Failure Mechanism Preserved | Negative Control Result | Runtime Delta | Residual Gap]`.
+2. **5-Step Blast-Radius Proof Ladder:** Push every safety claim for a risky change as far down the ladder as cheap and report where it stopped: (1) *Said so* (worthless) → (2) *Cited `file:line`* → (3) *Walked path step-by-step* → (4) *Ran real code that fails loud if wrong* → (5) *Reproduced in the running app*.
+3. **7-Question Benchmark Vetting (`R6`):** Before reporting any speedup or perf claim, verify with run evidence: (1) named limiter (*why not 2×?*), (2) prod-tuned on both sides, (3) sanity-checked against physical bandwidth/CPU limits, (4) error/wrong-output count = 0, (5) `>= 5` alternating A/B runs with median + range, (6) end-to-end user-path share, (7) proof work actually executed inside the timed region.
+4. **R7 App-Drive Hygiene:** Project-local E2E / live-app verification skills follow **Launch → Doctor (health check before first drive and after any failure) → Drive → Evidence (verified to survive cleanup) → Teardown (zero residue)**.
+5. **Brownfield Ratchet Rollout:** Adopt `vstack scan . --ratchet .verification/ratchet.json` on legacy repos day 1; fail on any count increase *or* un-tightened count drop (`--update-ratchet`).
+6. **PR Evidence Bundle:** Emit for each moved/added check: `[ID | Old Rung → New Rung | Failure Mechanism Preserved | Negative Control Result | Runtime Delta | Residual Gap]`.
 
 ---
 
@@ -119,3 +123,6 @@ Plus:
 > 2. Log the escape in `.verification/escapes.json`. If this mistake class has occurred twice (`>= 2×`), promote it to a deterministic `R0`/`R1` type, linter rule (`Rule / Why / Fix`), or architecture check with a negative red→green fixture.
 > 3. Fix the root cause, confirm green, and prune any prose rule in `AGENTS.md` now enforced by code.
 > Done when red-before-fix is proven, repeat escapes have a linked `R0`/`R1` Poka-Yoke, and `vstack scan . --fail-on-cheats` exits 0.
+
+### D. Weekly Bugfix Architecture Retro
+> Inspect the last week of bugfix commits (`git log --since="7 days ago"`). Group defects by root class and propose the smallest architectural, type, or `R0`/`R1` lint change that would obviate the top recurring class entirely. Prove any proposed lint fails on the real historical bug commit before shipping.

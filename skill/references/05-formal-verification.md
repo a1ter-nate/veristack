@@ -32,9 +32,10 @@ Formal verification proves safety and reachability invariants across **every rea
 
 ## 3. Preventing Spec ↔ Code Drift
 
-A formal spec that drifts from production code is worse than no spec. Always pair formal models with one of:
+A formal spec that drifts from production code is worse than no spec because it keeps passing on code that no longer exists. Pair every formal model with:
+- **Sync-Commit Drift Gate (`vstack formal-sync`):** Record `{ id, specFile, coveredPaths, syncCommit }` under `formalChecks[]` in `.verification/control-plan.json`. `vstack scan` and `vstack formal-sync --fail` fail automatically whenever covered production files change after `syncCommit` until you re-audit the spec, prove a scratch break still fails, and advance `syncCommit`.
 - **Direct Code Verification:** Run the model checker directly against production functions (as in `templates/rust-reference/tests/formal_model_check.rs`, `templates/csharp-reference/OrderLifecycle.Tests/OrderFormalProofTests.cs`, `templates/python-reference/tests/test_formal_model_check.py`, and `tests/formal-verification.test.ts`).
-- **Shared Trace / Table Conformance:** Generate traces from `Quint`/`TLA+` and replay them against production code in R2/R3 tests.
+- **Practical Adoption Ramp (Quint → TLC → ITF Traces → MBT → Prover):** Start by modeling one real aggregate in Quint/TLA+, exhaustively check transitions with TLC, replay emitted ITF traces directly against production code as R3 Model-Based Tests, add R2 PBTs, and reach for full theorem provers (Dafny/Verus/Lean) only for unbounded proofs. Generate user-facing statecharts directly from the checked model so diagrams cannot drift.
 - **Reachability Witnesses (`sometimes`):** Pair every safety invariant with at least one reachability witness proving the guarded states are reachable.
 
 ---

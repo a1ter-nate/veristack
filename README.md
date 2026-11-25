@@ -56,12 +56,14 @@ bun ./src/cli.ts scan /path/to/repo --md     # For PR evidence
 ### High-Leverage CLI Gates (`vstack`)
 
 ```bash
-# Static & anti-cheat gates (TS/JS, C#, Rust, Python)
+# Static, ratchet & anti-cheat gates (TS/JS, C#, Rust, Python)
 bun ./src/cli.ts no-comments /path/to/repo --fail
 bun ./src/cli.ts state-machines /path/to/repo --fail
 bun ./src/cli.ts diff-cheats /path/to/repo --base origin/main --fail
+bun ./src/cli.ts scan /path/to/repo --ratchet .verification/ratchet.json
 
-# Zero-defect engineering checks (V33 Red-Before-Fix, V34 MC/DC, V41 SPC, V42 Big-O)
+# Zero-defect engineering checks (V25 Formal Sync, V33 Red-Before-Fix, V34 MC/DC, V41 SPC, V42 Big-O)
+bun ./src/cli.ts formal-sync /path/to/repo --fail
 bun ./src/cli.ts red-before-fix /path/to/repo --base HEAD --test-cmd "bun test tests/bugfix.test.ts"
 bun ./src/cli.ts mcdc "isAdmin || (isOwner && !isSuspended && hasScope)"
 bun ./src/cli.ts spc ./metrics.json --fail
@@ -134,6 +136,7 @@ Veristack synthesizes ideas from public engineering literature, open-source tool
 - [`dmmulroy/anti-slop`](https://github.com/dmmulroy/anti-slop) *(MIT)* — strict TypeScript escape-hatch bans against low-evidence casts and `unknown` laundering.
 - [`@interfere/landmines`](https://github.com/interfere-inc/landmines) *(MIT)* — static test-integrity rules that make the honest testing path the only one that lints.
 - [`mattpocock/skills`](https://github.com/mattpocock/skills) *(MIT)* — deep-module seam vocabulary (`codebase-design`), vertical-slice TDD discipline, and agent-skill craft (`writing-for-agents`).
+- [`cursor/plugins` (`pstack`)](https://github.com/cursor/plugins/tree/main/pstack) *(MIT)* — formal-spec sync-commit upkeep, 5-step blast-radius proof ladder, 7-question benchmark vetting, and repeat-correction promotion (`/correct`).
 - [`antithesishq/bombadil`](https://github.com/antithesishq/bombadil) *(MIT)* — autonomous UI/TUI state-space exploration and `always`/`sometimes` reachability checks.
 - [`tigerbeetle/tigerbeetle`](https://github.com/tigerbeetle/tigerbeetle) (`TIGER_STYLE.md`, *Apache-2.0*) — paired release-active assertions and deterministic simulation discipline.
 
