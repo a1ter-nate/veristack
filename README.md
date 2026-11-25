@@ -1,33 +1,36 @@
 # Veristack (`vstack`)
 
-**Zero-defect software verification across 9 rungs (`R0 → R8`), 42 mechanisms (`V01 → V42`), and 4 first-class languages (TypeScript, C#/.NET, Rust, Python).**
+**Stop shipping test theater and AI slop.**
 
-> **Prime Directive:** Push every check as far **down** the verification ladder toward **R0** (faster, smaller, more deterministic) as possible **without losing the failure mechanism**. Maximize module depth and static/compiler enforcement so **CI runtime**, **flake rate**, and **AI coding-agent token burn** stay minimal.
+Veristack is a deterministic **9-rung zero-defect verification ladder (`R0 → R8`)**, cross-language static analyzer (`vstack`), native compiler/linter kit, runnable formal proof suite, and portable agent skill for **TypeScript, C#/.NET, Rust, and Python**.
 
----
-
-## Why Veristack?
-
-Modern codebases — especially AI-assisted ones — drown in two opposite failure modes:
-1. **Test bloat & theater:** thousands of heavily mocked unit tests and flaky E2E scripts that mirror buggy implementation code, pass when behavior breaks, and hide regressions behind `retries: 3`, `|| true`, or `continue-on-error: true`.
-2. **Defects by omission:** illegal state combinations modeled as boolean flag soup, wall-clock duration bugs, release-stripped assertions, silent $O(N^2)$ regressions, and missing formal/property checks on critical state machines.
-
-**Veristack** combines lessons from **software verification**, **Lean/Toyota zero-defect manufacturing** (Poka-Yoke, Jidoka, SPC, FMEA Control Plans, A3 Red-Before-Fix), **silicon/ASIC verification** (CDC, SVA, functional cross-coverage, LEC, PVT/HALT, Boot BIST), and **safety-critical software** (NASA JPL Power of 10, DO-178C MC/DC, SQLite fault sweeps, seL4 non-interference) into one deterministic CLI (`vstack`), native compiler/linter plugins, runnable reference proofs, and a portable agent skill.
+> **Prime Directive:** Push every check as far **down** the ladder toward **R0** as possible without losing the failure mechanism. Faster CI, zero flake masking, fewer agent tokens, higher assurance.
 
 ---
 
-## The 9-Rung Push-Down Ladder (`R0 → R8`)
+## Why This Exists
+
+AI-assisted codebases fail in two predictable ways:
+
+1. **Test theater:** thousands of heavily mocked unit tests and brittle E2E scripts that mirror buggy code, pass when behavior breaks, and hide failures behind `retries: 3`, `|| true`, or `continue-on-error: true`.
+2. **Defects by omission:** boolean flag soup admitting impossible states, wall-clock duration bugs, assertions silently stripped in release builds, accidental $O(N^2)$ loops, and unverified state machines.
+
+Veristack turns zero-defect practices from **software engineering**, **Lean/Toyota manufacturing**, **silicon/ASIC verification**, and **safety-critical software** into fast, deterministic gates you can run locally and in CI.
+
+---
+
+## The 9-Rung Push-Down Ladder
 
 ```text
-R0  Instant Static, Anti-Slop & Anti-Cheat Locks   (< 2 s   | 100% files)  ← Push everything here first
-R1  Types, Explicit State Machines & Structure     (1–10 s  | 100% files)
-R2  Pure Logic, Data Tables, MC/DC & Stateless PBT (10ms–2s | 15–40 specs)
-R3  Stateful MBT, Cross-Coverage, Host & Twins     (0.2–5 s | 5–15 suites) ← #1 E2E replacement (~80%)
-R4  Real Engines, Migrations, 1..N Faults & DST    (2–30 s  | 3–8 slices)  ← Never mock DB/storage below R4
-R5  Formal Verification, Mutation & 90/10 Circuits (30s–15m | diff/nightly)
-R6  Empirical Big-O, SPC Drift, RTY & HALT Cliffs  (2–30 m  | 1–2 / svc)
-R7  Thin Golden-Path E2E & Hardware Proof          (2–15 m  | 5–15 journeys MAX)
-R8  Live Production Verification & Boot BIST       (Always  | 3–10 synthetics)
+R0  Static Locks, Anti-Slop & Anti-Cheat          (< 2 s   | 100% files)  ← Push everything here first
+R1  Types, Explicit State Machines & Structure    (1–10 s  | 100% files)
+R2  Pure Logic, Data Tables, MC/DC & PBT          (10ms–2s | 15–40 specs)
+R3  Stateful MBT, Cross-Coverage, Host & Twins    (0.2–5 s | 5–15 suites) ← Replaces ~80% of E2E
+R4  Real Engines, Migrations, 1..N Faults & DST   (2–30 s  | 3–8 slices)  ← Never mock DB/broker below R4
+R5  Formal Proofs, Mutation & 90/10 Circuits      (30s–15m | diff/nightly)
+R6  Empirical Big-O, SPC Drift, RTY & Load        (2–30 m  | 1–2 / svc)
+R7  Thin Golden-Path E2E & Hardware Proof         (2–15 m  | 5–15 MAX)
+R8  Live Production Verification & Boot BIST      (Always  | 3–10 synthetics)
 ```
 
 ---
@@ -40,100 +43,107 @@ Requires [Bun](https://bun.sh) `>= 1.2.0`.
 git clone https://github.com/a1ter-nate/veristack.git
 cd veristack
 
-# Verify Veristack itself (0 errors, 0 warnings, 0 cheats, 0 rung holes)
+# Self-verify Veristack (0 errors, 0 warnings, 0 cheats, 0 rung holes)
 bun run check
 
-# Scan any repository for 9-rung gaps, anti-cheat violations, prose comments & push-down wins
+# Scan any repo for rung holes, cheats, prose comments, implicit state machines & push-down wins
 bun ./src/cli.ts scan /path/to/repo
-bun ./src/cli.ts scan /path/to/repo --json   # Machine-readable JSON for coding agents
-bun ./src/cli.ts scan /path/to/repo --md     # Markdown PR evidence report
+bun ./src/cli.ts scan /path/to/repo --json   # For coding agents
+bun ./src/cli.ts scan /path/to/repo --md     # For PR evidence
 ```
 
-### Core CLI Commands (`vstack`)
+### High-Leverage CLI Gates (`vstack`)
 
 ```bash
 # Static & anti-cheat gates (TS/JS, C#, Rust, Python)
 bun ./src/cli.ts no-comments /path/to/repo --fail
 bun ./src/cli.ts state-machines /path/to/repo --fail
-bun ./src/cli.ts diff-cheats /path/to/repo --base HEAD --fail
+bun ./src/cli.ts diff-cheats /path/to/repo --base origin/main --fail
 
-# Zero-defect engineering gates (V33 Red-Before-Fix, V34 MC/DC, V41 SPC, V42 Empirical Big-O)
+# Zero-defect engineering checks (V33 Red-Before-Fix, V34 MC/DC, V41 SPC, V42 Big-O)
 bun ./src/cli.ts red-before-fix /path/to/repo --base HEAD --test-cmd "bun test tests/bugfix.test.ts"
 bun ./src/cli.ts mcdc "isAdmin || (isOwner && !isSuspended && hasScope)"
 bun ./src/cli.ts spc ./metrics.json --fail
 bun ./src/cli.ts big-o ./scaling.json --max-time-exp 1.35 --fail
 
-# Plug-and-play 90/10 System 1 Circuits (BYO model: jev, laya, local, command, fixture)
+# 90/10 BYO System 1 Circuits (providers: jev, laya, local, command, fixture)
 bun ./src/cli.ts circuit list
 bun ./src/cli.ts circuit run test-triage /path/to/repo --provider fixture
 bun ./src/cli.ts circuit run pr-risk-router /path/to/repo --base HEAD --provider local --model qwen3.5:9b
-bun ./src/cli.ts circuit run instruction-lint-promoter /path/to/repo --provider jev --endpoint "$JEV_API_URL"
-bun ./src/cli.ts circuit run perf-architecture-advisor /path/to/repo --provider command --command "./my-s1-adapter"
+bun ./src/cli.ts circuit run perf-architecture-advisor /path/to/repo --provider jev --endpoint "$JEV_API_URL"
 ```
 
 ---
 
-## Full 4-Language Parity (Universal Principles → Native Enforcement)
+## 4-Language Parity (Native Enforcement + Formal Proofs)
 
-Every principle in [skill/SKILL.md](skill/SKILL.md) is **language-agnostic**, backed by native compiler/linter plugins and runnable R0–R5 proofs (including exhaustive formal model checks) in all four languages:
+Every rule is language-agnostic, backed by native compiler/linter plugins and runnable `R0 → R5` proofs (including exhaustive formal model checks) in all 4 languages:
 
-| Language | Native R0–R1 Enforcement | Runnable R0–R5 Proof (with Formal Model Check) | Language Guide |
+| Language | Native `R0`–`R1` Enforcement | Runnable `R0`–`R5` Proof | Guide |
 | :--- | :--- | :--- | :--- |
 | **TypeScript / JS** | [oxlint-no-comments.mjs](lint/oxlint-no-comments.mjs), [oxlint-explicit-state-machine.mjs](lint/oxlint-explicit-state-machine.mjs), strict `tsconfig` | `src/` + `tests/` ([formal-verification.test.ts](tests/formal-verification.test.ts)) | [typescript.md](skill/references/languages/typescript.md) |
-| **C# / .NET 10** | Roslyn [VStack.Analyzers](lint/csharp/VStack.Analyzers/) (`VSTACK001`–`VSTACK004`), `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>` | [templates/csharp-reference/](templates/csharp-reference/) (`OrderFormalProofTests.cs`, `OrderLifecycle.dfy`, `FsCheck` PBT/MBT, `Stryker.NET`) | [csharp.md](skill/references/languages/csharp.md) |
-| **Rust (2024)** | `[lints.rust]` (`unsafe_code = "forbid"`, `warnings = "deny"`), `[lints.clippy]` (`all`, `unwrap_used`, `expect_used`, `panic`, `wildcard_enum_match_arm` = `"deny"`) | [templates/rust-reference/](templates/rust-reference/) (`stateright` BFS model checker, `#[cfg(kani)]` harnesses, `proptest` PBT/MBT, `cargo-mutants`) | [rust.md](skill/references/languages/rust.md) |
-| **Python (3.12+)** | `ruff` (strict rules + prod `S101` assert ban), `mypy --strict` (`disallow_any_explicit = true`), `assert_never` | [templates/python-reference/](templates/python-reference/) (`hypothesis` PBT + `RuleBasedStateMachine` MBT, exhaustive BFS + cross-coverage, `mutmut`) | [python.md](skill/references/languages/python.md) |
+| **C# / .NET 10** | Roslyn [VStack.Analyzers](lint/csharp/VStack.Analyzers/) (`VSTACK001`–`VSTACK004`), `TreatWarningsAsErrors` | [templates/csharp-reference/](templates/csharp-reference/) (BFS formal proof, `OrderLifecycle.dfy`, `FsCheck`, `Stryker.NET`) | [csharp.md](skill/references/languages/csharp.md) |
+| **Rust (2024)** | `unsafe_code = "forbid"`, `warnings = "deny"`, Clippy `unwrap_used`/`expect_used`/`panic`/`wildcard_enum_match_arm = "deny"` | [templates/rust-reference/](templates/rust-reference/) (`stateright` BFS, `#[cfg(kani)]`, `proptest`, `cargo-mutants`) | [rust.md](skill/references/languages/rust.md) |
+| **Python (3.12+)** | `ruff` (strict + prod `S101` assert ban), `mypy --strict` (`disallow_any_explicit`), `assert_never` | [templates/python-reference/](templates/python-reference/) (`hypothesis` PBT/MBT, BFS formal check + cross-coverage, `mutmut`) | [python.md](skill/references/languages/python.md) |
 
 Universal protocol spec: [templates/formal/order_lifecycle.qnt](templates/formal/order_lifecycle.qnt) (Quint / typed TLA+).
 
 ---
 
-## Built-In Static Guardrails & 90/10 Circuits
+## What `vstack` Catches Out of the Box
 
-### Deterministic Static Rules (Zero Model Cost)
-- **`no-comments`:** Bans prose/excuse comments across TS/JS, C#, Rust, and Python while allowing `WARNING:`, `SAFETY:`, license headers, tool directives, and public API docs.
-- **`no-implicit-state-machine`:** Blocks all 4 implicit state-machine patterns (boolean-flag soup, optional/nullable state bags, scattered direct state mutations, and non-exhaustive or silent-wildcard dispatch).
-- **Zero-Defect Cross-Discipline Rules (`V30`–`V42`):**
-  - `cdc-wall-clock-duration` (bans wall-clock subtraction in durations/TTLs across all 4 languages)
-  - `unbounded-loop-risk` (flags `while (true)` / `while True:` / `loop {` without visible iteration/fuel bounds)
-  - `no-release-stripped-assert` (flags `Debug.Assert`, `debug_assert!`, and bare Python prod `assert`)
-  - `.verification/control-plan.json` FMEA Control Plan & bidirectional `REQ-*` traceability gate
-  - `.verification/escapes.json` A3 repeat-defect Poka-Yoke ratchet (`>= 2` occurrences require a linked R0/R1 check)
-  - `perf-quadratic-loop-scan`, `perf-nplus1-io-in-loop`, `perf-loop-compile-or-deepcopy`, and `perf-anti-cheat`
-- **CI & Test Anti-Cheat:** Blocks `continue-on-error: true`, `|| true` after check tools, `--no-verify`, retries/flake masking, `.only`/`.skip`/`[Ignore]`/`#[ignore]`/`@pytest.mark.skip`, `<NoWarn>`, blanket `#[allow(...)]`, tautological/self-derived/multi-status assertions, fixed sleeps, and unexercised tests.
-
-### Plug-and-Play 90/10 System 1 Circuits (`vstack circuit`)
-Deterministic code resolves ~90% of inputs at $0 via verified static facts and hard short-circuits; only ambiguous items invoke a pluggable **BYO System 1 decision model** (`jev`, `laya`, `local` OpenAI-compat, `command` executable, `fixture`, or custom JS engine) under a formally verified 3-band confidence + static-fact corroboration policy:
-1. **`test-triage`** — Behavioral value & push-down classification for ambiguous test files.
-2. **`pr-risk-router`** — Diff blast-radius & cheat-gated review tier routing.
-3. **`instruction-lint-promoter`** — Identifies mechanical rules in `AGENTS.md`/`SKILL.md` ready for AST/compiler promotion.
-4. **`perf-architecture-advisor`** — Routes verified complexity hotspots into optimization families (`algorithmic_complexity`, `data_layout_locality`, `batch_or_index_io`, `bounded_memory_streaming`).
+- **Zero-slop static locks:** `no-comments` (prose/excuse comments banned; `WARNING:`, `SAFETY:`, directives, and public docs allowed), `no-implicit-state-machine` (boolean soup, optional state bags, scattered mutations, non-exhaustive switches), escape hatches, swallowing catches, and unjustified suppressions.
+- **Anti-cheat CI & test integrity:** `continue-on-error: true`, `|| true`, `--no-verify`, retries/skips, `<NoWarn>`, blanket `#[allow]`, tautological/self-derived/multi-status asserts, fixed sleeps, coverage-farm files, and unexercised tests.
+- **Cross-discipline zero-defect gates (`V30`–`V42`):** wall-clock duration CDC, unbounded loops, release-stripped prod asserts (`Debug.Assert` / `debug_assert!` / bare Python `assert`), `.verification/control-plan.json` FMEA & `REQ-*` traceability, `.verification/escapes.json` A3 repeat-defect Poka-Yoke ratchet, `red-before-fix`, `mcdc`, `spc`, `big-o`, and deterministic $O(N^2)$/N+1 perf-hygiene lints.
+- **4 plug-and-play 90/10 System 1 circuits:** deterministic static facts resolve ~90% at $0; only ambiguous items invoke a BYO System 1 model under a formally verified 3-band confidence + contradiction-escalation policy (`test-triage`, `pr-risk-router`, `instruction-lint-promoter`, `perf-architecture-advisor`).
 
 ---
 
-## Portable Agent Skill Home
+## Portable Agent Skill
 
-Install `skill/` into your agent's skill directory (e.g., `~/.agents/skills/veristack` or `~/.claude/skills/veristack`) so coding agents run `vstack scan . --json` before designing or refactoring tests:
+Drop [skill/](skill/) into `~/.agents/skills/veristack` or `~/.claude/skills/veristack` (includes `SKILL.md`, `agents/openai.yaml`, and progressive-disclosure references) so coding agents run `vstack scan . --json` before designing or refactoring tests:
 
-- [skill/SKILL.md](skill/SKILL.md) — Universal principles, 9-rung stack, and 4-gate push-down protocol
-- [skill/references/01-test-and-verification-index.md](skill/references/01-test-and-verification-index.md) — Complete 42-mechanism catalog (`V01`–`V42`)
-- [skill/references/02-linter-and-antislop-stack.md](skill/references/02-linter-and-antislop-stack.md) — R0–R1 linter architecture & custom lint anatomy
-- [skill/references/03-pushdown-protocol-and-budgets.md](skill/references/03-pushdown-protocol-and-budgets.md) — Failure-mechanism routing & sizing formulas
-- [skill/references/04-source-patterns-digest.md](skill/references/04-source-patterns-digest.md) — Engineering lineage & citations
-- [skill/references/05-formal-verification.md](skill/references/05-formal-verification.md) — Universal & per-language formal verification playbook
-- [skill/references/06-system1-circuits.md](skill/references/06-system1-circuits.md) — 90/10 BYO System 1 circuit runtime & defaults
-- [skill/references/07-zero-defect-cross-discipline.md](skill/references/07-zero-defect-cross-discipline.md) — Lean, Silicon & Safety-Critical verification practices
+- [skill/SKILL.md](skill/SKILL.md) — Core 9-rung ladder, shared vocabulary, and 4-phase workflow
+- [skill/references/01-test-and-verification-index.md](skill/references/01-test-and-verification-index.md) — All 42 mechanisms (`V01`–`V42`)
+- [skill/references/02-linter-and-antislop-stack.md](skill/references/02-linter-and-antislop-stack.md) — `R0`–`R1` linter architecture & ratchets
+- [skill/references/03-pushdown-protocol-and-budgets.md](skill/references/03-pushdown-protocol-and-budgets.md) — Routing matrix, budgets & CI speed
+- [skill/references/05-formal-verification.md](skill/references/05-formal-verification.md) — Formal verification playbook (`R5 / V25`)
+- [skill/references/06-system1-circuits.md](skill/references/06-system1-circuits.md) — 90/10 BYO System 1 circuit runtime
+- [skill/references/07-zero-defect-cross-discipline.md](skill/references/07-zero-defect-cross-discipline.md) — Lean, Silicon & Safety-Critical verification
 
 ---
 
 ## Verify All 4 Languages Locally
 
 ```bash
-bun run check        # TS/JS/Bun + vstack self-scan (0 errors, 0 warnings, 0 holes)
+bun run check        # TS/JS/Bun + skill integrity + vstack self-scan
 bun run test:csharp  # Roslyn VStack.Analyzers + .NET 10 reference solution
-bun run test:rust    # rustfmt + clippy -D warnings + proptest + stateright formal check
+bun run test:rust    # rustfmt + clippy -D warnings + proptest + stateright
 bun run test:python  # ruff + mypy --strict + pytest + hypothesis + formal check
 ```
+
+---
+
+## Inspiration, Credits & Clean-Room Attribution
+
+Veristack synthesizes ideas from public engineering literature, open-source tooling, and cross-discipline reliability research.
+
+### Open-Source Projects (MIT / Apache-2.0)
+- [`deterministic-machines/deslop-please`](https://github.com/deterministic-machines/deslop-please) *(MIT)* — deep-module structural anti-slop linting (`field-leak`, `shallow-module`, cycles, tangles).
+- [`dmmulroy/anti-slop`](https://github.com/dmmulroy/anti-slop) *(MIT)* — strict TypeScript escape-hatch bans against low-evidence casts and `unknown` laundering.
+- [`@interfere/landmines`](https://github.com/interfere-inc/landmines) *(MIT)* — static test-integrity rules that make the honest testing path the only one that lints.
+- [`mattpocock/skills`](https://github.com/mattpocock/skills) *(MIT)* — deep-module seam vocabulary (`codebase-design`), vertical-slice TDD discipline, and agent-skill craft (`writing-for-agents`).
+- [`antithesishq/bombadil`](https://github.com/antithesishq/bombadil) *(MIT)* — autonomous UI/TUI state-space exploration and `always`/`sometimes` reachability checks.
+- [`tigerbeetle/tigerbeetle`](https://github.com/tigerbeetle/tigerbeetle) (`TIGER_STYLE.md`, *Apache-2.0*) — paired release-active assertions and deterministic simulation discipline.
+
+### Articles, Papers & Cross-Discipline Literature
+- **Matteo Vaccari — [*Tests as Data*](https://martinfowler.com/articles/tests-as-data.html)** — customer tests as the human-AI contract, declarative data tables, constrained test DSLs, and the file-change lock matrix.
+- **John Ousterhout — *A Philosophy of Software Design*** — deep modules, narrow interfaces, and code locality.
+- **Meta Engineering (Mark Harman, Matthew Becker et al.) — [*Just-in-Time Catching Test Generation at Meta* (`arXiv:2601.22832`)](https://arxiv.org/abs/2601.22832)** — diff-time catching tests without permanent regression-suite bloat.
+- **TypeSafe AI (JEV)** — non-autoregressive, calibrated System 1 decision primitives composed with deterministic code.
+- **Lean, Silicon & Safety-Critical Classics** — Shigeo Shingo (*Zero Quality Control / Poka-Yoke*), Toyota Production System (*Jidoka*, *A3*), Walter Shewhart (*SPC / Nelson rules*), Genichi Taguchi (*orthogonal arrays*), Philip Crosby (*Rolled Throughput Yield*), NASA JPL (*Power of 10*), DO-178C (*MC/DC & bidirectional traceability*), SQLite (*TH3 & `1..N` fault sweeps*), and seL4 (*non-interference*).
+
+*Clean-room notice: Veristack is an original, from-scratch MIT implementation. No third-party source code was copied from any project listed above; every referenced open-source repository is cited openly for the ideas, rules, and engineering principles it inspired. See [skill/references/04-source-patterns-digest.md](skill/references/04-source-patterns-digest.md) for the full traceability map.*
 
 ## License
 

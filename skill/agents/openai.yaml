@@ -1,0 +1,3 @@
+interface:
+  display_name: "Veristack"
+  short_description: "9-rung zero-defect verification & push-down ladder"

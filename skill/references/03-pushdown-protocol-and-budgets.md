@@ -67,9 +67,9 @@ An agent MUST NEVER:
 | **Web Frontend App** | 100% | 5–15 pure tests + 2–4 tables | 1 component suite/critical screen + 1 all-states fixture + 1 UI-API contract + 1 MBT | 0–2 real API read/write checks | 1 Bombadil + `/ui-diff` + `/gridlines` | **5–10** golden journeys | **< 60 s** (PR diff-selected) |
 | **Full-Stack / Multi-Service Platform** | 100% | Per-service budgets above | Per-service + Digital Twins for 3rd-party | Per-service Testcontainers w/ 1s schema snapshots | Nightly fuzz/formal/Bombadil; PR diff mutation | **5–15** total golden journeys + hardware matrix | **< 90 s PR** / hourly full main |
 
-### Test Bloat, Retention & CI Speed Controls (From OpenClaw `test-audit`, Anthropic, & X Saves)
-* **4-Question Authoring Gate (OpenClaw `test-audit`):** Before adding ANY test, confirm: (1) observable behavior/invariant/independent contract, (2) credible regression that breaks it, (3) **one primary owner at strongest boundary** (never replay the same bug at every crossed layer), (4) **zero test-only production seams** (no export/flag/wrapper with no production caller).
-* **Useless Test Deleter + Simplification Pass (`@henrytdowling`):** Delete junk tests (self-comparisons, copied inventories, identifier-fragile source greps, fixtures fabricating receipts/order, tests checking deleted features stay deleted) **and** remove production complexity that only existed to satisfy them. Run a `"delete as much as possible"` pass + adversarial simplification target (LOC / Halstead / `cccc`).
+### Test Bloat, Retention & CI Speed Controls
+* **4-Question Authoring Gate:** Before adding any test, confirm: (1) observable behavior, invariant, or independent contract, (2) credible regression that breaks it, (3) **one primary owner at its strongest seam** (never replay the same bug at every crossed layer), (4) **zero test-only production backdoors** (no export/flag/wrapper with no production caller).
+* **Useless Test Deleter + Simplification Pass:** Delete junk tests (self-comparisons, copied inventories, identifier-fragile source greps, fixtures fabricating receipts/order, tests checking deleted features stay deleted) **and** remove production complexity that only existed to satisfy them. Run a simplification pass targeting LOC / Halstead / `cccc`.
 * **Retention Bar (Never Blindly Delete):** Preserve independent API, SDK, protocol, config, migration, storage, security, platform, default, prompt-byte, release, architecture, and observable-ordering contracts. Static/slow ≠ disposable; baseline failures may be real bugs to fix.
 * **Triviality floor & line ratchet:** Skip unit tests for `cccc ≤ 5` cognitive complexity unless regex or critical invariant; cap net new test lines per PR (400 LOC) — prefer CSV/YAML tables and 1 PBT/MBT over 50 copy-pasted tests.
 * **Verification stamping & commit gate:** Stamp every commit with how it was verified (including `"none"`). Roll out new gates in `off → observe → enforce` mode (with a 2-block session escape valve requiring explicit rationale). Cap agents at **2 CI rounds per task**; never pipe tests into `tail`/`head`. Track reviewer recall separately at *raw → post-verification → final* and tag findings `Important | Nit | Pre-existing`.
@@ -99,20 +99,23 @@ Plus:
 ## 6. Drop-In Agent Prompts
 
 ### A. Audit & Push Down an Existing Suite
-> Read `veristack/SKILL.md` and `references/03-pushdown-protocol-and-budgets.md`.
-> Report first, edit nothing yet. Inventory every test file in this repo and output a table:
+> Call the Skill tool with "veristack", then read `references/03-pushdown-protocol-and-budgets.md`.
+> Report first; edit nothing yet. Run `vstack scan . --json`, inventory every test file, and output:
 > `[File/Test | Current Rung | Failure Mechanism | Target Min Rung | Proposed Form (Lint/Type/Table/PBT/MBT/Component/Host/Contract/R4/Delete) | Why No Lower | Est. Speedup]`.
-> Flag any test failing the Two-Edit Test, any `landmines`/`anti-slop`/`deslop-please` violations, and any E2E beyond the 5–15 golden-path cap. Wait for approval before editing.
+> Flag every test failing the Two-Edit Test, every `vstack` anti-cheat/test-integrity violation, and any E2E beyond the 5–15 golden-path cap.
+> Done when every test file in the repository is accounted for in the table; wait for approval before editing.
 
 ### B. Build Verification for a New Feature
-> Read `veristack/SKILL.md`. Before writing implementation code:
-> 1. Propose the public seams under test (1 line each: what it catches, what it misses) and wait for confirmation.
-> 2. Encode invariants in types and R0/R1 lints first.
-> 3. Express matrix rules as Tests-as-Data tables (CSV/YAML) and multi-step state as a Stateful MBT or Constrained DSL.
-> 4. Prove every critical check fails on a controlled wrong result before reporting done.
+> Call the Skill tool with "veristack". Before writing implementation code:
+> 1. Propose the public seams under test (1 line each: what it catches, what it misses, target rung) and wait for confirmation.
+> 2. Encode invariants in closed types and `R0`/`R1` lints first.
+> 3. Express matrix rules as Tests-as-Data tables (`.json`/`.csv`/`.yaml`) and multi-step state as a Stateful MBT or Constrained DSL.
+> 4. For high-risk surfaces, dispatch a fresh-context subagent to audit implementation against the locked spec independently.
+> Done when every critical check goes red on a controlled fault, restores green, and `vstack scan . --fail-on-cheats` reports 0 errors.
 
-### C. Promote a Bug/Incident Down the Ladder (`/correct`)
+### C. Promote a Bug/Incident Down the Ladder
 > A defect escaped: `<describe defect>`.
-> 1. Commit a minimal pre-fix failing check at the lowest valid rung (SoL-Pi fail-to-pass).
-> 2. Ask: has this mistake class happened twice? If yes, encode a deterministic R0/R1 type, Oxlint/Roslyn rule (with `Rule / Why / Fix`), or `deslop-please`/architecture check + negative test proving it catches the past mistake.
+> 1. Commit a minimal failing check at the lowest valid rung and verify `vstack red-before-fix . --base <ref> --test-cmd "<cmd>"` passes.
+> 2. Log the escape in `.verification/escapes.json`. If this mistake class has occurred twice (`>= 2×`), promote it to a deterministic `R0`/`R1` type, linter rule (`Rule / Why / Fix`), or architecture check with a negative red→green fixture.
 > 3. Fix the root cause, confirm green, and prune any prose rule in `AGENTS.md` now enforced by code.
+> Done when red-before-fix is proven, repeat escapes have a linked `R0`/`R1` Poka-Yoke, and `vstack scan . --fail-on-cheats` exits 0.

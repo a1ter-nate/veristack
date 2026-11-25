@@ -1,6 +1,6 @@
 # TypeScript / JavaScript — Verification Stack Implementation (R0 → R8)
 
-Concrete toolchain, drop-in plugins, and test patterns implementing the universal principles from [../SKILL.md](../SKILL.md) in TypeScript / JavaScript (Bun / Node / Vitest).
+Concrete toolchain, drop-in plugins, and test patterns implementing the universal principles from [../../SKILL.md](../../SKILL.md) in TypeScript / JavaScript (Bun / Node / Vitest).
 
 ---
 

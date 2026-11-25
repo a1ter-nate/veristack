@@ -57,15 +57,10 @@ Every circuit accepts any `System1DecisionEngine` via CLI `--provider` or progra
 
 ### CLI Examples
 
-```bash
-# List all built-in circuits
-vstack circuit list
+Run `vstack circuit list` or `vstack --help` for full flag syntax:
 
-# Run test triage with BYO JEV, Laya, local Gemma/Qwen, or custom script
+```bash
 vstack circuit run test-triage . --provider fixture
-vstack circuit run test-triage . --provider jev --endpoint "$JEV_API_URL" --json
-vstack circuit run pr-risk-router . --base origin/main --provider laya
-vstack circuit run instruction-lint-promoter . --provider local --model qwen3.5:9b
+vstack circuit run pr-risk-router . --base origin/main --provider local --model qwen3.5:9b
 vstack circuit run perf-architecture-advisor . --provider jev --endpoint "$JEV_API_URL" --json
-vstack circuit run test-triage . --provider command --command "python3 ./my_jev_adapter.py"
 ```

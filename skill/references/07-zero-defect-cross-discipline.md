@@ -1,6 +1,6 @@
-# 07 — Cross-Discipline Zero-Defect Verification (`V30`–`V41`: Lean, Silicon & Safety-Critical)
+# 07 — Cross-Discipline Zero-Defect Verification (`V30`–`V42`: Lean, Silicon, Safety-Critical & Performance)
 
-Distilled from three parallel cross-discipline research spikes auditing **Lean Manufacturing / TPS**, **Hardware & Silicon (ASIC/FPGA)**, and **Safety-Critical Software (NASA JPL, DO-178C, SQLite, TigerBeetle, Cleanroom, seL4)** directly against `V01`–`V29`.
+Distilled from cross-discipline zero-defect research across **Lean Manufacturing / TPS**, **Hardware & Silicon (ASIC/FPGA)**, **Safety-Critical Software (NASA JPL, DO-178C, SQLite, TigerBeetle, Cleanroom, seL4)**, and **Asymptotic Performance Verification**.
 
 ---
 

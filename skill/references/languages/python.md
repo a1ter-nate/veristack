@@ -1,6 +1,6 @@
 # Python — Verification Stack Implementation (R0 → R8)
 
-Concrete `pyproject.toml` strict tooling, idiomatic algebraic `@dataclass(frozen=True)` state machines, and runnable Python 3.12+ (`uv`) reference project implementing the universal principles from [../SKILL.md](../SKILL.md) in Python.
+Concrete `pyproject.toml` strict tooling, idiomatic algebraic `@dataclass(frozen=True)` state machines, and runnable Python 3.12+ (`uv`) reference project implementing the universal principles from [../../SKILL.md](../../SKILL.md) in Python.
 
 - **Runnable R0–R5 Reference Project:** `templates/python-reference/` (`order-lifecycle-ref`: closed frozen-dataclass union + `assert_never`, JSON Tests-as-Data `@pytest.mark.parametrize`, `hypothesis` PBT + `RuleBasedStateMachine` Stateful MBT, exhaustive BFS formal model check + functional cross-coverage closure, `mutmut` config).
 - **Cross-Language `vstack` CLI Support:** `vstack scan`, `vstack state-machines`, `vstack no-comments`, `vstack diff-cheats`, `vstack classify`, and `vstack circuit` natively analyze `.py` and `pyproject.toml`.

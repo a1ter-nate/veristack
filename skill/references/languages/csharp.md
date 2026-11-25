@@ -1,6 +1,6 @@
 # C# / .NET — Verification Stack Implementation (R0 → R8)
 
-Concrete Roslyn analyzers, MSBuild configuration, and runnable `.NET 10` reference solution implementing the universal principles from [../SKILL.md](../SKILL.md) in C# / .NET.
+Concrete Roslyn analyzers, MSBuild configuration, and runnable `.NET 10` reference solution implementing the universal principles from [../../SKILL.md](../../SKILL.md) in C# / .NET.
 
 - **Drop-in Roslyn Analyzer:** `lint/csharp/VStack.Analyzers/` (targets `netstandard2.0` for `.NET 8/9/10`; unit-tested in `lint/csharp/VStack.Analyzers.Tests/`).
 - **Runnable R0–R5 Reference Solution:** `templates/csharp-reference/` (`OrderLifecycle.Domain` + `OrderLifecycle.Tests`).

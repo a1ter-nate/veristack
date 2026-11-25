@@ -1,6 +1,6 @@
 # Rust — Verification Stack Implementation (R0 → R8)
 
-Concrete `Cargo.toml` lint tables, idiomatic algebraic state machines, and runnable Rust (edition 2024) reference crate implementing the universal principles from [../SKILL.md](../SKILL.md) in Rust.
+Concrete `Cargo.toml` lint tables, idiomatic algebraic state machines, and runnable Rust (edition 2024) reference crate implementing the universal principles from [../../SKILL.md](../../SKILL.md) in Rust.
 
 - **Runnable R0–R5 Reference Crate:** `templates/rust-reference/` (`order-lifecycle-ref`: pure `enum` state machine, JSON Tests-as-Data table, `proptest` PBT + Stateful MBT, `mutants.toml`).
 - **Cross-Language `vstack` CLI Support:** `vstack scan`, `vstack state-machines`, `vstack no-comments`, `vstack diff-cheats`, and `vstack classify` natively analyze `.rs`, `Cargo.toml`, `rustfmt.toml`, and `mutants.toml`.
