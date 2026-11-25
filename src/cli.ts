@@ -410,9 +410,11 @@ async function run(): Promise<number> {
 }
 
 run()
-  .then((code) => process.exit(code))
+  .then((code) => {
+    process.exitCode = code;
+  })
   .catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`vstack error: ${message}`);
-    process.exit(1);
+    process.exitCode = 1;
   });
