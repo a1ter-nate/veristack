@@ -293,7 +293,10 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
 
   for (const m of masked.matchAll(/\bnew\s+RegExp\s*\(/g)) {
     const idx = m.index ?? 0;
-    if (!UNESCAPED_REGEXP_TEMPLATE.test(raw.slice(idx, idx + 140))) continue;
+    const rawSlice = raw.slice(idx, idx + 140);
+    const prevWin = raw.slice(Math.max(0, idx - 320), idx);
+    if (/\\\$&|escapeRegExp|RegExp\.escape/.test(prevWin)) continue;
+    if (!UNESCAPED_REGEXP_TEMPLATE.test(rawSlice)) continue;
     UNESCAPED_REGEXP_TEMPLATE.lastIndex = 0;
     push(
       findings, file.rel, lineOf(raw, idx), "regex-empty-alternation-or-unescaped", "R1", "warn",
