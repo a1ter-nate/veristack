@@ -226,6 +226,23 @@ export function scanTestHarnessGuards(
   repoHasEmulator: boolean,
 ): Finding[] {
   const findings: Finding[] = [];
+  if (file.language === "rust") {
+    for (const m of code.matchAll(/\bassert_eq!\s*\([^;\n]*\.to_bits\s*\(\s*\)/g)) {
+      const line = lineOf(raw, m.index ?? 0);
+      findings.push({
+        id: `TH:rs-float-bits:${file.rel}:${line}`,
+        rule: "no-cross-platform-float-bit-golden",
+        category: "test-smell",
+        rung: "R2",
+        severity: "warn",
+        file: file.rel,
+        line,
+        message: "Bit-exact float assertion (.to_bits()) flakes across OS/CPU libm implementations (1-ULP transcendental drift).",
+        fix: "Assert within an explicit ULP, epsilon, or dB tolerance instead of bit-exact float equality.",
+      });
+    }
+    return findings;
+  }
   if (file.language !== "typescript" && file.language !== "javascript") return findings;
 
   if (CLOUD_SDK_IMPORT.test(raw) && !EMULATOR_GUARD.test(raw)) {

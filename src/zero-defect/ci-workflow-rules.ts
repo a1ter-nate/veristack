@@ -5,6 +5,7 @@ const TWO_DOT_PR_DIFF = /\bgit\s+diff\b[^\n]*(?:\$\{?[A-Z_]*(?:BASE|MAIN|TARGET)
 const UNBOUNDED_BG_WORKERS = /\b(?:vitest|jest)\b[^\n]*&\s*$|\b--maxWorkers(?:=|\s+)(?:[89]|\d{2,})\b/;
 const HARDCODED_LOCAL_PORT =
   /(?:--port(?:=|\s+)|(?:localhost|127\.0\.0\.1):)(?:300\d|417\d|517\d|808\d|809\d|900\d|909\d|919\d|929\d)\b/;
+const COMBINED_BUILD_TEST = /\bturbo\s+run\s+build\s+test\b|\bpnpm\s+-r\s+(?:--parallel\s+)?build\s+test\b/;
 const MAESTRO_SCROLL_BLOCK = /^\s*-\s*scrollUntilVisible\s*:/gm;
 
 interface JobSpan {
@@ -84,6 +85,20 @@ export function auditExtendedCiRules(file: ScannedFile): Finding[] {
         fix: "Allocate ports dynamically or parameterize via an environment variable with a per-slot offset.",
       });
     }
+
+    if (COMBINED_BUILD_TEST.test(stripped)) {
+      findings.push({
+        id: `CI:build-test-wave:${file.rel}:${idx + 1}`,
+        rule: "ci-combined-build-test-wave",
+        category: "ci-hygiene",
+        rung: "R6",
+        severity: "warn",
+        file: file.rel,
+        line: idx + 1,
+        message: "Running monorepo build and test concurrently in one command starves runner CPU/RAM and causes timeout flakes.",
+        fix: "Separate build and test into sequential steps or cap task concurrency explicitly.",
+      });
+    }
   }
 
   if (file.rel.startsWith(".github/workflows/")) {
@@ -102,6 +117,26 @@ export function auditExtendedCiRules(file: ScannedFile): Finding[] {
           line,
           message: "actions/cache key omits hashFiles(...), risking stale dependency/tool cache collisions across updates.",
           fix: "Include hashFiles('**/lockfile...') or a tool-manifest hash in the cache key.",
+        });
+      }
+    }
+
+    const cacheSaveRe = /uses:\s*actions\/cache\/save@[^\n]+/g;
+    for (const m of file.content.matchAll(cacheSaveRe)) {
+      const idx = m.index ?? 0;
+      const before = file.content.slice(Math.max(0, idx - 220), idx);
+      if (!/^\s*if\s*:/m.test(before)) {
+        const line = file.content.slice(0, idx).split(/\r?\n/).length;
+        findings.push({
+          id: `CI:cache-save-unscoped:${file.rel}:${line}`,
+          rule: "ci-cache-save-unscoped-branch",
+          category: "ci-hygiene",
+          rung: "R6",
+          severity: "warn",
+          file: file.rel,
+          line,
+          message: "Unconditional actions/cache/save lets feature branches overwrite shared caches.",
+          fix: "Gate actions/cache/save with an if: condition scoped to the default branch or unique ref.",
         });
       }
     }

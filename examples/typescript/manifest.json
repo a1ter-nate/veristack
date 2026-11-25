@@ -45,6 +45,14 @@
       "no-floating-side-effect-promise",
       "unbounded-loop-risk",
       "no-warn-only-error-catch"
+    ],
+    "ecosystem_guards.ts": [
+      "no-any-type-annotation",
+      "ui-unvalidated-date-parse",
+      "require-bounded-external-await",
+      "cli-argv-unguarded-empty-check",
+      "evaluator-pass-with-violators",
+      "ui-popstate-pushstate-loop"
     ]
   },
   "clean": [
@@ -52,6 +60,7 @@
     "indexed_perf_and_clock.ts",
     "allowed_comments.ts",
     "check-coverage-policy.test.ts",
-    "safe_runtime_guards.ts"
+    "safe_runtime_guards.ts",
+    "safe_ecosystem_guards.ts"
   ]
 }
