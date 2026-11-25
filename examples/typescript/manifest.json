@@ -85,6 +85,15 @@
       "ast-ssrf-toctou-or-unpinned-fetch",
       "jepsen-wall-clock-lease",
       "node-timer-int32-overflow"
+    ],
+    "ai_first_guards.ts": [
+      "xplat-file-uri-strip-prefix",
+      "path-cmd-c-spawn",
+      "agent-subprocess-missing-error-handler",
+      "mcp-body-cancel-hang",
+      "llm-prompt-cache-prefix-bust",
+      "llm-retry-after-unbounded",
+      "js-prototype-copy-missing-constructor-skip"
     ]
   },
   "clean": [
@@ -96,6 +105,7 @@
     "safe_ecosystem_guards.ts",
     "safe_oss_hardening.ts",
     "safe_ast_and_affine.ts",
-    "safe_cve_and_postmortem.ts"
+    "safe_cve_and_postmortem.ts",
+    "safe_ai_first_guards.ts"
   ]
 }

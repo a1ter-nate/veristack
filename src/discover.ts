@@ -100,6 +100,7 @@ function shouldReadText(rel: string): boolean {
     return true;
   }
   if (lower.endsWith(".vue") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
+  if (lower.endsWith(".sh") || lower.endsWith(".bash")) return true;
   if (lower.endsWith(".sql") && /(?:^|\/)migrations?\//.test(lower)) return true;
   if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/laws\//.test(lower)) return true;
   if (/^\.env\.(?:example|sample|template|dist)$/i.test(base)) return true;

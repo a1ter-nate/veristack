@@ -1,5 +1,6 @@
 import { analyzeLinearObligations } from "./ast/linear-obligations.ts";
 import { analyzeTsAstGuards, parseTsAst } from "./ast/ts-ast.ts";
+import { analyzeWave5AiFirstGuards } from "./ast/wave5-ai-first.ts";
 import type { DiscoveredRepo } from "./discover.ts";
 import { lineOf, maskCode } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
@@ -32,6 +33,10 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
   for (const file of repo.files) {
     if (file.rel.endsWith(".sql") && /(?:^|\/)migrations?\//i.test(file.rel)) {
       findings.push(...analyzeCveAndPostmortemGuards(file));
+      continue;
+    }
+    if (/\.(?:sh|bash)$/i.test(file.rel)) {
+      findings.push(...analyzeWave5AiFirstGuards(file));
       continue;
     }
     if (!file.language || file.isTest || GENERATED_PATH.test(file.rel)) continue;
@@ -206,6 +211,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     findings.push(...analyzeRuntimeGuards(file));
     findings.push(...analyzeOssGuards(file));
     findings.push(...analyzeCveAndPostmortemGuards(file));
+    findings.push(...analyzeWave5AiFirstGuards(file));
     const ast = parseTsAst(file);
     findings.push(...analyzeTsAstGuards(file, ast));
     findings.push(...analyzeLinearObligations(file, ast));
