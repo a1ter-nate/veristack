@@ -13,6 +13,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  self-verify-vstack-strict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Enforce zero ratchets and zero disabled-rule configs
+        run: |
+          if [ -f .vstack.json ] || [ -f .verification/vstack.json ]; then
+            echo "Strict self-verification forbids .vstack.json overrides." >&2
+            exit 1
+          fi
+          if git ls-files | grep -iE '(^|/)[^/]*ratchet[^/]*\.json$'; then
+            echo "Strict self-verification forbids ratchet baseline files." >&2
+            exit 1
+          fi
+      - name: Enforce 500-line hard maximum across all tracked files
+        run: node scripts/check-max-lines.mjs
+      - name: Build and run Veristack against itself (--strict)
+        run: |
+          bun run build
+          node bin/vstack.mjs --help > /dev/null
+          node bin/vstack.mjs scan . --strict
+          node bin/vstack.mjs no-comments . --fail
+          node bin/vstack.mjs state-machines . --fail
+          node bin/vstack.mjs formal-sync . --fail
+          node bin/vstack.mjs laws . --fail
+          node bin/vstack.mjs bench . --fail
+      - if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          node bin/vstack.mjs diff-cheats . --base "origin/$BASE_REF" --fail
+
   verify-ts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -23,13 +64,6 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun run build && node bin/vstack.mjs --help > /dev/null && node bin/vstack.mjs scan . --fail-on-cheats > /dev/null
-      - if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF"
-          bun ./src/cli.ts diff-cheats . --base "origin/$BASE_REF" --fail
 
   verify-csharp:
     runs-on: ubuntu-latest

@@ -31,9 +31,20 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      - name: Enforce zero ratchets, 500-line ceiling, and strict self-scan
+        run: |
+          if [ -f .vstack.json ] || [ -f .verification/vstack.json ]; then
+            echo "Strict self-verification forbids .vstack.json overrides." >&2
+            exit 1
+          fi
+          if git ls-files | grep -iE '(^|/)[^/]*ratchet[^/]*\.json$'; then
+            echo "Strict self-verification forbids ratchet baseline files." >&2
+            exit 1
+          fi
+          node scripts/check-max-lines.mjs
       - run: bun run check
       - run: bun src/cli.ts bench . --fail
-      - run: bun run build && node bin/vstack.mjs --help > /dev/null && node bin/vstack.mjs scan . --fail-on-cheats > /dev/null
+      - run: bun run build && node bin/vstack.mjs --help > /dev/null && node bin/vstack.mjs scan . --strict > /dev/null
       - name: Ensure npm supports Trusted Publishing OIDC
         run: npm install -g npm@latest
       - name: Resolve next monotonic version

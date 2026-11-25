@@ -10,6 +10,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 test("self-scan passes with zero cheats, zero prose comments, zero errors, zero warnings, zero push-downs, and zero rung holes", () => {
   const report = scanRepo(repoRoot);
+  assert.equal(report.config, undefined);
+  assert.equal(report.summary.totalFindings, 0);
   assert.equal(report.summary.cheatCount, 0);
   assert.equal(report.summary.noCommentCount, 0);
   assert.equal(report.summary.errorCount, 0);
