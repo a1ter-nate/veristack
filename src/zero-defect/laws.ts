@@ -84,9 +84,17 @@ function auditBendLawFile(file: ScannedFile, findings: Finding[]): number {
   return declared.length;
 }
 
-function auditJsonLawFile(file: ScannedFile, repo: DiscoveredRepo, findings: Finding[]): number {
+function auditJsonLawFile(
+  file: ScannedFile,
+  repo: DiscoveredRepo,
+  findings: Finding[],
+  verifiedBackends: LawCheckResult["verifiedBackends"],
+  verify: boolean,
+): number {
   try {
-    const parsed = JSON.parse(file.content) as { laws?: Array<{ id?: string; witnessRef?: string; invariant?: string }> };
+    const parsed = JSON.parse(file.content) as {
+      laws?: Array<{ id?: string; witnessRef?: string; invariant?: string; verifyArgs?: string[] }>;
+    };
     const laws = Array.isArray(parsed.laws) ? parsed.laws : [];
     const allPaths = new Set(repo.allRelPaths);
     for (const law of laws) {
@@ -103,6 +111,40 @@ function auditJsonLawFile(file: ScannedFile, repo: DiscoveredRepo, findings: Fin
           message: `Executable law '${id}' in ${file.rel} references missing witness '${law.witnessRef ?? ""}'.`,
           fix: "Point witnessRef to an existing Bend 2 proof, Quint spec, Kani harness, or PBT/MBT test file.",
         });
+        continue;
+      }
+      if (verify) {
+        const ref = law.witnessRef;
+        const cmdArgs: [string, string[]] | null =
+          Array.isArray(law.verifyArgs) && law.verifyArgs.length > 0 && typeof law.verifyArgs[0] === "string"
+            ? [law.verifyArgs[0], law.verifyArgs.slice(1)]
+            : /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(ref)
+              ? ["bun", ["test", path.join(repo.root, ref)]]
+              : /(?:^|\/)test_[^/]+\.py$|_test\.py$/.test(ref)
+                ? ["pytest", [path.join(repo.root, ref)]]
+                : null;
+        if (cmdArgs) {
+          const run = spawnSync(cmdArgs[0], cmdArgs[1], { cwd: repo.root, encoding: "utf8", timeout: 30_000 });
+          if (run.error) {
+            verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "skipped", detail: `${cmdArgs[0]} not on PATH` });
+          } else if (run.status === 0) {
+            verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "passed", detail: `law '${id}' witness passed` });
+          } else {
+            const detail = (run.stderr || run.stdout || "witness failed").trim().slice(0, 200);
+            verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "failed", detail });
+            findings.push({
+              id: `LAW:witness-fail:${file.rel}:${id}`,
+              rule: "laws-witness-execution-failed",
+              category: "oracle-lock",
+              rung: "R3",
+              severity: "error",
+              file: ref,
+              line: 1,
+              message: `Executable law '${id}' failed mechanical verification via ${cmdArgs[0]}: ${detail}`,
+              fix: `Fix the implementation or witness ${ref} until the law passes deterministically.`,
+            });
+          }
+        }
       }
     }
     return laws.length;
@@ -173,7 +215,7 @@ export function auditLaws(repo: DiscoveredRepo, options?: { verify?: boolean }):
         }
       }
     } else if (file.rel.endsWith(".laws.json")) {
-      declaredLaws += auditJsonLawFile(file, repo, findings);
+      declaredLaws += auditJsonLawFile(file, repo, findings, verifiedBackends, Boolean(options?.verify));
     }
   }
 

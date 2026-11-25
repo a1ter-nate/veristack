@@ -1,4 +1,8 @@
+import { analyzeBlackHoleReplayGuards } from "./ast/blackhole-replay-guards.ts";
+import { analyzeBlackHoleArchGates } from "./ast/cross-file-graph.ts";
+import { analyzeImmuneSystemGates } from "./ast/immune-gates.ts";
 import { analyzeLinearObligations } from "./ast/linear-obligations.ts";
+import { analyzeT3ProdGuards } from "./ast/t3-immune-rules.ts";
 import { analyzeTsAstGuards, parseTsAst } from "./ast/ts-ast.ts";
 import { analyzeWave5AiFirstGuards } from "./ast/wave5-ai-first.ts";
 import { analyzeWave6TitansAGuards } from "./ast/wave6-titans-a.ts";
@@ -44,6 +48,8 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     if (/\.(?:sh|bash)$/i.test(file.rel)) {
       findings.push(...analyzeWave5AiFirstGuards(file));
       findings.push(...analyzeWave7TitansBGuards(file));
+      findings.push(...analyzeBlackHoleReplayGuards(file));
+      findings.push(...analyzeT3ProdGuards(file));
       continue;
     }
     if (!file.language || file.isTest || GENERATED_PATH.test(file.rel)) continue;
@@ -224,9 +230,13 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     const ast = parseTsAst(file);
     findings.push(...analyzeTsAstGuards(file, ast));
     findings.push(...analyzeLinearObligations(file, ast));
+    findings.push(...analyzeBlackHoleReplayGuards(file, ast));
+    findings.push(...analyzeT3ProdGuards(file, ast));
   }
 
   findings.push(...analyzeEcosystemGuards(repo));
+  findings.push(...analyzeBlackHoleArchGates(repo));
+  findings.push(...analyzeImmuneSystemGates(repo));
 
   return findings;
 }

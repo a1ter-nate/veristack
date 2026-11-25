@@ -40,6 +40,10 @@
       "url-slash-check-missing-backslash",
       "condvar-wait-without-loop",
       "py-datetime-dst-replace-tzinfo"
+    ],
+    "blackhole_guards.py": [
+      "py-json-loads-missing-recursion-error",
+      "http-ipv6-unbracketed-host-header"
     ]
   },
   "clean": [
@@ -48,6 +52,7 @@
     "test_clean_behavior.py",
     "safe_oss_hardening.py",
     "safe_titans_b_http.py",
-    "safe_titans_a_guards.py"
+    "safe_titans_a_guards.py",
+    "safe_blackhole_guards.py"
   ]
 }

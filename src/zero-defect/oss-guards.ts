@@ -24,8 +24,7 @@ const PY_EAGER_ASYNCIO = /\basyncio\.(?:Lock|Event|Semaphore|BoundedSemaphore|Co
 const PY_OPEN_CALL = /\bopen\s*\(([^)\n]+)\)/g;
 const PY_ORM_DYNAMIC_KWARG = /\.\s*(?:annotate|aggregate|alias|extra)\s*\(\s*\*\*[A-Za-z_][A-Za-z0-9_.]*/g;
 const PY_MKSTEMP_CALL = /\b(?:tempfile\.)?mkstemp\s*\(/g;
-const PY_EXCEPT_EXCEPTION_CLEANUP =
-  /\bexcept\s+Exception(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*:(?:\r?\n[ \t]+[^\n]+){1,6}\.(?:close|unlink|rmtree)\s*\(/g;
+const PY_EXCEPT_EXCEPTION = /\bexcept\s+Exception(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*:/g;
 
 const RUST_SELECT_NON_CANCEL =
   /\b(?:tokio::)?select!\s*\{[\s\S]{0,1200}?\.\s*(?:read_exact|read_to_end|read_to_string|write_all|send_all)\s*\(/g;
@@ -114,9 +113,11 @@ function scanPythonOss(file: ScannedFile, raw: string, masked: string, findings:
     );
   }
 
-  for (const m of masked.matchAll(PY_EXCEPT_EXCEPTION_CLEANUP)) {
+  for (const m of masked.matchAll(PY_EXCEPT_EXCEPTION)) {
     const idx = m.index ?? 0;
-    if (/\bfinally\s*:/.test(masked.slice(idx, idx + 400))) continue;
+    const block = masked.slice(idx, idx + 360);
+    if (!/\.(?:close|unlink|rmtree)\s*\(/.test(block)) continue;
+    if (/\bfinally\s*:/.test(block)) continue;
     push(
       findings, file.rel, lineOf(raw, idx), "py-cleanup-require-finally-or-baseexception", "R1", "warn",
       "Resource cleanup inside 'except Exception:' is bypassed by BaseException (CancelledError, KeyboardInterrupt, pytest.skip).",

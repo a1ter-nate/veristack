@@ -1,4 +1,5 @@
 import path from "node:path";
+import { analyzeT3TestGuards } from "./ast/t3-immune-rules.ts";
 import type { DiscoveredRepo, ScannedFile } from "./discover.ts";
 import { hasNonFrameworkImport, lineOf, maskStrings, scanTestHarnessGuards, scanVitestConfigs } from "./test-lexical.ts";
 import type { Finding, PushDownOpportunity, RungId, TestBoundary, TestFileRecord } from "./types.ts";
@@ -475,6 +476,7 @@ export function analyzeTests(repo: DiscoveredRepo): TestAnalysisResult {
     const result = scanSingleTestFile(file, repoHasEmulator);
     inventory.push(result.record);
     findings.push(...result.findings);
+    findings.push(...analyzeT3TestGuards(file));
     pushDownOpportunities.push(...result.pushDowns);
   }
 

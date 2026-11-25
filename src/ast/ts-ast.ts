@@ -14,8 +14,8 @@ export function isAstNode(value: unknown): value is AstNode {
   return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
 }
 
-export function walkAst(node: AstNode, visit: (current: AstNode, parent: AstNode | null) => void, parent: AstNode | null = null): void {
-  visit(node, parent);
+export function walkAst(node: AstNode, visit: (current: AstNode, parent: AstNode | null) => boolean | void, parent: AstNode | null = null): void {
+  if (visit(node, parent) === false) return;
   for (const [key, val] of Object.entries(node)) {
     if (key === "type" || key === "start" || key === "end") continue;
     if (Array.isArray(val)) {
@@ -88,6 +88,7 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
   if (!body) return;
   const tainted = new Set<string>();
   const plainObjects = new Set<string>();
+  const aliases = new Map<string, string>();
 
   if (Array.isArray(fnNode.params)) {
     for (const p of fnNode.params) {
@@ -99,11 +100,17 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
 
   walkAst(body, (cur, parent) => {
     if (cur !== body && (cur.type === "FunctionDeclaration" || cur.type === "FunctionExpression" || cur.type === "ArrowFunctionExpression")) {
-      return;
+      return false;
     }
     if (cur.type === "VariableDeclarator" && isAstNode(cur.id) && isAstNode(cur.init)) {
       if (cur.id.type === "Identifier" && typeof cur.id.name === "string") {
         if (nodeContainsTaint(cur.init, tainted)) tainted.add(cur.id.name);
+        if (cur.init.type === "Identifier" && typeof cur.init.name === "string") {
+          const root = aliases.get(cur.init.name) ?? cur.init.name;
+          aliases.set(cur.id.name, root);
+          if (tainted.has(root)) tainted.add(cur.id.name);
+          if (plainObjects.has(root)) plainObjects.add(cur.id.name);
+        }
         if (cur.init.type === "ObjectExpression" && Array.isArray(cur.init.properties) && cur.init.properties.length === 0) {
           plainObjects.add(cur.id.name);
         }
@@ -111,6 +118,12 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
         for (const prop of cur.id.properties) {
           if (isAstNode(prop) && isAstNode(prop.value) && prop.value.type === "Identifier" && typeof prop.value.name === "string") {
             tainted.add(prop.value.name);
+          }
+        }
+      } else if (cur.id.type === "ArrayPattern" && Array.isArray(cur.id.elements) && nodeContainsTaint(cur.init, tainted)) {
+        for (const el of cur.id.elements) {
+          if (isAstNode(el) && el.type === "Identifier" && typeof el.name === "string") {
+            tainted.add(el.name);
           }
         }
       }
@@ -258,6 +271,58 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
             "useEffect registers an event listener, interval, or subscription without returning a cleanup function.",
             "Return a teardown callback from useEffect to remove listeners, clear intervals, or close subscriptions on unmount.",
           );
+        }
+      }
+    }
+
+    if (
+      cur.type === "ExpressionStatement" &&
+      isAstNode(cur.expression) &&
+      cur.expression.type === "CallExpression" &&
+      isAstNode(cur.expression.callee) &&
+      fnNode.async === true
+    ) {
+      const chain = getMemberChain(cur.expression.callee);
+      if (/\.(?:execute|query|commit|rollback|savepoint)\b/i.test(chain) && /(?:session|tx|trx|transaction|db|conn|client)\./i.test(chain)) {
+        push(
+          findings,
+          file,
+          cur.start ?? 0,
+          "ast-floating-async-db-or-io",
+          "R0",
+          "error",
+          `Unawaited async DB/transaction call '${chain}(...)' inside async function silently drops failures and races subsequent queries.`,
+          "Await every session/transaction query or savepoint call explicitly.",
+        );
+      }
+    }
+
+    if (cur.type === "BlockStatement" && Array.isArray(cur.body) && cur.body.length >= 3) {
+      for (let i = 0; i < cur.body.length - 1; i++) {
+        const s = cur.body[i];
+        if (!isAstNode(s) || s.type !== "ExpressionStatement" || !isAstNode(s.expression) || s.expression.type !== "CallExpression" || !isAstNode(s.expression.callee)) continue;
+        const pushChain = getMemberChain(s.expression.callee);
+        const m = /^([A-Za-z0-9_.]+)\.(push|add)$/.exec(pushChain);
+        if (!m || !/(?:stack|seen|visiting|active|memo|frames|open)/i.test(m[1] ?? "")) continue;
+        const target = m[1];
+        if (!target) continue;
+        const undoMethod = m[2] === "push" ? "pop" : "delete";
+        for (let j = i + 2; j < cur.body.length; j++) {
+          const later = cur.body[j];
+          if (!isAstNode(later) || later.type !== "ExpressionStatement" || !isAstNode(later.expression) || later.expression.type !== "CallExpression" || !isAstNode(later.expression.callee)) continue;
+          if (getMemberChain(later.expression.callee) === `${target}.${undoMethod}`) {
+            push(
+              findings,
+              file,
+              s.start ?? 0,
+              "ast-unbalanced-stack-mutation-no-finally",
+              "R1",
+              "warn",
+              `Paired '${target}.${m[2]}()' and '${target}.${undoMethod}()' without try/finally leaks stack/visiting state if the middle code throws.`,
+              `Wrap the work between '${target}.${m[2]}()' and '${target}.${undoMethod}()' in try { ... } finally { ${target}.${undoMethod}(); }.`,
+            );
+            break;
+          }
         }
       }
     }

@@ -107,6 +107,17 @@
       "float-nan-unsafe-cmp",
       "url-slash-check-missing-backslash",
       "http-unnormalized-path-authz-match"
+    ],
+    "blackhole_guards.ts": [
+      "js-in-operator-guard-before-arith-or-deref",
+      "js-abortsignal-listener-without-aborted-check",
+      "http-delete-content-type-without-content-length",
+      "ast-floating-async-db-or-io",
+      "ast-unbalanced-stack-mutation-no-finally",
+      "http-ipv6-unbracketed-host-header",
+      "react-no-unreasoned-state-sync",
+      "perf-no-inline-schema-compile",
+      "js-utf16-surrogate-slice-truncation"
     ]
   },
   "clean": [
@@ -121,6 +132,7 @@
     "safe_cve_and_postmortem.ts",
     "safe_ai_first_guards.ts",
     "safe_titans_b_guards.ts",
-    "safe_titans_a_guards.ts"
+    "safe_titans_a_guards.ts",
+    "safe_blackhole_guards.ts"
   ]
 }

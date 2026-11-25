@@ -74,6 +74,8 @@ function checkTsFunctionObligations(fnNode: AstNode, file: ScannedFile, findings
   }
 
   const obligations = new Map<string, Obligation>();
+  const aliases = new Map<string, string>();
+  const resolveOb = (name: string): Obligation | undefined => obligations.get(aliases.get(name) ?? name);
 
   for (let idx = 0; idx < body.body.length; idx++) {
     const stmt = body.body[idx];
@@ -83,6 +85,13 @@ function checkTsFunctionObligations(fnNode: AstNode, file: ScannedFile, findings
       const isUsingDecl = stmt.kind === "using" || stmt.kind === "await using";
       for (const decl of stmt.declarations) {
         if (!isAstNode(decl) || !isAstNode(decl.id) || decl.id.type !== "Identifier" || typeof decl.id.name !== "string") continue;
+        if (isAstNode(decl.init) && decl.init.type === "Identifier" && typeof decl.init.name === "string") {
+          const root = aliases.get(decl.init.name) ?? decl.init.name;
+          if (obligations.has(root)) {
+            aliases.set(decl.id.name, root);
+            continue;
+          }
+        }
         const acq = isLinearAcquisition(isAstNode(decl.init) ? decl.init : null);
         if (!acq || isUsingDecl) continue;
         obligations.set(decl.id.name, {
@@ -104,7 +113,7 @@ function checkTsFunctionObligations(fnNode: AstNode, file: ScannedFile, findings
         if (cur.type === "ReturnStatement" && isAstNode(cur.argument)) {
           walkAst(cur.argument, (r) => {
             if (r.type === "Identifier" && typeof r.name === "string") {
-              const ob = obligations.get(r.name);
+              const ob = resolveOb(r.name);
               if (ob) ob.transferredOut = true;
             }
           });
@@ -114,7 +123,7 @@ function checkTsFunctionObligations(fnNode: AstNode, file: ScannedFile, findings
           const parts = chain.split(".");
           if (parts.length === 2) {
             const [objName, method] = parts;
-            const ob = objName ? obligations.get(objName) : undefined;
+            const ob = objName ? resolveOb(objName) : undefined;
             if (ob && method) {
               if (RELEASE_METHODS.has(method)) {
                 ob.released = true;
@@ -136,7 +145,7 @@ function checkTsFunctionObligations(fnNode: AstNode, file: ScannedFile, findings
           if ((chain === "fs.closeSync" || chain === "closeSync") && Array.isArray(cur.arguments)) {
             const first = isAstNode(cur.arguments[0]) ? cur.arguments[0] : null;
             if (first?.type === "Identifier" && typeof first.name === "string") {
-              const ob = obligations.get(first.name);
+              const ob = resolveOb(first.name);
               if (ob) {
                 ob.released = true;
                 if (insideFinally) ob.releasedInFinally = true;
@@ -147,14 +156,14 @@ function checkTsFunctionObligations(fnNode: AstNode, file: ScannedFile, findings
           if (Array.isArray(cur.arguments)) {
             for (const a of cur.arguments) {
               if (isAstNode(a) && a.type === "Identifier" && typeof a.name === "string") {
-                const ob = obligations.get(a.name);
+                const ob = resolveOb(a.name);
                 if (ob && /\.(?:on|once|pipe|register|addCleanup|track)$/i.test(chain)) ob.transferredOut = true;
               }
             }
           }
         }
         if (cur.type === "MemberExpression" && !cur.computed && isAstNode(cur.object) && cur.object.type === "Identifier" && typeof cur.object.name === "string") {
-          const ob = obligations.get(cur.object.name);
+          const ob = resolveOb(cur.object.name);
           const prop = isAstNode(cur.property) && typeof cur.property.name === "string" ? cur.property.name : "";
           if (ob && ob.isAbortController && prop === "signal") {
             ob.released = true;

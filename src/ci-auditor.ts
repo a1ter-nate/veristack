@@ -4,6 +4,7 @@ import path from "node:path";
 import type { DiscoveredRepo } from "./discover.ts";
 import { maskStrings } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
+import { auditDiffAntiEvasion, type DiffLineEvent } from "./zero-defect/anti-evasion.ts";
 import { auditExtendedCiRules, auditMaestroFlow } from "./zero-defect/ci-workflow-rules.ts";
 
 const CHECK_TOOL =
@@ -180,6 +181,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   if (diff.status !== 0) return [];
 
   const findings: Finding[] = [];
+  const diffEvents: DiffLineEvent[] = [];
   let currentFile = "<diff>";
   let currentLine = 1;
 
@@ -210,6 +212,13 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
       currentLine = Number(hunk[1]);
       continue;
     }
+    if (raw.startsWith("-") && !raw.startsWith("---")) {
+      const removed = raw.slice(1);
+      if (!/\.(?:md|mdx|txt|rst)$/.test(currentFile.toLowerCase())) {
+        diffEvents.push({ file: currentFile, line: currentLine, kind: "del", raw: removed, code: removed });
+      }
+      continue;
+    }
     if (!raw.startsWith("+") || raw.startsWith("+++")) continue;
     const added = raw.slice(1);
     const stripped = added.replace(/\s+#.*$/, "");
@@ -228,6 +237,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
     const codeLine = /\.(?:cs|rs|[cm]?[jt]sx?|py)$/.test(lowerFile)
       ? getMaskedLine(currentFile, currentLine, added)
       : added;
+    diffEvents.push({ file: currentFile, line: currentLine, kind: "add", raw: added, code: codeLine });
 
     if (isWorkflowOrScript && /git\s+(?:push|commit)\b[^#\n]*--no-verify|\bHUSKY=0\b/.test(stripped)) {
       findings.push({
@@ -458,6 +468,8 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
 
     currentLine += 1;
   }
+
+  findings.push(...auditDiffAntiEvasion(diffEvents));
 
   return findings;
 }

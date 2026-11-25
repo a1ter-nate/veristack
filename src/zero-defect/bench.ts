@@ -16,6 +16,31 @@ export interface BenchLanguageResult {
   scanMs: number;
 }
 
+export interface ReplayPairResult {
+  id: string;
+  repo: string;
+  sha: string;
+  lang: string;
+  subject: string;
+  shapes: string[];
+  caughtRules: string[];
+  regressedRules: string[];
+  caught: boolean;
+}
+
+export interface ReplayBenchReport {
+  corpusDir: string;
+  totalPairs: number;
+  caughtPairs: number;
+  catchRatePct: number;
+  cleanAfterPairs: number;
+  scanMs: number;
+  byLanguage: Record<string, { total: number; caught: number; pct: number }>;
+  topCaughtRules: Array<{ rule: string; count: number }>;
+  topEscapedShapes: Array<{ shape: string; escaped: number; total: number }>;
+  escapedSamples: Array<{ id: string; repo: string; lang: string; subject: string; shapes: string[] }>;
+}
+
 export interface BenchReport {
   passed: boolean;
   totalExpectedRules: number;
@@ -25,6 +50,7 @@ export interface BenchReport {
   totalScanMs: number;
   languages: BenchLanguageResult[];
   corpusFindingsPer10kLoc?: number;
+  replay?: ReplayBenchReport;
 }
 
 interface ExampleManifest {
@@ -67,7 +93,122 @@ function runInTempDir(files: Record<string, string>): ReturnType<typeof scanRepo
   }
 }
 
-export function runPrecisionBench(repoRoot: string, corpusDir?: string): BenchReport {
+interface ReplayManifestEntry {
+  id: string;
+  repo: string;
+  sha: string;
+  subject: string;
+  lang: string;
+  beforeRel: string;
+  afterRel: string;
+  shapes: string[];
+}
+
+function countRuleMap(findings: readonly { rule: string }[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const f of findings) {
+    if (f.rule === "no-comments" || f.rule === "max-file-lines" || f.rule === "max-exports-per-module" || f.rule === "wide-directory") {
+      continue;
+    }
+    m.set(f.rule, (m.get(f.rule) ?? 0) + 1);
+  }
+  return m;
+}
+
+export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
+  const manifestPath = path.join(replayDir, "manifest.json");
+  const entries = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as ReplayManifestEntry[];
+  const t0 = performance.now();
+  const beforeScan = scanRepo(path.join(replayDir, "before"));
+  const afterScan = scanRepo(path.join(replayDir, "after"));
+  const scanMs = Number((performance.now() - t0).toFixed(2));
+
+  const beforeByFile = new Map<string, Array<{ rule: string }>>();
+  for (const f of beforeScan.findings) {
+    const arr = beforeByFile.get(f.file) ?? [];
+    arr.push(f);
+    beforeByFile.set(f.file, arr);
+  }
+  const afterByFile = new Map<string, Array<{ rule: string }>>();
+  for (const f of afterScan.findings) {
+    const arr = afterByFile.get(f.file) ?? [];
+    arr.push(f);
+    afterByFile.set(f.file, arr);
+  }
+
+  let caughtPairs = 0;
+  let cleanAfterPairs = 0;
+  const byLanguage: Record<string, { total: number; caught: number; pct: number }> = {};
+  const caughtRuleCounts = new Map<string, number>();
+  const shapeStats = new Map<string, { escaped: number; total: number }>();
+  const escapedSamples: ReplayBenchReport["escapedSamples"] = [];
+
+  for (const entry of entries) {
+    const bMap = countRuleMap(beforeByFile.get(entry.beforeRel) ?? []);
+    const aMap = countRuleMap(afterByFile.get(entry.afterRel) ?? []);
+    const caughtRules: string[] = [];
+    const regressedRules: string[] = [];
+
+    for (const [rule, bCnt] of bMap.entries()) {
+      if (bCnt > (aMap.get(rule) ?? 0)) {
+        caughtRules.push(rule);
+        caughtRuleCounts.set(rule, (caughtRuleCounts.get(rule) ?? 0) + 1);
+      }
+    }
+    for (const [rule, aCnt] of aMap.entries()) {
+      if (aCnt > (bMap.get(rule) ?? 0)) regressedRules.push(rule);
+    }
+
+    const caught = caughtRules.length > 0;
+    if (caught) caughtPairs += 1;
+    if (regressedRules.length === 0) cleanAfterPairs += 1;
+
+    const langSlot = byLanguage[entry.lang] ?? { total: 0, caught: 0, pct: 0 };
+    langSlot.total += 1;
+    if (caught) langSlot.caught += 1;
+    langSlot.pct = Number(((langSlot.caught / langSlot.total) * 100).toFixed(1));
+    byLanguage[entry.lang] = langSlot;
+
+    const shapes = entry.shapes.length > 0 ? entry.shapes : ["unclustered"];
+    for (const sh of shapes) {
+      const s = shapeStats.get(sh) ?? { escaped: 0, total: 0 };
+      s.total += 1;
+      if (!caught) s.escaped += 1;
+      shapeStats.set(sh, s);
+    }
+
+    if (!caught && escapedSamples.length < 40) {
+      escapedSamples.push({
+        id: entry.id,
+        repo: entry.repo,
+        lang: entry.lang,
+        subject: entry.subject,
+        shapes: entry.shapes,
+      });
+    }
+  }
+
+  return {
+    corpusDir: replayDir,
+    totalPairs: entries.length,
+    caughtPairs,
+    catchRatePct: Number(((caughtPairs / Math.max(1, entries.length)) * 100).toFixed(1)),
+    cleanAfterPairs,
+    scanMs,
+    byLanguage,
+    topCaughtRules: [...caughtRuleCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([rule, count]) => ({ rule, count })),
+    topEscapedShapes: [...shapeStats.entries()]
+      .sort((a, b) => b[1].escaped - a[1].escaped)
+      .slice(0, 15)
+      .map(([shape, v]) => ({ shape, escaped: v.escaped, total: v.total })),
+    escapedSamples,
+  };
+}
+
+export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDir?: string): BenchReport {
   const examplesRoot = path.join(repoRoot, "examples");
   const langs = ["typescript", "csharp", "rust", "python"] as const;
   const languages: BenchLanguageResult[] = [];
@@ -152,6 +293,10 @@ export function runPrecisionBench(repoRoot: string, corpusDir?: string): BenchRe
   const totalAdversarialFps = languages.reduce((s, l) => s + l.commentWrappedFps.length + l.stringWrappedFps.length, 0);
   const totalScanMs = Number(languages.reduce((s, l) => s + l.scanMs, 0).toFixed(2));
 
+  const replay = replayDir && fs.existsSync(path.join(replayDir, "manifest.json"))
+    ? runHistoricalReplayBench(replayDir)
+    : undefined;
+
   return {
     passed: totalExpectedRules === totalMatchedRules && totalCleanFps === 0 && totalAdversarialFps === 0,
     totalExpectedRules,
@@ -161,6 +306,7 @@ export function runPrecisionBench(repoRoot: string, corpusDir?: string): BenchRe
     totalScanMs,
     languages,
     corpusFindingsPer10kLoc,
+    replay,
   };
 }
 
@@ -178,6 +324,21 @@ export function formatBenchReport(report: BenchReport): string {
     for (const m of l.missedRules) lines.push(`      MISSED: ${m}`);
     for (const fp of [...l.cleanFalsePositives, ...l.commentWrappedFps, ...l.stringWrappedFps]) {
       lines.push(`      FP: ${fp}`);
+    }
+  }
+  if (report.replay) {
+    const r = report.replay;
+    lines.push(
+      `  historical replay: caught=${r.caughtPairs}/${r.totalPairs} (${r.catchRatePct}%) | regressionFree=${r.cleanAfterPairs}/${r.totalPairs} (${r.scanMs}ms)`,
+    );
+    for (const [lang, stats] of Object.entries(r.byLanguage).sort()) {
+      lines.push(`    - ${lang.padEnd(10)} ${stats.caught}/${stats.total} (${stats.pct}%)`);
+    }
+    if (r.topCaughtRules.length > 0) {
+      lines.push(`    top caught rules: ${r.topCaughtRules.slice(0, 8).map((x) => `${x.rule}(${x.count})`).join(", ")}`);
+    }
+    if (r.topEscapedShapes.length > 0) {
+      lines.push(`    top escaped shapes: ${r.topEscapedShapes.slice(0, 6).map((x) => `${x.shape}(${x.escaped}/${x.total})`).join(", ")}`);
     }
   }
   return lines.join("\n");

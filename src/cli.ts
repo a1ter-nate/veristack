@@ -40,7 +40,7 @@ function usage(): string {
     "  vstack diff-cheats [dir] [--base <ref>] [--json] [--fail]",
     "  vstack formal-sync [dir] [--json] [--fail]",
     "  vstack laws [dir] [--verify] [--json] [--fail]",
-    "  vstack bench [dir] [--corpus <dir>] [--json] [--fail]",
+    "  vstack bench [dir] [--corpus <dir>] [--replay <dir>] [--json] [--fail]",
     "  vstack classify [dir] [--max <n>] [--emit-requests] [--provider <laya|jev|local|command|fixture>] [--endpoint <url>] [--model <name>] [--command <cmd>] [--corroborate <answers.json>] [--json]",
     "  vstack circuit list [--json]",
     "  vstack circuit run <test-triage|pr-risk-router|instruction-lint-promoter|perf-architecture-advisor> [dir] [--provider <jev|laya|local|command|fixture>] [--endpoint <url>] [--model <name>] [--command <cmd>] [--base <ref>] [--max <n>] [--json]",
@@ -73,6 +73,7 @@ function firstPositional(args: readonly string[]): string {
     "--max-space-exp",
     "--ratchet",
     "--corpus",
+    "--replay",
   ]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -175,7 +176,8 @@ async function run(): Promise<number> {
 
   if (cmd === "bench") {
     const corpus = parseFlagValue(rest, "--corpus");
-    const report = runPrecisionBench(target, corpus);
+    const replay = parseFlagValue(rest, "--replay");
+    const report = runPrecisionBench(target, corpus, replay);
     if (asJson) console.log(JSON.stringify(report, null, 2));
     else console.log(formatBenchReport(report));
     return rest.includes("--fail") && !report.passed ? 1 : 0;
