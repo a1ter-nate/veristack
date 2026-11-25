@@ -236,8 +236,10 @@ export function analyzeWave6TitansAGuards(file: ScannedFile): Finding[] {
     for (const m of prodRaw.matchAll(URL_SLASH_NO_BACKSLASH)) {
       const idx = m.index ?? 0;
       if (prodCode[idx] === " ") continue;
-      const tail = prodRaw.slice(idx, idx + m[0].length + 160);
-      if (tail.includes("\\\\") || /IsLocalUrl|IsWellFormedUriString/i.test(tail)) continue;
+      const around = prodRaw.slice(Math.max(0, idx - 240), idx + m[0].length + 160);
+      if (around.includes("\\\\") || /\/[^/\n]*\\\\[^/\n]*\//.test(around) || /IsLocalUrl|IsWellFormedUriString/i.test(around)) {
+        continue;
+      }
       push(
         findings, file.rel, lineOf(raw, idx), "url-slash-check-missing-backslash", "R0", "error",
         "Local-URL check rejecting '//' without rejecting '\\\\' or '/\\\\' is bypassable in browsers (open redirect).",

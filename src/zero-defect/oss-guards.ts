@@ -143,11 +143,25 @@ function scanRustOss(file: ScannedFile, raw: string, masked: string, findings: F
   const cfgTestIdx = raw.search(/#\[cfg\(test\)\]/);
   const prodMasked = cfgTestIdx >= 0 ? masked.slice(0, cfgTestIdx) : masked;
 
-  if (/#\[serde\([^\]]*deny_unknown_fields[^\]]*\)\]/.test(prodMasked) && /#\[serde\([^\]]*flatten[^\]]*\)\]/.test(prodMasked)) {
-    const idx = prodMasked.search(/#\[serde\([^\]]*deny_unknown_fields[^\]]*\)\]/);
+  const rustTypeDecl = /\b(?:struct|enum)\s+[A-Za-z_][A-Za-z0-9_]*\b/g;
+  for (const m of prodMasked.matchAll(rustTypeDecl)) {
+    const declIdx = m.index ?? 0;
+    const headerSlice = prodMasked.slice(Math.max(0, declIdx - 420), declIdx);
+    const lastSep = Math.max(headerSlice.lastIndexOf("}"), headerSlice.lastIndexOf(";"));
+    const attrs = lastSep >= 0 ? headerSlice.slice(lastSep + 1) : headerSlice;
+    const denyOffsetInAttrs = attrs.search(/#\[serde\([^\]]*deny_unknown_fields[^\]]*\)\]/);
+    if (denyOffsetInAttrs < 0) continue;
+
+    const openBrace = prodMasked.indexOf("{", declIdx + m[0].length);
+    const semiBefore = prodMasked.indexOf(";", declIdx + m[0].length);
+    if (openBrace < 0 || (semiBefore >= 0 && semiBefore < openBrace)) continue;
+    const body = extractBlock(prodMasked, openBrace);
+    if (!/#\[serde\([^\]]*flatten[^\]]*\)\]/.test(body)) continue;
+
+    const attrsStart = declIdx - attrs.length;
     push(
-      findings, file.rel, lineOf(raw, Math.max(0, idx)), "serde-deny-unknown-with-flatten", "R0", "error",
-      "Combining #[serde(deny_unknown_fields)] with #[serde(flatten)] is unsupported in Serde and rejects valid payloads at runtime.",
+      findings, file.rel, lineOf(raw, Math.max(0, attrsStart + denyOffsetInAttrs)), "serde-deny-unknown-with-flatten", "R0", "error",
+      "Combining #[serde(deny_unknown_fields)] with #[serde(flatten)] on the same struct/enum is unsupported in Serde and rejects valid payloads at runtime.",
       "Remove deny_unknown_fields when using flatten or replace flatten with an explicit wrapper/custom Deserialize.",
     );
   }
@@ -295,13 +309,26 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
     }
   }
 
+  const literalConstNames = new Set<string>();
+  for (const cm of raw.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:"[^"\n]*"|'[^'\n]*')/g)) {
+    if (cm[1]) literalConstNames.add(cm[1]);
+  }
+
   for (const m of masked.matchAll(/\bnew\s+RegExp\s*\(/g)) {
     const idx = m.index ?? 0;
-    const rawSlice = raw.slice(idx, idx + 140);
+    const rawSlice = raw.slice(idx, idx + 180);
     const prevWin = raw.slice(Math.max(0, idx - 320), idx);
     if (/\\\$&|escapeRegExp|RegExp\.escape/.test(prevWin)) continue;
     if (!UNESCAPED_REGEXP_TEMPLATE.test(rawSlice)) continue;
     UNESCAPED_REGEXP_TEMPLATE.lastIndex = 0;
+    const tmplStart = rawSlice.indexOf("`");
+    const tmplEnd = tmplStart >= 0 ? rawSlice.indexOf("`", tmplStart + 1) : -1;
+    if (tmplStart >= 0 && tmplEnd > tmplStart) {
+      const exprs = [...rawSlice.slice(tmplStart + 1, tmplEnd).matchAll(/\$\{\s*([^}]+?)\s*\}/g)].map((x) => x[1] ?? "");
+      if (exprs.length > 0 && exprs.every((e) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(e) && literalConstNames.has(e))) {
+        continue;
+      }
+    }
     push(
       findings, file.rel, lineOf(raw, idx), "regex-empty-alternation-or-unescaped", "R1", "warn",
       "Unescaped template interpolation inside new RegExp(`...${...}`) risks ReDoS or metacharacter injection.",

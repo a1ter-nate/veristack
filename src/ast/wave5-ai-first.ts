@@ -218,12 +218,17 @@ export function analyzeWave5AiFirstGuards(file: ScannedFile): Finding[] {
     }
   }
 
-  for (const m of prodCode.matchAll(MCP_BODY_CANCEL)) {
-    push(
-      findings, file.rel, lineOf(raw, m.index ?? 0), "mcp-body-cancel-hang", "R1", "warn",
-      "Calling response.body.cancel() on HTTP/SSE responses can stall keep-alive connection pools.",
-      "Drain unread response bodies via await response.text() / arrayBuffer() (with a size cap) or close the controller cleanly.",
-    );
+  const isCloudflareWorker =
+    /(?:^|\/)workers?\//i.test(file.rel) ||
+    /\b(?:ExportedHandler|ExecutionContext|DurableObject|caches\.default|@cloudflare\/workers-types)\b/.test(raw);
+  if (!isCloudflareWorker) {
+    for (const m of prodCode.matchAll(MCP_BODY_CANCEL)) {
+      push(
+        findings, file.rel, lineOf(raw, m.index ?? 0), "mcp-body-cancel-hang", "R1", "warn",
+        "Calling response.body.cancel() on HTTP/SSE responses can stall keep-alive connection pools.",
+        "Drain unread response bodies via await response.text() / arrayBuffer() (with a size cap) or close the controller cleanly.",
+      );
+    }
   }
 
   for (const m of prodCode.matchAll(AGENT_SPAWN_CALL)) {

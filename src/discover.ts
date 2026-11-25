@@ -282,7 +282,7 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
     .map((f) => f.content)
     .join("\n");
   const configText = files
-    .filter((f) => (!f.language && !f.rel.toLowerCase().endsWith(".md")) || f.rel.includes("config") || f.isWorkflow)
+    .filter((f) => !f.isTest && ((!f.language && !f.rel.toLowerCase().endsWith(".md")) || f.rel.includes("config") || f.isWorkflow))
     .map((f) => f.content)
     .join("\n");
 

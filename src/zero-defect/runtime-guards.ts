@@ -248,13 +248,21 @@ export function analyzeRuntimeGuards(file: ScannedFile): Finding[] {
   }
 
   const rawLines = raw.split(/\r?\n/);
+  const hasAsyncContext = /\b(?:async|await|Promise|then)\b/.test(code);
+  const localSyncFns = new Set<string>();
+  for (const fm of code.matchAll(/(^|[^\w$])(async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g)) {
+    if (!fm[2] && fm[3]) localSyncFns.add(fm[3]);
+  }
   for (const m of code.matchAll(FLOATING_SIDE_EFFECT)) {
     const start = m.index ?? 0;
+    const callText = m[0].trim();
+    const bareMatch = /^([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/.exec(callText);
+    if (bareMatch && bareMatch[1] && (localSyncFns.has(bareMatch[1]) || !hasAsyncContext)) continue;
     const rawLine = rawLines[lineOf(raw, start) - 1] ?? "";
     if (/\.then\s*\(|\.catch\s*\(|\/\/\s*fire-and-forget/i.test(rawLine)) continue;
     push(
       findings, file, raw, start, "no-floating-side-effect-promise", "R1", "error",
-      `Side-effect persistence/shutdown call '${m[0].trim()}' is neither awaited nor explicitly tracked.`,
+      `Side-effect persistence/shutdown call '${callText}' is neither awaited nor explicitly tracked.`,
       "Await the async call or register it in a shutdown-drain tracker so writes and flushes cannot silently drop.",
     );
   }

@@ -4,11 +4,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { analyzeWave5AiFirstGuards } from "../../src/ast/wave5-ai-first.ts";
+import { analyzeWave6TitansAGuards } from "../../src/ast/wave6-titans-a.ts";
 import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
 import type { ScannedFile } from "../../src/discover.ts";
 import { scanRepo } from "../../src/ladder.ts";
 import { lintImplicitStateMachinesInFile } from "../../src/state-machines/index.ts";
 import { analyzeCveAndPostmortemGuards } from "../../src/zero-defect/cve-and-agent-guards.ts";
+import { analyzeOssGuards } from "../../src/zero-defect/oss-guards.ts";
+import { analyzeRuntimeGuards } from "../../src/zero-defect/runtime-guards.ts";
 
 function fakeFile(rel: string, content: string, language?: ScannedFile["language"]): ScannedFile {
   return {
@@ -163,5 +167,70 @@ test("db-migration-missing-lock-timeout skips SQLite and same-file CREATE TABLE 
   assert.deepEqual(
     analyzeCveAndPostmortemGuards(pgExistingTableLock).map((f) => f.rule),
     ["db-migration-missing-lock-timeout"],
+  );
+});
+
+test("field-triage FP fixes: serde per-struct scope, sync commit(), constant RegExp, Workers body.cancel(), and prior backslash guard", () => {
+  const separateSerdeStructs = fakeFile(
+    "src/wire.rs",
+    [
+      "#[derive(Deserialize)]",
+      "#[serde(deny_unknown_fields)]",
+      "pub struct StrictHeader { pub name: String }",
+      "#[derive(Deserialize)]",
+      "pub struct OpenEnvelope { #[serde(flatten)] pub extra: Map<String, Value> }",
+    ].join("\n"),
+    "rust",
+  );
+  assert.deepEqual(analyzeOssGuards(separateSerdeStructs).filter((f) => f.rule === "serde-deny-unknown-with-flatten"), []);
+
+  const sameSerdeStruct = fakeFile(
+    "src/bad.rs",
+    [
+      "#[derive(Deserialize)]",
+      "#[serde(deny_unknown_fields)]",
+      "pub struct Broken { #[serde(flatten)] pub extra: Map<String, Value> }",
+    ].join("\n"),
+    "rust",
+  );
+  assert.ok(analyzeOssGuards(sameSerdeStruct).some((f) => f.rule === "serde-deny-unknown-with-flatten"));
+
+  const syncCommitJs = fakeFile(
+    "assets/canvas.js",
+    [
+      "function commit(next, label) { history.push({ next, label }); }",
+      "function addNode(n) { commit(n, 'added'); }",
+    ].join("\n"),
+    "javascript",
+  );
+  assert.deepEqual(analyzeRuntimeGuards(syncCommitJs).filter((f) => f.rule === "no-floating-side-effect-promise"), []);
+
+  const constRegexTs = fakeFile(
+    "src/router.ts",
+    'const uuid = "[a-f0-9]{8}";\nexport const route = new RegExp(`^/v1/(${uuid})$`);\n',
+    "typescript",
+  );
+  assert.deepEqual(analyzeOssGuards(constRegexTs).filter((f) => f.rule === "regex-empty-alternation-or-unescaped"), []);
+
+  const workerCancelTs = fakeFile(
+    "workers/edge/src/index.ts",
+    "export default { async fetch(req: Request): Promise<Response> { const response = await fetch(req); await response.body?.cancel(); return new Response(null); } };\n",
+    "typescript",
+  );
+  assert.deepEqual(analyzeWave5AiFirstGuards(workerCancelTs).filter((f) => f.rule === "mcp-body-cancel-hang"), []);
+
+  const priorBackslashTs = fakeFile(
+    "src/routing.ts",
+    [
+      "export function parseTarget(raw: string): boolean {",
+      "  if (/[^\\x21-\\x7e]|\\\\/.test(raw)) return false;",
+      '  return raw.startsWith("/") && !raw.startsWith("//");',
+      "}",
+    ].join("\n"),
+    "typescript",
+  );
+  assert.deepEqual(
+    analyzeWave6TitansAGuards(priorBackslashTs).filter((f) => f.rule === "url-slash-check-missing-backslash"),
+    [],
   );
 });
