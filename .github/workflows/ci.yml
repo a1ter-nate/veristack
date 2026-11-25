@@ -23,6 +23,7 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run check
+      - run: bun run build && node bin/vstack.mjs --help > /dev/null && node bin/vstack.mjs scan . --fail-on-cheats > /dev/null
       - if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}

@@ -1,16 +1,47 @@
 {
   "name": "veristack",
   "version": "0.1.0",
-  "description": "Deterministic 9-rung zero-defect verification ladder, push-down analyzer, formal checks, and BYO System 1 circuits for TypeScript, C#, Rust, and Python.",
+  "description": "Deterministic 9-rung zero-defect verification ladder, cross-language static and invariant analyzer, Bend 2 formal laws, and anti-cheat CI gates for TypeScript, C#, Rust, Python, Go, SQL, and Shell.",
   "type": "module",
+  "homepage": "https://github.com/a1ter-nate/veristack#readme",
+  "bugs": {
+    "url": "https://github.com/a1ter-nate/veristack/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/a1ter-nate/veristack.git"
   },
+  "keywords": [
+    "verification",
+    "static-analysis",
+    "linter",
+    "invariants",
+    "anti-slop",
+    "state-machines",
+    "formal-verification",
+    "ci-gates",
+    "oxc"
+  ],
   "bin": {
-    "vstack": "./bin/vstack.mjs"
+    "vstack": "./bin/vstack.mjs",
+    "veristack": "./bin/vstack.mjs"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "lint/oxlint-no-comments.mjs",
+    "lint/oxlint-explicit-state-machine.mjs",
+    "skill/",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    "./lint/no-comments": "./lint/oxlint-no-comments.mjs",
+    "./lint/explicit-state-machine": "./lint/oxlint-explicit-state-machine.mjs"
   },
   "scripts": {
+    "build": "bun build src/cli.ts --outfile dist/cli.mjs --target node --external oxc-parser",
+    "prepack": "bun run build",
     "test": "bun test ./tests/",
     "test:examples": "bun test ./tests/examples-accuracy.test.ts ./examples/typescript/clean/check-coverage-policy.test.ts",
     "scan": "bun src/cli.ts scan .",
@@ -24,6 +55,7 @@
     "check": "bun run lint:no-comments && bun run lint:state-machines && bun test ./tests/ ./examples/typescript/clean/ && bun src/cli.ts scan . --fail-on-cheats"
   },
   "engines": {
+    "node": ">=18.0.0",
     "bun": ">=1.2.0"
   },
   "license": "MIT",

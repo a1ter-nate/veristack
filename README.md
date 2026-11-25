@@ -41,19 +41,20 @@ R8  Live Production Verification & Boot BIST      (Always  | 3–10 probes)
 
 ## Quick Start
 
-Requires [Bun](https://bun.sh) `>= 1.2.0`. Optional native toolchains (`dotnet`, `cargo`, `uv`, `go`, `bend`) verify their matching reference suites.
+Runs on **Node.js `>= 18`** or **[Bun](https://bun.sh) `>= 1.2.0`** via npm, pnpm, or Bun. Optional native toolchains (`dotnet`, `cargo`, `uv`, `go`, `bend`) verify their matching reference suites.
 
 ```bash
-git clone https://github.com/a1ter-nate/veristack.git
-cd veristack
+# Run immediately with npx or bunx
+npx veristack scan .
+bunx veristack scan .
 
-bun run check                                  # Self-verify Veristack (0 errors, 0 warnings, 0 holes)
-bun ./src/cli.ts scan /path/to/repo            # Audit rungs, push-downs, cheats, and structural defects
-bun ./src/cli.ts scan /path/to/repo --json     # Machine-readable report for coding agents
-bun ./src/cli.ts diff-cheats /path/to/repo --base origin/main --fail
+# Or install as a dev dependency in your repo
+npm install -D veristack        # or: pnpm add -D veristack / bun add -d veristack
+npx vstack scan . --json        # Machine-readable report for coding agents
+npx vstack diff-cheats . --base origin/main --fail
 ```
 
-Run `bun ./src/cli.ts --help` for the complete command and flag list.
+Run `npx veristack --help` (or `vstack --help`) for the complete command and flag list. From a local clone, run `bun run check` to self-verify Veristack.
 
 ---
 
