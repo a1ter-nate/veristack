@@ -11,6 +11,9 @@ import { executeHookEvent } from "../../src/hooks/runtime.ts";
 import { scanRepo } from "../../src/ladder.ts";
 import { parseAndValidateCommandArgv, sanitizeShellBlock } from "../../src/rungs/command-audit.ts";
 import { auditRunnerConfigs, runGitClean } from "../../src/rungs/config-audit.ts";
+import { loadRungManifest } from "../../src/rungs/manifest.ts";
+import { evaluateCrapForCoverageFile } from "../../src/rungs/reports.ts";
+import { auditCodeownersPerimeter } from "../../src/rungs/workflow-audit.ts";
 import { auditManifestDowngrade } from "../../src/zero-defect/anti-evasion.ts";
 import { runRedBeforeFix } from "../../src/zero-defect/index.ts";
 
@@ -183,5 +186,30 @@ test("round10 final: sanitizeShellBlock conditionals/pipes, pnpm -F {...}..., Na
     const rbf = runRedBeforeFix(dir, "HEAD", "python3 -m unittest discover");
     assert.equal(rbf.passed, false);
     assert.ok(rbf.reason.includes("INVALID RED"));
+  });
+
+  withTempDir((dir) => {
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ archetype: "library", allowExcluded: ["   ", "examples/bad/"], rungs: {} }));
+    const loaded = loadRungManifest(dir);
+    assert.equal(loaded.error, undefined);
+    assert.deepEqual(loaded.manifest?.allowExcluded, ["examples/bad/"]);
+
+    fs.writeFileSync(path.join(dir, "Cargo.toml"), '[workspace]\nmembers = ["a", "b"]\ndefault-members = ["a"]\n');
+    assert.ok(auditRunnerConfigs(dir));
+    fs.unlinkSync(path.join(dir, "Cargo.toml"));
+
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "src", "calc.py"), "def f(x):\n    if x > 0:\n        return 1\n    return 0\n");
+    fs.writeFileSync(path.join(dir, "cov.info"), "SF:src/calc.py\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nend_of_record\n");
+    const pyCrap = evaluateCrapForCoverageFile(dir, "cov.info", 30);
+    assert.equal(pyCrap.passed, true);
+    assert.equal(pyCrap.worstCrap, 2);
+
+    const perim = auditCodeownersPerimeter(
+      [{ rel: ".github/CODEOWNERS", abs: "/tmp/CODEOWNERS", isTest: false, isWorkflow: false, lines: 5, content: "\n# lock control plane\n/.verification/ @owner\n/.github/ @owner\n/package.json @owner\n" }],
+      [".github/CODEOWNERS", ".github/workflows/ci.yml", ".verification/rungs.json", ".verification/behavior-changes.json", "package.json"],
+    );
+    assert.equal(perim.passed, true);
   });
 });
