@@ -83,10 +83,37 @@ function nodeContainsTaint(node: AstNode | null | undefined, tainted: Set<string
   return hit;
 }
 
+function nodeContainsSqlVerb(node: AstNode | null | undefined): boolean {
+  if (!node) return false;
+  let hit = false;
+  walkAst(node, (cur) => {
+    if (hit) return;
+    if (cur.type === "Literal" && typeof cur.value === "string" && SQL_VERB.test(cur.value)) hit = true;
+    if (cur.type === "TemplateElement" && typeof cur.value === "object" && cur.value !== null) {
+      const raw = (cur.value as { raw?: unknown }).raw;
+      if (typeof raw === "string" && SQL_VERB.test(raw)) hit = true;
+    }
+  });
+  return hit;
+}
+
+function isSqlTaintedExpr(node: AstNode | null | undefined, tainted: Set<string>, sqlTainted: Set<string>): boolean {
+  if (!node) return false;
+  if (node.type === "Identifier" && typeof node.name === "string" && sqlTainted.has(node.name)) return true;
+  if (node.type === "TemplateLiteral" && Array.isArray(node.expressions) && node.expressions.length > 0) {
+    return nodeContainsSqlVerb(node) && node.expressions.some((e) => isAstNode(e) && nodeContainsTaint(e, tainted));
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    return nodeContainsSqlVerb(node) && nodeContainsTaint(node, tainted);
+  }
+  return false;
+}
+
 function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, findings: Finding[]): void {
   const body = isAstNode(fnNode.body) ? fnNode.body : null;
   if (!body) return;
   const tainted = new Set<string>();
+  const sqlTainted = new Set<string>();
   const plainObjects = new Set<string>();
   const aliases = new Map<string, string>();
 
@@ -105,10 +132,12 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
     if (cur.type === "VariableDeclarator" && isAstNode(cur.id) && isAstNode(cur.init)) {
       if (cur.id.type === "Identifier" && typeof cur.id.name === "string") {
         if (nodeContainsTaint(cur.init, tainted)) tainted.add(cur.id.name);
+        if (isSqlTaintedExpr(cur.init, tainted, sqlTainted)) sqlTainted.add(cur.id.name);
         if (cur.init.type === "Identifier" && typeof cur.init.name === "string") {
           const root = aliases.get(cur.init.name) ?? cur.init.name;
           aliases.set(cur.id.name, root);
           if (tainted.has(root)) tainted.add(cur.id.name);
+          if (sqlTainted.has(root)) sqlTainted.add(cur.id.name);
           if (plainObjects.has(root)) plainObjects.add(cur.id.name);
         }
         if (cur.init.type === "ObjectExpression" && Array.isArray(cur.init.properties) && cur.init.properties.length === 0) {
@@ -154,6 +183,10 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
     }
 
     if (cur.type === "AssignmentExpression" && isAstNode(cur.left) && isAstNode(cur.right)) {
+      if (cur.left.type === "Identifier" && typeof cur.left.name === "string") {
+        if (nodeContainsTaint(cur.right, tainted)) tainted.add(cur.left.name);
+        if (isSqlTaintedExpr(cur.right, tainted, sqlTainted)) sqlTainted.add(cur.left.name);
+      }
       const lhs = getMemberChain(cur.left);
       if (lhs.endsWith(".innerHTML") && nodeContainsTaint(cur.right, tainted)) {
         push(
@@ -188,27 +221,17 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
           "Validate against an explicit allowlist (for redirects/paths) or use execFileSync with an argument array (no shell).",
         );
       }
-      if (
-        /\.(?:query|execute|raw|exec)$/.test(chain) &&
-        firstArg &&
-        firstArg.type === "TemplateLiteral" &&
-        Array.isArray(firstArg.quasis) &&
-        Array.isArray(firstArg.expressions) &&
-        firstArg.expressions.length > 0
-      ) {
-        const firstQuasi = isAstNode(firstArg.quasis[0]) && isAstNode(firstArg.quasis[0].value) ? String(firstArg.quasis[0].value.raw ?? "") : "";
-        if (SQL_VERB.test(firstQuasi) && firstArg.expressions.some((e) => isAstNode(e) && nodeContainsTaint(e, tainted))) {
-          push(
-            findings,
-            file,
-            cur.start ?? 0,
-            "ast-taint-to-sink",
-            "R0",
-            "error",
-            `Tainted interpolation inside SQL template literal passed to '${chain}(...)' (SQL injection).`,
-            "Pass parameterized query placeholders ($1/?) and bound values instead of interpolating variables into SQL.",
-          );
-        }
+      if (/\.(?:query|execute|raw|exec)$/.test(chain) && firstArg && isSqlTaintedExpr(firstArg, tainted, sqlTainted)) {
+        push(
+          findings,
+          file,
+          cur.start ?? 0,
+          "ast-taint-to-sink",
+          "R0",
+          "error",
+          `Tainted SQL interpolation/concatenation passed to '${chain}(...)' (SQL injection).`,
+          "Pass parameterized query placeholders ($1/?) and bound values instead of interpolating or concatenating untrusted input into SQL.",
+        );
       }
     }
 
@@ -224,7 +247,7 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
             isAstNode(stmt.argument.callee)
           ) {
             const callName = getMemberChain(stmt.argument.callee);
-            if (/^(?:fetch|load|read|write|save|send|query|commit|create|update|delete)|(?:Async|Promise|Fetch|Query)$/i.test(callName)) {
+            if (!callName.endsWith("Sync") && /^(?:fetch|load|read|write|save|send|query|commit|create|update|delete)|(?:Async|Promise|Fetch|Query)$/i.test(callName)) {
               push(
                 findings,
                 file,

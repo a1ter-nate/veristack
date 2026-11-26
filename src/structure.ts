@@ -328,6 +328,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
       }
 
       for (const match of prodContent.matchAll(RUST_ALLOW_ATTR)) {
+        if (maskedProd[match.index ?? 0] === " ") continue;
         const inner = match[1] ?? "";
         if (!/(?:clippy::|warnings|dead_code|unused)/i.test(inner)) continue;
         const line = lineOf(prodContent, match.index ?? 0);

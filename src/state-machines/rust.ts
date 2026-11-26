@@ -1,4 +1,5 @@
 import type { ScannedFile } from "../discover.ts";
+import { maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const LIFECYCLE_BOOL_NAME =
@@ -24,72 +25,6 @@ function toCamel(snake: string): string {
   return snake.replace(/^_+/, "").replace(/_([a-zA-Z0-9])/g, (_, ch: string) => ch.toUpperCase());
 }
 
-function maskRust(source: string): string {
-  const out = source.split("");
-  let inString = false;
-  let escaped = false;
-  let lineComment = false;
-  let blockDepth = 0;
-
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i] ?? "";
-    const next = source[i + 1] ?? "";
-    if (lineComment) {
-      if (ch === "\n") lineComment = false;
-      else out[i] = " ";
-      continue;
-    }
-    if (blockDepth > 0) {
-      if (ch === "/" && next === "*") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        blockDepth += 1;
-        i += 1;
-      } else if (ch === "*" && next === "/") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        blockDepth -= 1;
-        i += 1;
-      } else if (ch !== "\n") {
-        out[i] = " ";
-      }
-      continue;
-    }
-    if (inString) {
-      if (ch !== "\n" && ch !== "\r") out[i] = " ";
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (ch === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === "/" && next === "/") {
-      out[i] = " ";
-      out[i + 1] = " ";
-      lineComment = true;
-      i += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      out[i] = " ";
-      out[i + 1] = " ";
-      blockDepth = 1;
-      i += 1;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      out[i] = " ";
-    }
-  }
-  return out.join("");
-}
-
 function findMatchingBrace(masked: string, openIdx: number): number {
   let depth = 0;
   for (let i = openIdx; i < masked.length; i++) {
@@ -101,20 +36,6 @@ function findMatchingBrace(masked: string, openIdx: number): number {
     }
   }
   return -1;
-}
-
-function stripTestModules(masked: string): string {
-  const out = masked.split("");
-  const cfgTest = /#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/g;
-  for (const match of masked.matchAll(cfgTest)) {
-    const openIdx = (match.index ?? 0) + match[0].length - 1;
-    const closeIdx = findMatchingBrace(masked, openIdx);
-    if (closeIdx < 0) continue;
-    for (let i = match.index ?? 0; i <= closeIdx; i++) {
-      if (out[i] !== "\n") out[i] = " ";
-    }
-  }
-  return out.join("");
 }
 
 function findHeaderOpenBrace(masked: string, fromIdx: number, stopOnParenAtZero: boolean): number {
@@ -333,8 +254,7 @@ function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): F
 }
 
 export function lintRustStateMachines(file: ScannedFile): Finding[] {
-  const masked = maskRust(file.content);
-  const prodMasked = stripTestModules(masked);
+  const prodMasked = maskCode(file.content, "rust", true);
   return [
     ...checkRustStructs(file, prodMasked),
     ...checkRustScatteredMutations(file, prodMasked),

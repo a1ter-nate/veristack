@@ -18,7 +18,7 @@ const ACQUIRE_CALL_RE =
 
 const ROUTE_DIR_RE = /(?:^|\/)(?:routes|controllers|handlers|endpoints|api)\b/i;
 const PUBLIC_ROUTE_FILE =
-  /(?:health|ready|live|metrics|status|ping|login|logout|signin|signout|signup|register|oauth|callback|webhook|public|index|mod|lib|types|schema|middleware|auth|common|shared|utils|helpers)\b/i;
+  /(?:health|ready|live|metrics|status|ping|login|logout|signin|signout|signup|register|oauth|callback|webhook|public|index|mod|lib|types|schema|middleware|auth|common|shared|utils|helpers|openapi|swagger|docs|robots|sitemap|graphql|well-known)\b/i;
 const AUTH_GUARD_TOKEN =
   /\b(requireAuth|requireSession|requireAdmin|verifySession|verifyToken|verifyJwt|authenticate|authorize|checkPermission|ensureAuth|ensureTenant|authMiddleware|withAuth|getCurrentUser|get_current_user|require_auth|verify_session|AuthenticatedUser)\b/g;
 
@@ -77,6 +77,7 @@ function inspectVarUsageAfter(after: string, varName: string): { isGuarded: bool
         /^\s*(?:&&|\?(?!\?|\.))/.test(afterSlice) ||
         (/!\s*$/.test(beforeSlice) && /^\s*\|\|/.test(afterSlice))
       ) {
+        if (sawDeref) return { isGuarded: false, explicitNullish: false, isUnsafeDeref: true };
         return { isGuarded: true, explicitNullish, isUnsafeDeref: false };
       }
       if (/^\.[A-Za-z_$]/.test(afterSlice)) {

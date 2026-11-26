@@ -203,16 +203,20 @@ function auditJsonLawFile(
         if (Array.isArray(law.verifyArgs) && law.verifyArgs.length > 0 && typeof law.verifyArgs[0] === "string") {
           const rawCmd = law.verifyArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
           const validated = parseAndValidateCommandArgv("canary", rawCmd, repo.root);
-          const refBase = path.posix.basename(ref);
-          const refDir = path.posix.dirname(ref);
+          const normRef = ref.replace(/\\/g, "/").replace(/^\.\//, "");
+          const refDir = path.posix.dirname(normRef);
+          const isSingleFileTest = /\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.py$|(?:^|\/)test_[^/]+\.py$/i.test(normRef);
           const mentionsWitness = law.verifyArgs.some((a) => {
-            const normA = a.replace(/\\/g, "/").replace(/\/+$/, "");
+            const normA = a.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
             if (!normA || normA.startsWith("-")) return false;
-            if (normA.includes(ref) || normA.includes(refBase)) return true;
-            if (refDir !== "." && normA.includes(refDir)) return true;
-            const aDir = path.posix.dirname(normA);
-            if (normA !== "." && ref.startsWith(`${normA}/`)) return true;
-            if (aDir !== "." && ref.startsWith(`${aDir}/`)) return true;
+            if (normA === normRef) return true;
+            if (isSingleFileTest) return false;
+            if (refDir !== "." && normA === refDir) return true;
+            if (/(?:Cargo\.toml|\.csproj|\.slnx|pyproject\.toml)$/i.test(normA)) {
+              const manifestDir = path.posix.dirname(normA);
+              if (manifestDir !== "." && normRef.startsWith(`${manifestDir}/`)) return true;
+            }
+            if (normA !== "." && !/\.[A-Za-z0-9]+$/.test(normA) && normRef.startsWith(`${normA}/`)) return true;
             return false;
           });
           if (validated.error || validated.steps.length !== 1 || !mentionsWitness) {
@@ -337,7 +341,7 @@ export function auditLaws(repo: DiscoveredRepo, options?: { verify?: boolean }):
 
     lawFiles.push(file.rel);
 
-    if (hasCodeowners && !hasCodeownersCoverage(repo, file.rel) && !file.rel.startsWith("templates/")) {
+    if ((hasCodeowners || options?.verify) && !hasCodeownersCoverage(repo, file.rel)) {
       findings.push({
         id: `LAW:unowned:${file.rel}`,
         rule: "laws-unowned-by-codeowners",

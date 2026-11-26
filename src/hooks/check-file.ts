@@ -15,6 +15,7 @@ import { lintNoComments } from "../no-comments.ts";
 import { analyzeProdZeroDefectRules } from "../prod-guards.ts";
 import { lintImplicitStateMachinesInFile } from "../state-machines/index.ts";
 import { analyzeStructure } from "../structure.ts";
+import { analyzeTests } from "../test-analyzer.ts";
 import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 import { analyzeCveAndPostmortemGuards } from "../zero-defect/cve-and-agent-guards.ts";
@@ -134,10 +135,25 @@ function scanImmediateTest(file: ScannedFile, code: string, findings: Finding[])
 }
 
 function makeSingleFileRepo(repoRoot: string, file: ScannedFile): DiscoveredRepo {
+  const files: ScannedFile[] = [file];
+  const cpAbs = path.join(repoRoot, ".verification", "chokepoints.json");
+  if (fs.existsSync(cpAbs) && fs.statSync(cpAbs).isFile()) {
+    try {
+      const cpContent = fs.readFileSync(cpAbs, "utf8");
+      files.push({
+        rel: ".verification/chokepoints.json",
+        abs: cpAbs,
+        isTest: false,
+        isWorkflow: false,
+        content: cpContent,
+        lines: cpContent.split(/\r?\n/).length,
+      });
+    } catch { void 0; }
+  }
   return {
     root: repoRoot,
-    files: [file],
-    allRelPaths: [file.rel],
+    files,
+    allRelPaths: files.map((f) => f.rel),
     languages: file.language ? [file.language] : [],
     archetype: "library",
     observedArchetype: "library",
@@ -239,12 +255,19 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
     if (file.isTest) {
       scanImmediateTest(file, code, rawFindings);
       rawFindings.push(...analyzeUniversalLandminesTest(file, code, ast));
+      if (tier === "all") {
+        const singleRepo = makeSingleFileRepo(repoRoot, file);
+        rawFindings.push(...analyzeTests(singleRepo).findings);
+      }
     } else {
       scanImmediateProd(file, code, rawFindings);
       rawFindings.push(...lintImplicitStateMachinesInFile(file));
       rawFindings.push(...analyzeUniversalBendLaws(file));
       rawFindings.push(...analyzeUniversalAntiSlopProd(file, ast));
       rawFindings.push(...analyzeTsAstGuards(file, ast));
+      if (fs.existsSync(path.join(repoRoot, ".verification", "chokepoints.json"))) {
+        rawFindings.push(...analyzeImmuneSystemGates(makeSingleFileRepo(repoRoot, file)));
+      }
       if (tier === "all") {
         const singleRepo = makeSingleFileRepo(repoRoot, file);
         rawFindings.push(...analyzeStructure(singleRepo));

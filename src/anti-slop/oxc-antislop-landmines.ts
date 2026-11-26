@@ -124,7 +124,7 @@ function checkInternalBoundaryImports(file: ScannedFile, code: string, ast: AstN
 }
 
 export function analyzeUniversalAntiSlopProd(file: ScannedFile, ast: AstNode | null): Finding[] {
-  if (!file.language || file.isTest) return [];
+  if (!file.language || file.isTest || file.rel.endsWith(".pyi") || file.rel.endsWith(".d.ts")) return [];
   const findings: Finding[] = [];
   const raw = file.content;
   const code = maskCode(raw, file.language);

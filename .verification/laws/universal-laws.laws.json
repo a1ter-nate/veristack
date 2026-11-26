@@ -22,7 +22,7 @@
       "id": "python-order-lifecycle-hypothesis-mbt",
       "invariant": "Python Hypothesis property-based and stateful rule-based state machine laws hold.",
       "witnessRef": "templates/python-reference/tests/test_property_and_mbt.py",
-      "verifyArgs": ["uv", "run", "--project", "templates/python-reference", "pytest", "templates/python-reference"]
+      "verifyArgs": ["uv", "run", "--project", "templates/python-reference", "pytest", "templates/python-reference/tests/test_property_and_mbt.py"]
     },
     {
       "id": "csharp-order-lifecycle-fscheck-laws",

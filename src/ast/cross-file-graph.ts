@@ -29,8 +29,8 @@ const ASPNET_MW_ORDER = [
   "MapControllers",
 ] as const;
 
-const CS_SINGLETON_REG = /\.AddSingleton\s*<\s*(?:[A-Za-z0-9_.]+\s*,\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*>/g;
-const CS_SCOPED_REG = /\.AddScoped\s*<\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*([A-Za-z_][A-Za-z0-9_]*))?\s*>/g;
+const CS_SINGLETON_REG = /\.(?:AddSingleton|AddHostedService)\s*<\s*(?:[A-Za-z0-9_.]+\s*,\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*>/g;
+const CS_SCOPED_REG = /\.(?:AddScoped|AddDbContext|AddDbContextPool)\s*<\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*([A-Za-z_][A-Za-z0-9_]*))?\s*>/g;
 
 const CELERY_ACKS_LATE = /\backs_late\s*=\s*True\b/g;
 const K8S_LISTER_GET = /([A-Za-z_][A-Za-z0-9_]*)\s*,[^=\n]*:=\s*[^;\n]*(?:Lister\s*\(\s*\)|informer)[^;\n]*\.Get\s*\(/g;
@@ -106,12 +106,19 @@ function analyzeTsCrossFileGraph(repo: DiscoveredRepo, findings: Finding[]): voi
           }
         }
       }
+      if ((stmt.type === "ExportAllDeclaration" || stmt.type === "ExportNamedDeclaration") && stmt.exportKind !== "type" && isAstNode(stmt.source) && typeof stmt.source.value === "string") {
+        const resolved = resolveImport(file.rel, stmt.source.value, allPaths);
+        if (resolved && resolved !== file.rel) {
+          edges.push({ target: resolved, line: lineOf(file.content, stmt.start ?? 0) });
+        }
+      }
 
       if (stmt.type === "VariableDeclaration" && Array.isArray(stmt.declarations)) {
         for (const d of stmt.declarations) {
           if (isAstNode(d) && isAstNode(d.init) && d.init.type === "NewExpression" && isAstNode(d.init.callee)) {
             const cn = getMemberChain(d.init.callee);
-            if (cn === "Map" || cn === "LRUCache") definesCache = true;
+            const varName = isAstNode(d.id) && typeof d.id.name === "string" ? d.id.name : "";
+            if (cn === "LRUCache" || (cn === "Map" && (/cache/i.test(varName) || /cache/i.test(file.rel)))) definesCache = true;
           }
         }
       }
@@ -120,7 +127,7 @@ function analyzeTsCrossFileGraph(repo: DiscoveredRepo, findings: Finding[]): voi
         const decl = stmt.declaration;
         if (decl.type === "FunctionDeclaration" && isAstNode(decl.id) && typeof decl.id.name === "string") {
           const fnName = decl.id.name;
-          if (/^(?:invalidate|evict|clear|delete|purge|bust)/i.test(fnName)) invalidators.add(fnName);
+          if (/^(?:invalidate|evict|purge|bust)|^(?:clear|delete)[A-Za-z0-9_]*Cache/i.test(fnName)) invalidators.add(fnName);
           let callsDangerousSink = false;
           walkAst(decl, (cur) => {
             if (callsDangerousSink) return;
@@ -217,7 +224,7 @@ function analyzeTsCrossFileGraph(repo: DiscoveredRepo, findings: Finding[]): voi
 
     if (importsCacheModule && importedCacheInvalidators.size === 0) {
       const code = maskCode(file.content, file.language);
-      const writeMatch = /\.(?:insert|update|delete|upsert|save|setDoc|updateDoc|deleteDoc)\s*\(/.exec(code);
+      const writeMatch = /(?:\b(?:db|prisma|tx|trx|sql|repo|repository|dao|store|collection|firestore|client|knex|table)\b[A-Za-z0-9_$.]*\.(?:insert|update|delete|upsert|save)\s*\(|\b(?:setDoc|updateDoc|deleteDoc)\s*\()/.exec(code);
       if (writeMatch && writeMatch.index !== undefined) {
         push(
           findings, file.rel, lineOf(file.content, writeMatch.index), "graph-cross-file-dao-cache-drift", "R1", "warn",

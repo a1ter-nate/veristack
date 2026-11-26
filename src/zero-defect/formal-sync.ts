@@ -51,6 +51,10 @@ function parseEntries(rawList: unknown, kind: "formal" | "contract"): FormalChec
   return entries;
 }
 
+const ALLOWED_PLAN_KEYS = new Set([
+  "schemaVersion", "version", "service", "controls", "formalChecks", "contractChecks", "description", "owner", "notes",
+]);
+
 function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: FormalCheckEntry[]; error?: string } | null {
   const planFile = repo.files.find(
     (f) => f.rel === ".verification/control-plan.json" || f.rel === "control-plan.json",
@@ -59,18 +63,23 @@ function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: Fo
   try {
     const parsed: unknown = JSON.parse(planFile.content);
     if (!isRecord(parsed)) return { planRel: planFile.rel, entries: [], error: `${planFile.rel} must be a JSON object.` };
+    const unknownKeys = Object.keys(parsed).filter((k) => !ALLOWED_PLAN_KEYS.has(k));
+    if (unknownKeys.length > 0) {
+      return {
+        planRel: planFile.rel,
+        entries: [],
+        error: `${planFile.rel} contains unrecognized top-level key(s): ${unknownKeys.join(", ")}.`,
+      };
+    }
     const entries = [
       ...parseEntries(parsed.formalChecks, "formal"),
       ...parseEntries(parsed.contractChecks, "contract"),
     ];
-    const hasFormalKey = "formalChecks" in parsed || "contractChecks" in parsed;
-    const hasControlsOnly = Array.isArray(parsed.controls) && parsed.controls.length > 0 && !hasFormalKey;
     if (entries.length === 0) {
-      if (hasControlsOnly) return null;
       return {
         planRel: planFile.rel,
         entries: [],
-        error: `${planFile.rel} declares 0 recognized formalChecks/contractChecks entries (empty control plan).`,
+        error: `${planFile.rel} declares 0 recognized formalChecks/contractChecks entries (empty or controls-only plan).`,
       };
     }
     return { planRel: planFile.rel, entries };
@@ -182,30 +191,49 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       continue;
     }
 
-    const isGitRepo = spawnSync("git", ["-C", repo.root, "rev-parse", "--git-dir"], { encoding: "utf8" }).status === 0;
-    if (isGitRepo) {
-      const ancestor = spawnSync("git", ["-C", repo.root, "merge-base", "--is-ancestor", entry.syncCommit, "HEAD"], {
-        encoding: "utf8",
+    const gitEnv = { ...process.env };
+    delete gitEnv.GIT_DIR;
+    delete gitEnv.GIT_WORK_TREE;
+    const topRes = spawnSync("git", ["-C", repo.root, "rev-parse", "--show-toplevel"], { encoding: "utf8", env: gitEnv });
+    const realRoot = (() => { try { return fs.realpathSync(repo.root); } catch { return path.resolve(repo.root); } })();
+    const realTop = topRes.status === 0 && topRes.stdout.trim() ? (() => { try { return fs.realpathSync(topRes.stdout.trim()); } catch { return path.resolve(topRes.stdout.trim()); } })() : "";
+    const isGitRepo = topRes.status === 0 && realTop === realRoot;
+    if (!isGitRepo) {
+      findings.push({
+        id: `FS:no-git:${entry.id}`,
+        rule: "formal-sync-unknown-commit",
+        category: "oracle-lock",
+        rung: "R5",
+        severity: "error",
+        file: parsed.planRel,
+        line: 1,
+        message: `Formal check '${entry.id}' cannot verify syncCommit '${entry.syncCommit}': target directory is not a git repository root.`,
+        fix: "Run formal-sync inside a real git checkout with commit history available.",
       });
-      if (ancestor.status !== 0) {
-        const isShallow =
-          (spawnSync("git", ["-C", repo.root, "rev-parse", "--is-shallow-repository"], { encoding: "utf8" }).stdout ?? "")
-            .trim() === "true";
-        findings.push({
-          id: `FS:unknown-commit:${entry.id}`,
-          rule: "formal-sync-unknown-commit",
-          category: "oracle-lock",
-          rung: "R5",
-          severity: "error",
-          file: parsed.planRel,
-          line: 1,
-          message: isShallow
-            ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history — failing closed.`
-            : `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' is not an ancestor of HEAD.`,
-          fix: "Re-verify the formal model against HEAD and advance syncCommit to a commit on the current branch.",
-        });
-        continue;
-      }
+      continue;
+    }
+    const ancestor = spawnSync("git", ["-C", repo.root, "merge-base", "--is-ancestor", entry.syncCommit, "HEAD"], {
+      encoding: "utf8",
+      env: gitEnv,
+    });
+    if (ancestor.status !== 0) {
+      const isShallow =
+        (spawnSync("git", ["-C", repo.root, "rev-parse", "--is-shallow-repository"], { encoding: "utf8", env: gitEnv }).stdout ?? "")
+          .trim() === "true";
+      findings.push({
+        id: `FS:unknown-commit:${entry.id}`,
+        rule: "formal-sync-unknown-commit",
+        category: "oracle-lock",
+        rung: "R5",
+        severity: "error",
+        file: parsed.planRel,
+        line: 1,
+        message: isShallow
+          ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history — failing closed.`
+          : `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' is not an ancestor of HEAD.`,
+        fix: "Re-verify the formal model against HEAD and advance syncCommit to a commit on the current branch.",
+      });
+      continue;
     }
 
     if (entry.contentHash) {

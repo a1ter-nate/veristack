@@ -35,19 +35,49 @@ function writeJsonObj(filePath: string, data: object): void {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
-function isRealVstackHookCommand(cmd: unknown): boolean {
+const HOOK_CMD_PATTERNS: Record<"any" | "pre-edit" | "post-edit" | "stop", readonly [RegExp, RegExp]> = {
+  any: [
+    /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+(?:pre-edit|post-edit|stop)(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+(?:pre-edit|post-edit|stop)(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+  ],
+  "pre-edit": [
+    /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+pre-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+pre-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+  ],
+  "post-edit": [
+    /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+post-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+post-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+  ],
+  stop: [
+    /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+stop(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+stop(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+  ],
+};
+
+function isRealVstackHookCommand(cmd: unknown, expectedEvent?: "pre-edit" | "post-edit" | "stop"): boolean {
   if (typeof cmd !== "string") return false;
   const trimmed = cmd.trim();
-  const withoutComments = trimmed.split("#")[0]?.trim() ?? "";
-  return /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+(?:pre-edit|post-edit|stop)\b/.test(withoutComments) ||
-    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+(?:pre-edit|post-edit|stop)\b/.test(withoutComments);
+  if (/[;|>&`\n\r]|\|\|/.test(trimmed)) return false;
+  const [re1, re2] = HOOK_CMD_PATTERNS[expectedEvent ?? "any"];
+  return re1.test(trimmed) || re2.test(trimmed);
 }
 
-function containsVstackCommand(entry: unknown): boolean {
+function matcherCoversEdits(matcher: unknown): boolean {
+  if (typeof matcher !== "string" || !matcher.trim()) return false;
+  try {
+    const re = new RegExp(matcher);
+    return re.test("Edit") || re.test("Write");
+  } catch {
+    return false;
+  }
+}
+
+function containsVstackCommand(entry: unknown, expectedEvent?: "pre-edit" | "post-edit" | "stop", requireEditMatcher = false): boolean {
   if (!isRecord(entry)) return false;
-  if (isRealVstackHookCommand(entry.command)) return true;
+  if (requireEditMatcher && !matcherCoversEdits(entry.matcher)) return false;
+  if (isRealVstackHookCommand(entry.command, expectedEvent)) return true;
   if (Array.isArray(entry.hooks)) {
-    return entry.hooks.some((h) => isRecord(h) && isRealVstackHookCommand(h.command));
+    return entry.hooks.some((h) => isRecord(h) && isRealVstackHookCommand(h.command, expectedEvent));
   }
   return false;
 }
@@ -185,9 +215,13 @@ export function manageHooks(
         const parsed: unknown = JSON.parse(fs.readFileSync(p, "utf8"));
         if (!isRecord(parsed) || parsed.disableAllHooks === true || !isRecord(parsed.hooks)) return false;
         if (h === "claude" || h === "codex") {
-          const hasPost = Array.isArray(parsed.hooks.PostToolUse) && parsed.hooks.PostToolUse.some((e) => containsVstackCommand(e));
-          const hasStop = Array.isArray(parsed.hooks.Stop) && parsed.hooks.Stop.some((e) => containsVstackCommand(e));
-          return hasPost && hasStop;
+          const hasPre = Array.isArray(parsed.hooks.PreToolUse) && parsed.hooks.PreToolUse.some((e) => containsVstackCommand(e, "pre-edit", true));
+          const hasPost = Array.isArray(parsed.hooks.PostToolUse) && parsed.hooks.PostToolUse.some((e) => containsVstackCommand(e, "post-edit", true));
+          const hasStop = Array.isArray(parsed.hooks.Stop) && parsed.hooks.Stop.some((e) => containsVstackCommand(e, "stop", false));
+          return hasPre && hasPost && hasStop;
+        }
+        if (h === "cursor") {
+          return Array.isArray(parsed.hooks.preToolUse) && parsed.hooks.preToolUse.some((e) => containsVstackCommand(e, "pre-edit", true));
         }
         return Object.values(parsed.hooks).some(
           (bucket) => Array.isArray(bucket) && bucket.some((entry) => containsVstackCommand(entry)),

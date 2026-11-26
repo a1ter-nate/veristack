@@ -171,18 +171,32 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
     const repo = discoverRepo(target);
     if (process.env.VSTACK_ALLOW_MANIFEST_CHANGE !== "1") {
       let baseToCheck = explicitBase;
+      let failClosed = Boolean(explicitBase);
       if (!baseToCheck) {
-        for (const candidate of ["origin/main", "origin/master"]) {
-          const baseSha = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", `${candidate}^{commit}`], { encoding: "utf8" });
-          const headSha = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", "HEAD^{commit}"], { encoding: "utf8" });
-          if (baseSha.status === 0 && headSha.status === 0 && baseSha.stdout.trim() !== headSha.stdout.trim()) {
-            baseToCheck = candidate;
-            break;
+        const isGit = spawnSync("git", ["-C", repo.root, "rev-parse", "--git-dir"], { encoding: "utf8" }).status === 0;
+        if (isGit) {
+          const hasOrigin = spawnSync("git", ["-C", repo.root, "remote", "get-url", "origin"], { encoding: "utf8" }).status === 0;
+          for (const candidate of ["origin/main", "origin/master", "origin/HEAD"]) {
+            const baseSha = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", `${candidate}^{commit}`], { encoding: "utf8" });
+            if (baseSha.status === 0) {
+              const mb = spawnSync("git", ["-C", repo.root, "merge-base", "HEAD", candidate], { encoding: "utf8" });
+              baseToCheck = mb.status === 0 && mb.stdout.trim() ? mb.stdout.trim() : candidate;
+              failClosed = true;
+              break;
+            }
+          }
+          if (!baseToCheck) {
+            if (hasOrigin) {
+              console.error("verify control-plane lock [missing-base-ref]: git remote 'origin' exists but origin/main|origin/master could not be resolved (shallow/detached clone). Fetch base branch or pass --base <ref>.");
+              return 1;
+            }
+            const headOk = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", "HEAD^{commit}"], { encoding: "utf8" }).status === 0;
+            if (headOk) baseToCheck = "HEAD";
           }
         }
       }
       if (baseToCheck) {
-        const downgrades = auditManifestDowngrade(repo.root, baseToCheck);
+        const downgrades = auditManifestDowngrade(repo.root, baseToCheck, { failClosedOnMissingBase: failClosed });
         if (downgrades.length > 0) {
           for (const d of downgrades) console.error(`verify control-plane lock [${d.rule}]: ${d.message}`);
           return 1;

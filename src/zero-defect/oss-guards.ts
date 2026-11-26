@@ -255,7 +255,7 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
         const winBefore = masked.slice(Math.max(0, idx - 220), idx);
         const winAfter = masked.slice(idx, idx + 120);
         if (/\.\s*OrderBy(?:Descending)?\s*\(/.test(winBefore)) continue;
-        if (!/(?:_db|db|ctx|context|Set\s*<|AsNoTracking|IQueryable|Where\s*\(|Include\s*\(|ToListAsync|FirstOrDefaultAsync)/i.test(`${winBefore}${winAfter}`)) continue;
+        if (!/(?:_db|db|ctx|context|Set\s*<|AsNoTracking|IQueryable|Include\s*\(|ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync)/i.test(`${winBefore}${winAfter}`)) continue;
         push(
           findings, file.rel, lineOf(raw, idx), "efcore-unordered-skip-or-assert", "R1", "warn",
           ".Skip() called without a preceding .OrderBy() produces non-deterministic query pagination across DB engines.",

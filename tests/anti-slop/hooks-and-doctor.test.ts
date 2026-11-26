@@ -159,9 +159,16 @@ test("hooks admin installs/preserves/toggles/resets all 5 harness manifests and 
     assert.equal(claudeAfter.hooks.PostToolUse.length, 1);
     assert.equal(claudeAfter.hooks.PostToolUse[0].matcher, "Bash");
 
-    const cliDoc = spawnSync(process.execPath, [binPath, "doctor", repoRoot, "--json", "--fail"], { encoding: "utf8" });
-    assert.equal(cliDoc.status, 0, cliDoc.stdout + cliDoc.stderr);
-    assert.equal(JSON.parse(cliDoc.stdout).healthy, true);
+    const cleanTmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-doc-clean-"));
+    try {
+      spawnSync("git", ["init", "-q"], { cwd: cleanTmp });
+      fs.writeFileSync(path.join(cleanTmp, "index.ts"), "export const x = 1;\n");
+      const cliDoc = spawnSync(process.execPath, [binPath, "doctor", cleanTmp, "--json", "--fail"], { encoding: "utf8" });
+      assert.equal(cliDoc.status, 0, cliDoc.stdout + cliDoc.stderr);
+      assert.equal(JSON.parse(cliDoc.stdout).healthy, true);
+    } finally {
+      fs.rmSync(cleanTmp, { recursive: true, force: true });
+    }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

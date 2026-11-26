@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { auditAgentDocs } from "../anti-slop/agent-docs.ts";
@@ -68,8 +69,27 @@ export function runDoctor(repoPath: string): DoctorReport {
           fix: "Run 'vstack hooks on' or set enabled: true.",
         });
       }
+      const declaredHarnesses = Array.isArray(hc.harnesses) ? hc.harnesses.filter((h): h is string => typeof h === "string") : [];
+      if (hc.enabled !== false && declaredHarnesses.length > 0) {
+        const missingActive = declaredHarnesses.filter((h) => !hookStatus.harnesses.includes(h as never));
+        if (missingActive.length > 0) {
+          findings.push({
+            id: "DOC:hooks-incomplete:.verification/hooks.json",
+            level: "mention",
+            artifact: ".verification/hooks.json",
+            summary: `Declared hook harness(es) [${missingActive.join(", ")}] are missing, tampered, or lack active PreToolUse/PostToolUse/Stop wiring.`,
+            fix: "Run 'vstack hooks on' to reinstall valid fail-closed hook manifests.",
+          });
+        }
+      }
     } catch {
-      void 0;
+      findings.push({
+        id: "DOC:malformed-hook:.verification/hooks.json",
+        level: "auto",
+        artifact: ".verification/hooks.json",
+        summary: "Hook config .verification/hooks.json contains invalid JSON.",
+        fix: "Repair or rerun 'vstack hooks on'.",
+      });
     }
   }
   const allowPatterns = repo.manifest?.allowExcluded ?? [];
@@ -87,6 +107,7 @@ export function runDoctor(repoPath: string): DoctorReport {
     });
   }
 
+  const probedCmds = new Map<string, boolean>();
   for (const rel of HOOK_MANIFESTS) {
     const abs = path.join(repo.root, rel);
     if (!fs.existsSync(abs)) continue;
@@ -100,6 +121,61 @@ export function runDoctor(repoPath: string): DoctorReport {
           summary: `${rel} sets disableAllHooks: true, silently disabling Veristack agent hooks.`,
           fix: "Remove disableAllHooks: true so per-edit and stop hooks execute.",
         });
+      }
+      if (parsed && typeof parsed === "object" && typeof parsed.hooks === "object" && parsed.hooks !== null) {
+        const hooksObj = parsed.hooks as Record<string, unknown>;
+        const cmds: string[] = [];
+        const collectCmds = (bucket: unknown): void => {
+          if (!Array.isArray(bucket)) return;
+          for (const item of bucket) {
+            if (!item || typeof item !== "object") continue;
+            const rec = item as Record<string, unknown>;
+            if (typeof rec.command === "string") cmds.push(rec.command);
+            if (Array.isArray(rec.hooks)) {
+              for (const sub of rec.hooks) {
+                if (sub && typeof sub === "object" && typeof (sub as Record<string, unknown>).command === "string") {
+                  cmds.push((sub as Record<string, unknown>).command as string);
+                }
+              }
+            }
+          }
+        };
+        for (const b of Object.values(hooksObj)) collectCmds(b);
+        const badCmd = cmds.find((c) => /\bvstack\b/i.test(c) && (/\|\|\s*(?:true|:)|;\s*true\b|>\/dev\/null/i.test(c)));
+        if (badCmd) {
+          findings.push({
+            id: `DOC:hook-swallowed:${rel}`,
+            level: "mention",
+            artifact: rel,
+            summary: `${rel} wraps a Veristack hook command in a failure-swallowing shell suffix ('${badCmd.slice(0, 80)}').`,
+            fix: "Remove '|| true' / redirection wrappers so hook denials propagate cleanly.",
+          });
+        }
+        const preCmd = cmds.find((c) => /\bhook\s+pre-edit\b/.test(c) && !/[;|>&`\n\r]/.test(c));
+        if (hookStatus.enabled && preCmd && !badCmd) {
+          let probePassed = probedCmds.get(preCmd);
+          if (probePassed === undefined) {
+            const argv = preCmd.trim().split(/\s+/);
+            const bin = argv[0] ?? "";
+            const probePayload = JSON.stringify({
+              cwd: repo.root,
+              tool_input: { file_path: path.join(repo.root, ".verification", "rungs.json"), content: "{}" },
+            });
+            const probe = spawnSync(bin, argv.slice(1), { cwd: repo.root, input: probePayload, encoding: "utf8", timeout: 5_000, shell: false });
+            const denied = probe.status === 2 || /"permission"\s*:\s*"deny"|"permissionDecision"\s*:\s*"deny"/.test(`${probe.stdout}\n${probe.stderr}`);
+            probePassed = !probe.error && denied;
+            probedCmds.set(preCmd, probePassed);
+          }
+          if (!probePassed) {
+            findings.push({
+              id: `DOC:hook-probe-failed:${rel}`,
+              level: "mention",
+              artifact: rel,
+              summary: `Live pre-edit probe of '${preCmd}' in ${rel} failed to deny a synthetic control-plane write.`,
+              fix: "Point hook command to a working current Veristack binary (e.g. 'node bin/vstack.mjs' or updated local install).",
+            });
+          }
+        }
       }
     } catch {
       findings.push({

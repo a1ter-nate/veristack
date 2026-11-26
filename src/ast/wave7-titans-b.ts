@@ -6,7 +6,7 @@ const JWT_ALG_NONE = /\balgorithms\s*[:=]\s*\[[^\]]*["']none["'][^\]]*\]/gi;
 const JWT_VERIFY_SIG_FALSE = /\bverify_signature\s*[:=]\s*(?:false|False)\b/g;
 const SQL_CREATE_POLICY = /\bCREATE\s+POLICY\b[\s\S]{0,420}?;/gi;
 const SQL_SECURITY_DEFINER = /\bSECURITY\s+DEFINER\b/gi;
-const AUTH_ROUTE_PATH = /(?:^|\/)(?:auth|session|csrf|oauth|login|token)[^/]*\.(?:[cm]?[jt]sx?|py)$/i;
+const AUTH_ROUTE_PATH = /(?:^|\/)(?:auth|session|csrf|oauth|login|token)(?:\/|[^/]*\.(?:[cm]?[jt]sx?|py)$)/i;
 const AUTH_GET_HANDLER = /\b(?:(?:app|router)\s*\.\s*get\s*\(\s*["'][^"']*(?:session|csrf|token|userinfo|\/me)[^"']*["']|export\s+(?:async\s+)?function\s+GET\s*\(|@(?:app|router)\s*\.\s*get\s*\(\s*["'][^"']*(?:session|csrf|token|userinfo|\/me)[^"']*["'])/gi;
 const DTO_SECRET_LEAK = /\b(?:res\.json|Response\.json|jsonify)\s*\(\s*\{[^}]{0,320}\b(?:passwordHash|password_hash|clientSecret|client_secret|privateKey|private_key)\b/g;
 
@@ -160,7 +160,17 @@ export function analyzeWave7TitansBGuards(file: ScannedFile): Finding[] {
 
     for (const m of prodCode.matchAll(RUST_REFCELL_BORROW)) {
       const idx = m.index ?? 0;
-      const after = prodCode.slice(idx + m[0].length, idx + m[0].length + 280);
+      const startAfter = idx + m[0].length;
+      let depth = 0;
+      let scopeEnd = Math.min(prodCode.length, startAfter + 280);
+      for (let i = startAfter; i < scopeEnd; i++) {
+        if (prodCode[i] === "{") depth += 1;
+        else if (prodCode[i] === "}") {
+          if (depth === 0) { scopeEnd = i; break; }
+          depth -= 1;
+        }
+      }
+      const after = prodCode.slice(startAfter, scopeEnd);
       if (!/\bdrop\s*\(/.test(after) && /\b(?:callback|handler|listener|on_[a-z_]+|emit|notify)\s*\(/i.test(after)) {
         push(
           findings, file.rel, lineOf(raw, idx), "rust-reentrant-callback-under-borrow", "R1", "error",

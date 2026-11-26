@@ -19,13 +19,38 @@ function parseTier(raw: string | undefined): CheckFileTier | undefined {
   return undefined;
 }
 
-function readStdinSync(): string {
+function sleepMsSync(ms: number): void {
   try {
-    if (process.stdin.isTTY) return "";
-    return fs.readFileSync(0, "utf8");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   } catch {
-    return "";
+    const end = performance.now() + ms;
+    while (performance.now() < end) void 0;
   }
+}
+
+function readStdinBlocking(timeoutMs = 5000): { content: string; error?: string } {
+  const chunks: Buffer[] = [];
+  const buf = Buffer.alloc(65_536);
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    try {
+      const n = fs.readSync(0, buf, 0, buf.length, null);
+      if (n === 0) break;
+      chunks.push(Buffer.from(buf.subarray(0, n)));
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "EAGAIN" || code === "EWOULDBLOCK" || code === "EINTR") {
+        if (performance.now() >= deadline) {
+          return { content: Buffer.concat(chunks).toString("utf8"), error: "stdin read timed out (EAGAIN)" };
+        }
+        sleepMsSync(5);
+        continue;
+      }
+      if (code === "EOF") break;
+      return { content: Buffer.concat(chunks).toString("utf8"), error: `stdin read failed (${code ?? "unknown"})` };
+    }
+  }
+  return { content: Buffer.concat(chunks).toString("utf8") };
 }
 
 function firstPositionalArg(args: readonly string[], valueFlags: ReadonlySet<string>): string | undefined {
@@ -69,8 +94,10 @@ export function handleHooksAndDoctorCli(
     const event: HookEventKind = sub;
     const harness = parseHarness(parseFlag(rest, "--harness"));
     const tier = parseTier(parseFlag(rest, "--tier"));
-    const rawStdin = readStdinSync();
+    const stdin = readStdinBlocking();
+    const rawStdin = stdin.error && !stdin.content.trim() ? "__VSTACK_STDIN_READ_ERROR__" : stdin.content;
     const res = executeHookEvent(event, rawStdin, { repoRoot: process.cwd(), harness, tier });
+    if (res.stderr) console.error(res.stderr);
     if (res.stdout) console.log(res.stdout);
     return res.exitCode;
   }
@@ -90,6 +117,7 @@ export function handleHooksAndDoctorCli(
     const res = manageHooks(dirArg, action, { harnesses, commandPrefix });
     if (asJson) console.log(JSON.stringify(res, null, 2));
     else console.log(formatHooksStatus(res));
+    if (action === "status" && rest.includes("--fail") && !res.enabled) return 1;
     return 0;
   }
 

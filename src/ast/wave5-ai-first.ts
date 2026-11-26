@@ -195,13 +195,16 @@ export function analyzeWave5AiFirstGuards(file: ScannedFile): Finding[] {
   if (file.language !== "typescript" && file.language !== "javascript") return findings;
 
   if (MCP_PATH.test(file.rel)) {
-    for (const m of prodCode.matchAll(MCP_CONSOLE_LOG)) {
-      push(
-        findings, file.rel, lineOf(raw, m.index ?? 0), "mcp-stdio-stdout-pollution", "R0", "error",
-        "console.log() in an MCP stdio server writes to stdout and corrupts JSON-RPC framing.",
-        "Log diagnostics via console.error() / process.stderr.write() in stdio MCP servers.",
-      );
-      break;
+    const isHttpOnlyMcp = /(?:http|sse|streamable)/i.test(file.rel) && !/\b(?:StdioServerTransport|process\.stdin|stdio)\b/i.test(raw);
+    if (!isHttpOnlyMcp) {
+      for (const m of prodCode.matchAll(MCP_CONSOLE_LOG)) {
+        push(
+          findings, file.rel, lineOf(raw, m.index ?? 0), "mcp-stdio-stdout-pollution", "R0", "error",
+          "console.log() in an MCP stdio server writes to stdout and corrupts JSON-RPC framing.",
+          "Log diagnostics via console.error() / process.stderr.write() in stdio MCP servers.",
+        );
+        break;
+      }
     }
     for (const m of prodCode.matchAll(MCP_THROW_ERROR)) {
       const idx = m.index ?? 0;

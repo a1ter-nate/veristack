@@ -78,11 +78,11 @@ export function fitEmpiricalBigO(
     reasons,
   });
 
-  if (!Number.isFinite(thresholds.maxTimeExponent) || thresholds.maxTimeExponent <= 0) {
-    return fail("invalid_threshold", [`Invalid maxTimeExponent (${String(thresholds.maxTimeExponent)}); must be a finite positive number.`]);
+  if (!Number.isFinite(thresholds.maxTimeExponent) || thresholds.maxTimeExponent <= 0 || thresholds.maxTimeExponent > 2.5) {
+    return fail("invalid_threshold", [`Invalid maxTimeExponent (${String(thresholds.maxTimeExponent)}); must be in (0, 2.5].`]);
   }
-  if (thresholds.maxSpaceExponent !== undefined && (!Number.isFinite(thresholds.maxSpaceExponent) || thresholds.maxSpaceExponent <= 0)) {
-    return fail("invalid_threshold", [`Invalid maxSpaceExponent (${String(thresholds.maxSpaceExponent)}); must be a finite positive number.`]);
+  if (thresholds.maxSpaceExponent !== undefined && (!Number.isFinite(thresholds.maxSpaceExponent) || thresholds.maxSpaceExponent <= 0 || thresholds.maxSpaceExponent > 2.5)) {
+    return fail("invalid_threshold", [`Invalid maxSpaceExponent (${String(thresholds.maxSpaceExponent)}); must be in (0, 2.5].`]);
   }
   if (!Array.isArray(samples) || samples.length < 3) {
     return fail("insufficient_samples", ["At least 3 scaling sizes (e.g., N, 2N, 4N, 8N) are required to fit empirical Big-O."]);
@@ -130,6 +130,19 @@ export function fitEmpiricalBigO(
     reasons.push(
       `Time scaling exponent ${timeFit.slope} (${timeClass}) exceeds budget <= ${thresholds.maxTimeExponent}.`,
     );
+  }
+  if (ordered.length >= 4) {
+    const tail = ordered.slice(Math.floor(ordered.length / 2));
+    const tailMinN = tail[0]?.n ?? 1;
+    const tailMaxN = tail[tail.length - 1]?.n ?? 1;
+    if (tail.length >= 3 && tailMaxN / tailMinN >= 2) {
+      const tailFit = fitLogLogSlope(tail.map((s) => s.n), tail.map((s) => s.timeMs));
+      if (tailFit.r2 >= 0.7 && tailFit.slope > thresholds.maxTimeExponent + 0.2) {
+        reasons.push(
+          `Upper-half tail scaling exponent ${tailFit.slope} (${classifyExponent(tailFit.slope)}) exceeds budget <= ${thresholds.maxTimeExponent} (padded small-n tail).`,
+        );
+      }
+    }
   }
   if (
     typeof thresholds.maxSpaceExponent === "number" &&

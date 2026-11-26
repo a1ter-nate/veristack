@@ -91,37 +91,55 @@ export function detectLanguage(rel: string): Language | undefined {
   return undefined;
 }
 
+function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStart: number; bodyEnd: number }> {
+  const spans: Array<{ attrs: string; bodyStart: number; bodyEnd: number }> = [];
+  let i = 0;
+  while (i < raw.length) {
+    if (raw.startsWith("<!--", i)) {
+      const end = raw.indexOf("-->", i + 4);
+      if (end < 0) break;
+      i = end + 3;
+      continue;
+    }
+    if (raw[i] === "<" && /^<script\b/i.test(raw.slice(i, i + 8))) {
+      const gt = raw.indexOf(">", i + 7);
+      if (gt < 0) break;
+      const attrs = raw.slice(i + 7, gt);
+      const closeMatch = /<\/script\s*>/i.exec(raw.slice(gt + 1));
+      if (!closeMatch || closeMatch.index === undefined) break;
+      const bodyStart = gt + 1;
+      const bodyEnd = bodyStart + closeMatch.index;
+      spans.push({ attrs, bodyStart, bodyEnd });
+      i = bodyEnd + closeMatch[0].length;
+      continue;
+    }
+    i += 1;
+  }
+  return spans;
+}
+
 export function extractSfcScript(rel: string, raw: string): { language: Language; content: string } | undefined {
   const lower = rel.toLowerCase();
-  const stripped = raw.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const isAstro = lower.endsWith(".astro");
+  if (!isAstro && !lower.endsWith(".vue") && !lower.endsWith(".svelte")) return undefined;
   const out = Array<string>(raw.length).fill(" ");
   for (let i = 0; i < raw.length; i++) if (raw[i] === "\n") out[i] = "\n";
-
-  if (lower.endsWith(".astro")) {
-    let foundAny = false;
+  let foundAny = false;
+  if (isAstro) {
     const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
     if (fm?.[1]) {
       const start = fm[0].indexOf(fm[1]);
       for (let i = 0; i < fm[1].length; i++) out[start + i] = fm[1][i] ?? " ";
       foundAny = true;
     }
-    for (const m of stripped.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-      const body = m[2] ?? "";
-      const start = (m.index ?? 0) + m[0].indexOf(body);
-      for (let i = 0; i < body.length; i++) out[start + i] = body[i] ?? " ";
-      foundAny = true;
-    }
-    return foundAny ? { language: "typescript", content: out.join("") } : undefined;
   }
-  if (!lower.endsWith(".vue") && !lower.endsWith(".svelte")) return undefined;
-  const matches = [...stripped.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
-  if (matches.length === 0) return undefined;
-  const isTs = matches.some((m) => /\blang\s*=\s*["']tsx?["']/i.test(m[1] ?? ""));
-  for (const m of matches) {
-    const body = m[2] ?? "";
-    const start = (m.index ?? 0) + m[0].indexOf(body);
-    for (let i = 0; i < body.length; i++) out[start + i] = body[i] ?? " ";
+  const spans = scanSfcScriptSpans(raw);
+  for (const sp of spans) {
+    for (let i = sp.bodyStart; i < sp.bodyEnd; i++) out[i] = raw[i] ?? " ";
+    foundAny = true;
   }
+  if (!foundAny) return undefined;
+  const isTs = isAstro || spans.some((sp) => /\blang\s*=\s*["']tsx?["']/i.test(sp.attrs));
   return { language: isTs ? "typescript" : "javascript", content: out.join("") };
 }
 
@@ -133,7 +151,7 @@ export function isTestFilePath(rel: string): boolean {
   if (/(?:^|[-_])tests?\.py$|^test[-_].*\.py$|^conftest\.py$/.test(base)) return true;
   if (/_test\.go$|(?:^|[-_])tests?\.rs$|^test[-_].*\.rs$/.test(base)) return true;
   if (/tests?\.cs$|specs?\.cs$/.test(base)) return true;
-  if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests)\//.test(lower) && lower.endsWith(".cs")) return true;
+  if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests|specs?)\//.test(lower) && lower.endsWith(".cs")) return true;
   if (/^(?:tests?|__tests__|specs?|e2e)\//.test(lower) || /\/(?:tests?|__tests__|specs?|e2e)\//.test(lower)) {
     if (/(?:^|\.)config\.[cm]?[jt]sx?$/.test(base)) return false;
     if (/\/(?:contracts|fixtures|helpers|support|mocks|stubs)\//.test(lower)) return false;
@@ -158,7 +176,7 @@ function shouldReadText(rel: string): boolean {
   const base = path.posix.basename(lower);
   if (detectLanguage(rel) !== undefined) return true;
   if (isWorkflowPath(rel)) return true;
-  if ((lower.endsWith(".yml") || lower.endsWith(".yaml")) && /(?:^|\/)(?:maestro|e2e|mobile-e2e|flows)\//.test(lower)) {
+  if ((lower.endsWith(".yml") || lower.endsWith(".yaml")) && (/(?:^|\/)(?:maestro|e2e|mobile-e2e|flows)\//.test(lower) || /(?:^|\/)\.github\/(?:.+\/)?action\.ya?ml$/.test(lower))) {
     return true;
   }
   if (lower.endsWith(".vue") || lower.endsWith(".svelte") || lower.endsWith(".astro") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
@@ -335,7 +353,7 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
       const abs = path.join(dir, entry.name);
       const rel = path.relative(root, abs).split(path.sep).join("/");
       if (entry.isSymbolicLink()) {
-        if (!rel.startsWith("node_modules/")) {
+        if (rel !== "node_modules" && !rel.startsWith("node_modules/")) {
           scopeExclusions.push({ path: rel, reason: "symlink", detail: "symlinked path not followed" });
         }
         continue;
@@ -418,6 +436,23 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
 
   if (truncated) {
     scopeExclusions.push({ path: ".", reason: "truncated", detail: `exceeded ${MAX_FILES}-file scan ceiling` });
+  }
+
+  const csTestProjDirs = new Set<string>();
+  for (const file of files) {
+    if (file.rel.toLowerCase().endsWith(".csproj") && /<IsTestProject>\s*true\s*<\/IsTestProject>/i.test(file.content)) {
+      const dir = path.posix.dirname(file.rel);
+      csTestProjDirs.add(dir === "." ? "" : `${dir}/`);
+    }
+  }
+  if (csTestProjDirs.size > 0) {
+    for (const file of files) {
+      if (file.language === "csharp" && !file.isTest) {
+        for (const prefix of csTestProjDirs) {
+          if (prefix === "" || file.rel.startsWith(prefix)) { file.isTest = true; break; }
+        }
+      }
+    }
   }
 
   const languageSet = new Set<Language>();

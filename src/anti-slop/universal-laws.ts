@@ -110,6 +110,7 @@ export function analyzeUniversalBendLaws(file: ScannedFile): Finding[] {
 
   const resurrectRe = file.language === "rust" ? RUST_MATCH_TERMINAL_RESURRECT : TERMINAL_CASE_RESURRECT;
   for (const m of uncommented.matchAll(resurrectRe)) {
+    if (file.language === "rust" && code[m.index ?? 0] === " ") continue;
     pushLaw(
       findings,
       file,
@@ -197,7 +198,14 @@ export function analyzeUniversalBendLaws(file: ScannedFile): Finding[] {
         const target = m[1] ?? "";
         const after = code.slice(idx, Math.min(code.length, idx + 900));
         if (!pair.close.test(after)) continue;
-        if (file.language === "go" && /\bdefer\b/.test(after)) continue;
+        if (file.language === "go") {
+          if (/\bdefer\b/.test(after)) continue;
+          const unlockPos = after.search(pair.close);
+          if (unlockPos > 0 && unlockPos < 160) {
+            const between = after.slice(m[0].length, unlockPos);
+            if (!/\b(?:return|if|for|switch|panic|go)\b/.test(between) && !/\w+\s*\(/.test(between)) continue;
+          }
+        }
         if ((file.language === "csharp" || file.language === "python") && /\b(?:finally|using|with)\b/.test(code.slice(Math.max(0, idx - 60), idx + 900))) {
           continue;
         }

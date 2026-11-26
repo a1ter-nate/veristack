@@ -53,10 +53,13 @@ export function analyzeT3TestGuards(file: ScannedFile): Finding[] {
       if (node.type === "CallExpression" && isAstNode(node.callee) && Array.isArray(node.arguments) && node.arguments.length >= 3) {
         const name = getMemberChain(node.callee);
         if (name === "test" || name === "it") {
-          const third = node.arguments[2];
-          const isNumericTimeout = isAstNode(third) && third.type === "Literal" && typeof third.value === "number" && third.value >= 1000;
-          const isObjTimeout = isAstNode(third) && third.type === "ObjectExpression" && Array.isArray(third.properties) && third.properties.some((p) => isAstNode(p) && isAstNode(p.key) && p.key.name === "timeout");
-          if (isNumericTimeout || isObjTimeout) {
+          const candidates = [node.arguments[1], node.arguments[2]];
+          const hasTimeout = candidates.some((arg) => {
+            const isNum = isAstNode(arg) && arg.type === "Literal" && typeof arg.value === "number" && arg.value >= 1000;
+            const isObj = isAstNode(arg) && arg.type === "ObjectExpression" && Array.isArray(arg.properties) && arg.properties.some((p) => isAstNode(p) && isAstNode(p.key) && p.key.name === "timeout");
+            return isNum || isObj;
+          });
+          if (hasTimeout) {
             push(
               findings, file.rel, lineOf(raw, node.start ?? 0), "test-no-per-test-timeout", "test-smell", "R2", "warn",
               "Per-test numeric timeout override masks slow or hanging tests instead of fixing the underlying wait.",
@@ -138,7 +141,7 @@ export function analyzeT3ProdGuards(file: ScannedFile, ast?: AstNode | null): Fi
         walkAst(cbBody, (inner) => {
           if (inner.type === "CallExpression" && isAstNode(inner.callee)) {
             const c = getMemberChain(inner.callee);
-            if (/(?:fetch|addEventListener|subscribe|observe|setInterval|setTimeout|focus|scrollIntoView|dispatchEvent|postMessage|connect|open)$/i.test(c)) {
+            if (/(?:fetch|addEventListener|subscribe|observe|setInterval|setTimeout|focus|scrollIntoView|dispatchEvent|postMessage|connect|open|matchMedia|getBoundingClientRect|getComputedStyle|getItem|setItem)$/i.test(c) || /^(?:localStorage|sessionStorage|window\.localStorage|window\.sessionStorage|navigator\.|document\.|indexedDB)\b/.test(c)) {
               hasExternalSync = true;
             }
           }

@@ -77,6 +77,20 @@ function extractBalancedBlock(code: string, openBraceIdx: number): string {
   return code.slice(openBraceIdx, openBraceIdx + 800);
 }
 
+function sliceUntilScopeClose(code: string, fromIdx: number, maxChars: number): string {
+  let depth = 0;
+  const end = Math.min(code.length, fromIdx + maxChars);
+  for (let i = fromIdx; i < end; i++) {
+    const ch = code[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      if (depth === 0) return code.slice(fromIdx, i);
+      depth -= 1;
+    }
+  }
+  return code.slice(fromIdx, end);
+}
+
 function scanSqlTitansA(file: ScannedFile, findings: Finding[]): void {
   const raw = file.content;
   const masked = raw.replace(/--[^\n]*/g, (m) => " ".repeat(m.length)).replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
@@ -134,7 +148,7 @@ function scanGoTitansA(file: ScannedFile, raw: string, prodCode: string, prodRaw
 
   for (const m of prodCode.matchAll(GO_DEFER_CLOSE)) {
     const idx = m.index ?? 0;
-    const after = prodCode.slice(idx, idx + 800);
+    const after = sliceUntilScopeClose(prodCode, idx + m[0].length, 800);
     if (/\bselect\s*\{\s*\}/.test(after)) {
       push(
         findings, file.rel, lineOf(raw, idx), "go-defer-before-blocking-select", "R1", "warn",

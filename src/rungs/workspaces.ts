@@ -127,6 +127,11 @@ export function buildWorkspaceLadders(
 ): WorkspaceLadderSummary[] {
   const workspaces = discoverWorkspaces(repo, repo.manifest);
   if (workspaces.length === 0) return [];
+  const stemCounts = new Map<string, number>();
+  for (const ws of workspaces) {
+    const stem = ws.path.split("/").pop()?.toLowerCase() ?? "";
+    if (stem) stemCounts.set(stem, (stemCounts.get(stem) ?? 0) + 1);
+  }
   return workspaces.map((ws) => {
     const prefix = `${ws.path}/`;
     const childPrefixes = workspaces
@@ -136,6 +141,8 @@ export function buildWorkspaceLadders(
       rel.startsWith(prefix) && !childPrefixes.some((cp) => rel.startsWith(cp));
 
     const wsStem = ws.path.split("/").pop()?.toLowerCase() ?? "";
+    const wsRelLower = ws.path.toLowerCase();
+    const isUniqueStem = wsStem.length > 0 && (stemCounts.get(wsStem) ?? 0) === 1;
     const externalTestPrefixes = new Set<string>();
     for (const f of repo.files) {
       if (f.rel.endsWith(".csproj") && !belongsToWs(f.rel) && f.content.includes(`${ws.path.split("/").pop()}.csproj`)) {
@@ -146,7 +153,8 @@ export function buildWorkspaceLadders(
       if (belongsToWs(rel)) return true;
       for (const ep of externalTestPrefixes) if (rel.startsWith(ep)) return true;
       const lowerRel = rel.toLowerCase();
-      if (wsStem && (lowerRel.startsWith(`tests/${wsStem}/`) || lowerRel.includes(`/tests/${wsStem}/`) || lowerRel.startsWith(`test/${wsStem}/`) || lowerRel.includes(`/test/${wsStem}/`))) return true;
+      if (lowerRel.startsWith(`tests/${wsRelLower}/`) || lowerRel.startsWith(`test/${wsRelLower}/`)) return true;
+      if (isUniqueStem && (lowerRel.startsWith(`tests/${wsStem}/`) || lowerRel.includes(`/tests/${wsStem}/`) || lowerRel.startsWith(`test/${wsStem}/`) || lowerRel.includes(`/test/${wsStem}/`))) return true;
       return false;
     };
 

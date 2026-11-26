@@ -268,7 +268,7 @@ function findHashComments(source: string): CommentHit[] {
 
   while (i < source.length) {
     const a = source[i] ?? "";
-    if (a === "\n" || /\s/.test(a)) {
+    if (/\s/.test(a)) {
       bump(1);
       continue;
     }

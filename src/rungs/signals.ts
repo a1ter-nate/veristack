@@ -54,14 +54,15 @@ function parsePackageScriptsByDir(files: readonly ScannedFile[]): Map<string, Ma
     const dir = rawDir === "." ? "" : rawDir;
     try {
       const parsed = JSON.parse(file.content) as { scripts?: Record<string, unknown> };
-      if (!parsed.scripts || typeof parsed.scripts !== "object") continue;
       const map = byDir.get(dir) ?? new Map<string, string>();
-      for (const [name, cmd] of Object.entries(parsed.scripts)) {
-        if (typeof cmd === "string" && cmd.trim().length > 0 && !map.has(name)) map.set(name, cmd);
+      if (parsed.scripts && typeof parsed.scripts === "object") {
+        for (const [name, cmd] of Object.entries(parsed.scripts)) {
+          if (typeof cmd === "string" && cmd.trim().length > 0 && !map.has(name)) map.set(name, cmd);
+        }
       }
       byDir.set(dir, map);
     } catch {
-      continue;
+      byDir.set(dir, byDir.get(dir) ?? new Map<string, string>());
     }
   }
   return byDir;

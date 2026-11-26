@@ -168,6 +168,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   const findings: Finding[] = [];
   const diffEvents: DiffLineEvent[] = [];
   const renamedJsToTsFiles = new Set<string>();
+  const deletedFiles: string[] = [];
   let prevOldFile = "";
   let renameFrom = "";
   let currentFile = "<diff>";
@@ -186,6 +187,18 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
         lines = null;
       }
       maskedCache.set(rel, lines);
+    }
+    if (!lines) return fallback;
+    return lines[lineNum - 1] ?? fallback;
+  };
+
+  const baseMaskedCache = new Map<string, string[] | null>();
+  const getBaseMaskedLine = (rel: string, lineNum: number, fallback: string): string => {
+    let lines = baseMaskedCache.get(rel);
+    if (lines === undefined) {
+      const show = spawnSync("git", ["-C", repoPath, "show", `${baseRef}:${rel}`], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+      lines = show.status === 0 ? maskCode(show.stdout, detectLanguage(rel)).split(/\r?\n/) : null;
+      baseMaskedCache.set(rel, lines);
     }
     if (!lines) return fallback;
     return lines[lineNum - 1] ?? fallback;
@@ -230,19 +243,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
       continue;
     }
     if (raw === "+++ /dev/null") {
-      if (prevOldFile && isTestFilePath(prevOldFile)) {
-        findings.push({
-          id: `DIFF:test-file-deleted:${prevOldFile}`,
-          rule: "diff-test-file-deleted",
-          category: "cheat",
-          rung: "R0",
-          severity: "error",
-          file: prevOldFile,
-          line: 1,
-          message: `Entire test file '${prevOldFile}' was deleted in diff.`,
-          fix: "Restore or replace deleted test coverage instead of deleting test files to silence failures.",
-        });
-      }
+      if (prevOldFile) deletedFiles.push(prevOldFile);
       currentFile = prevOldFile || "<diff>";
       continue;
     }
@@ -258,8 +259,12 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
     }
     if (raw.startsWith("-") && !raw.startsWith("---")) {
       const removed = raw.slice(1);
-      if (!/\.(?:md|mdx|txt|rst)$/.test(currentFile.toLowerCase())) {
-        diffEvents.push({ file: currentFile, line: delLine, kind: "del", raw: removed, code: removed });
+      const lowerCur = currentFile.toLowerCase();
+      if (!/\.(?:md|mdx|txt|rst)$/.test(lowerCur)) {
+        const delCode = /\.(?:cs|rs|[cm]?[jt]sx?|py|go)$/.test(lowerCur)
+          ? getBaseMaskedLine(currentFile, delLine, removed)
+          : removed;
+        diffEvents.push({ file: currentFile, line: delLine, kind: "del", raw: removed, code: delCode });
       }
       delLine += 1;
       continue;
@@ -351,6 +356,36 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
 
   const { events: normalizedEvents, migratedJsToTsFiles } = normalizeDiffMigrationPairs(diffEvents);
   for (const f of renamedJsToTsFiles) migratedJsToTsFiles.add(f);
+  for (const delFile of deletedFiles) {
+    const jsMatch = /^(.+)\.([cm]?)js(x?)$/i.exec(delFile);
+    const migratedTarget = jsMatch ? `${jsMatch[1]}.${jsMatch[2]}ts${jsMatch[3]}` : "";
+    if (migratedTarget && migratedJsToTsFiles.has(migratedTarget)) continue;
+    if (isTestFilePath(delFile)) {
+      findings.push({
+        id: `DIFF:test-file-deleted:${delFile}`,
+        rule: "diff-test-file-deleted",
+        category: "cheat",
+        rung: "R0",
+        severity: "error",
+        file: delFile,
+        line: 1,
+        message: `Entire test file '${delFile}' was deleted in diff.`,
+        fix: "Restore or replace deleted test coverage instead of deleting test files to silence failures.",
+      });
+    } else if (/^\.github\/workflows\/.+\.ya?ml$/i.test(delFile)) {
+      findings.push({
+        id: `DIFF:workflow-deleted:${delFile}`,
+        rule: "diff-ci-safety-gate-removed",
+        category: "cheat",
+        rung: "R0",
+        severity: "error",
+        file: delFile,
+        line: 1,
+        message: `CI workflow file '${delFile}' was deleted in diff.`,
+        fix: "Restore the CI workflow file so PR-blocking verification gates stay active.",
+      });
+    }
+  }
   findings.push(...auditDiffAntiEvasion(normalizedEvents, { migratedJsToTsFiles }));
   findings.push(...auditDiffInvariantLoss(normalizedEvents, { allowTestedPredicateRefactor: true, migratedJsToTsFiles }));
   findings.push(...auditManifestDowngrade(repoPath, baseRef));

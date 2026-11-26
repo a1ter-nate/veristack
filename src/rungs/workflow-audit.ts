@@ -173,20 +173,34 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
 }
 
 export function globMatchesPath(pattern: string, target: string): boolean {
-  const normPat = pattern.trim().replace(/^\/+/, "").replace(/\/+$/, (m) => (m ? "/" : ""));
+  const raw = pattern.trim();
   const normTarget = target.replace(/^\/+/, "");
-  if (!normPat || normPat.startsWith("!")) return false;
-  if (normPat === "*" || normPat === "**") return true;
-  if (normPat === normTarget) return true;
-  if (normPat.endsWith("/") && (normTarget.startsWith(normPat) || `${normTarget}/` === normPat)) return true;
-  if (!normPat.includes("/") && !normPat.includes("*") && (normTarget === normPat || normTarget.startsWith(`${normPat}/`) || normTarget.endsWith(`/${normPat}`) || normTarget.includes(`/${normPat}/`))) return true;
-  if (!normPat.includes("*") && normTarget.startsWith(`${normPat}/`)) return true;
-  const escaped = normPat
+  if (!raw || raw.startsWith("!")) return false;
+  if (raw === "*" || raw === "**") return true;
+  const anchored = raw.startsWith("/");
+  const isDir = raw.endsWith("/");
+  const body = raw.replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!body) return false;
+  const hasSlash = body.includes("/");
+  const hasWildcard = body.includes("*") || body.includes("?");
+  if (!hasWildcard) {
+    if (anchored || hasSlash) {
+      return normTarget === body || normTarget.startsWith(`${body}/`);
+    }
+    if (isDir) {
+      return normTarget.startsWith(`${body}/`) || normTarget.includes(`/${body}/`);
+    }
+    return normTarget === body || normTarget.startsWith(`${body}/`) || normTarget.endsWith(`/${body}`) || normTarget.includes(`/${body}/`);
+  }
+  const escaped = body
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*\*/g, "__DBL__")
     .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
     .replace(/__DBL__/g, ".*");
-  return new RegExp(`^${escaped}(?:$|/.*)$`).test(normTarget);
+  const prefix = anchored || hasSlash ? "^" : "(?:^|/)";
+  const suffix = isDir ? "/.*$" : "$";
+  return new RegExp(`${prefix}${escaped}${suffix}`).test(normTarget);
 }
 
 export function auditCodeownersPerimeter(

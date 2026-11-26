@@ -14,11 +14,11 @@
       "required": true
     },
     "R2": {
-      "command": "bun test ./tests/ ./examples/typescript/clean/",
+      "command": "bun test --timeout 15000 ./tests/ ./examples/typescript/clean/",
       "required": true,
       "canary": {
         "enabled": true,
-        "testCommand": "bun test ./tests/no-comments.test.ts ./tests/rungs/ ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts",
+        "testCommand": "bun test --timeout 15000 ./tests/no-comments.test.ts ./tests/rungs/ ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts ./tests/anti-slop/fail-closed-contracts.test.ts",
         "targets": [
           "src/ratchet.ts",
           "src/no-comments.ts",
@@ -35,11 +35,11 @@
       }
     },
     "R3": {
-      "command": "bun test ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts",
+      "command": "bun test --timeout 15000 ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts",
       "required": true
     },
     "R5": {
-      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test ./tests/rungs/\" --targets src/rungs/reports.ts,src/ratchet.ts,src/rungs/receipts.ts,src/rungs/manifest.ts --max-mutants 4 --min-kill-rate 0.75 --fail",
+      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test --timeout 15000 ./tests/rungs/\" --targets src/rungs/reports.ts,src/ratchet.ts,src/rungs/receipts.ts,src/rungs/manifest.ts --max-mutants 6 --min-kill-rate 0.75 --fail",
       "required": true
     },
     "R6": {

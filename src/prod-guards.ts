@@ -37,9 +37,32 @@ const CDC_WALL_CLOCK_RS = /\bSystemTime::now\s*\(\s*\)\s*\.duration_since\b|\b(?
 const CDC_WALL_CLOCK_PY = /\b(?:datetime\.(?:utc)?now\s*\([^)]*\)|time\.time\s*\(\s*\))\s*-\s*[A-Za-z_][A-Za-z0-9_.]*/g;
 
 const UNBOUNDED_LOOP = /\bwhile\s*\(\s*true\s*\)|\bwhile\s+True\s*:|\bloop\s*\{/g;
-const SILENT_CATCH_RETURN = /\bcatch\s*(?:\([^)]*\))?\s*\{[^{}]{0,220}\breturn\s*(?:true|Ok\s*\(\s*new\s*\{[^}]{0,120}\b(?:accepted|ok|success)\s*=\s*true\b[^}]*\}\s*\)|\{[^}]{0,120}\b(?:accepted|ok|success)\s*:\s*true\b[^}]*\})\s*;?\s*\}/g;
-const CATCHALL_SUCCESS_STUB = /\bdefault\s*:\s*\{?\s*return\s*(?:Ok\s*\(\s*new\s*|Response\.json\s*\(|res\.(?:status\s*\(\s*200\s*\)\.)?json\s*\()?\{[^}]{0,120}\b(?:accepted|ok|success)\s*[:=]\s*true\b/g;
-const PY_SHAM_EXCEPT_OR_CASE = /(?:^\s*except\b[^\n:]*:\s*\r?\n[ \t]+return\s+(?:True|\{[^\n}]*["'](?:accepted|ok|success)["']\s*:\s*True[^\n}]*\})|^\s*case\s+_\s*:\s*\r?\n[ \t]+return\s+(?:True|\{[^\n}]*["'](?:accepted|ok|success)["']\s*:\s*True[^\n}]*\}))/gm;
+const CATCH_OPEN = /\bcatch\s*(?:\([^)]*\))?\s*\{/g;
+const SHAM_SUCCESS_RETURN = /\breturn\s*(?:true|(?:(?:Results\.|TypedResults\.)?Ok|new\s+OkObjectResult|new\s+JsonResult|Response\.json|res\.(?:status\s*\(\s*200\s*\)\.)?json)\s*\(\s*(?:new\s*)?\{[^}]{0,160}\b(?:accepted|ok|success)\s*[:=]\s*true\b[^}]*\}\s*\)|\{[^}]{0,160}\b(?:accepted|ok|success)\s*:\s*true\b[^}]*\})\s*;/i;
+const CATCHALL_SUCCESS_STUB = /\bdefault\s*:\s*\{?\s*return\s*(?:(?:Results\.|TypedResults\.)?Ok\s*\(\s*new\s*|new\s+OkObjectResult\s*\(\s*new\s*|Response\.json\s*\(|res\.(?:status\s*\(\s*200\s*\)\.)?json\s*\()?\{[^}]{0,120}\b(?:accepted|ok|success)\s*[:=]\s*true\b/g;
+const PY_EXCEPT_OR_CASE_HEAD = /^([ \t]*)(except\b[^\n:]*|case\s+_)\s*:/gm;
+const PY_SHAM_RETURN = /\breturn\s+(?:True|(?:JSONResponse\s*\(\s*)?\{[^\n}]*["'](?:accepted|ok|success)["']\s*:\s*True[^\n}]*\})/;
+
+function extractBalancedBraceBody(masked: string, raw: string, openBraceIdx: number): string {
+  let depth = 0;
+  for (let i = openBraceIdx; i < masked.length && i < openBraceIdx + 1200; i++) {
+    if (masked[i] === "{") depth += 1;
+    else if (masked[i] === "}" && --depth === 0) return raw.slice(openBraceIdx, i + 1);
+  }
+  return "";
+}
+
+function extractPyIndentBlock(raw: string, afterColonIdx: number, baseIndent: number): string {
+  const lines = raw.slice(afterColonIdx).split(/\r?\n/).slice(1, 20);
+  const body: string[] = [];
+  for (const l of lines) {
+    if (!l.trim()) { body.push(l); continue; }
+    const ind = l.search(/\S/);
+    if (ind <= baseIndent) break;
+    body.push(l);
+  }
+  return body.join("\n");
+}
 
 export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
   const findings: Finding[] = [];
@@ -60,7 +83,8 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
       findings.push(...analyzeT3ProdGuards(file));
       continue;
     }
-    if (!file.language || file.isTest || (GENERATED_PATH.test(file.rel) && GENERATED_HEADER.test(file.content.slice(0, 600)))) continue;
+    const isStub = file.rel.endsWith(".pyi") || file.rel.endsWith(".d.ts");
+    if (!file.language || file.isTest || isStub || (GENERATED_PATH.test(file.rel) && GENERATED_HEADER.test(file.content.slice(0, 600)))) continue;
     const raw = file.content;
     const masked = maskCode(raw, file.language, true);
 
@@ -98,11 +122,14 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
         });
       }
 
-      for (const match of raw.matchAll(PY_SHAM_EXCEPT_OR_CASE)) {
+      for (const match of raw.matchAll(PY_EXCEPT_OR_CASE_HEAD)) {
         const idx = match.index ?? 0;
-        if (masked[idx] === " ") continue;
+        if (masked[idx + (match[1]?.length ?? 0)] === " ") continue;
+        const baseIndent = (match[1] ?? "").length;
+        const block = extractPyIndentBlock(raw, idx + match[0].length, baseIndent);
+        if (!PY_SHAM_RETURN.test(block)) continue;
         const line = lineOf(raw, idx);
-        const isCase = /^\s*case\s+_/.test(match[0]);
+        const isCase = (match[2] ?? "").startsWith("case");
         findings.push({
           id: `SHAM:py-${isCase ? "catchall" : "except"}:${file.rel}:${line}`,
           rule: isCase ? "no-catchall-success-stub" : "no-silent-catch-return",
@@ -231,7 +258,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
       const window = masked.slice(Math.max(0, idx - 220), idx + 450);
       if (
         /\b(?:maxIter|max_iter|maxAttempts|max_attempts|maxRetries|max_retries|maxPages|max_pages|deadline|timeout|limit|fuel|budget|countdown)\b/i.test(window) ||
-        /\b(?:if\s*\([^)]*(?:done|eof|empty|null|err)|if\s+not\s+\w+|Err\s*\([^)]*\)\s*=>|None\s*=>)[\s\S]{0,60}\b(?:break|return)\b/i.test(window)
+        /\b(?:if\s*\([^)]*(?:done|eof|empty|null|err)|if\s*\(\s*!\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)|if\s+not\s+\w+|Err\s*\([^)]*\)\s*=>|None\s*=>)[\s\S]{0,60}\b(?:break|return)\b/i.test(window)
       ) {
         continue;
       }
@@ -250,9 +277,11 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     }
 
     if (file.language === "typescript" || file.language === "javascript" || file.language === "csharp") {
-      for (const match of raw.matchAll(SILENT_CATCH_RETURN)) {
+      for (const match of masked.matchAll(CATCH_OPEN)) {
         const idx = match.index ?? 0;
-        if (masked[idx] === " ") continue;
+        const braceIdx = idx + match[0].length - 1;
+        const block = extractBalancedBraceBody(masked, raw, braceIdx);
+        if (!block || !SHAM_SUCCESS_RETURN.test(block)) continue;
         const line = lineOf(raw, idx);
         findings.push({
           id: `SHAM:silent-catch-ret:${file.rel}:${line}`,

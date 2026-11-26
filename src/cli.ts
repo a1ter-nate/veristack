@@ -383,11 +383,11 @@ async function run(): Promise<number> {
     const maxSpaceRaw = parseFlagValue(rest, "--max-space-exp");
     const maxTimeExp = maxTimeRaw !== undefined ? Number(maxTimeRaw) : (parsed.maxTimeExponent ?? 1.45);
     const maxSpaceExp = maxSpaceRaw !== undefined ? Number(maxSpaceRaw) : parsed.maxSpaceExponent;
-    if (!Number.isFinite(maxTimeExp) || maxTimeExp <= 0) {
-      throw new Error(`Invalid --max-time-exp '${maxTimeRaw ?? String(maxTimeExp)}'; expected a positive finite number.`);
+    if (!Number.isFinite(maxTimeExp) || maxTimeExp <= 0 || maxTimeExp > 2.5) {
+      throw new Error(`Invalid --max-time-exp '${maxTimeRaw ?? String(maxTimeExp)}'; expected a number in (0, 2.5].`);
     }
-    if (maxSpaceExp !== undefined && (!Number.isFinite(maxSpaceExp) || maxSpaceExp <= 0)) {
-      throw new Error(`Invalid --max-space-exp '${maxSpaceRaw ?? String(maxSpaceExp)}'; expected a positive finite number.`);
+    if (maxSpaceExp !== undefined && (!Number.isFinite(maxSpaceExp) || maxSpaceExp <= 0 || maxSpaceExp > 2.5)) {
+      throw new Error(`Invalid --max-space-exp '${maxSpaceRaw ?? String(maxSpaceExp)}'; expected a number in (0, 2.5].`);
     }
     const result = fitEmpiricalBigO(parsed.samples, {
       maxTimeExponent: maxTimeExp,
@@ -435,6 +435,10 @@ async function run(): Promise<number> {
     if (asJson) console.log(JSON.stringify(diff ? { snapshot: current, diff } : { snapshot: current }, null, 2));
     else console.log(formatInvariantDiffReport(current, diff));
     if (rest.includes("--fail")) {
+      if (!baselinePath) {
+        console.error("vstack invariants --fail requires --baseline <file> to detect regressions.");
+        return 1;
+      }
       if (samples.length === 0) return 1;
       if (diff && !diff.passed) return 1;
     }

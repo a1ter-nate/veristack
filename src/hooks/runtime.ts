@@ -25,11 +25,12 @@ interface SessionState {
 export interface HookExecutionResult {
   exitCode: number;
   stdout: string;
+  stderr?: string;
   findings: Finding[];
 }
 
 const PROTECTED_CONTROL_PLANE =
-  /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|bunfig\.toml|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook\.yml|CODEOWNERS)$|^(?:\.verification\/|\.claude\/settings(?:\.local)?\.json$|\.cursor\/hooks\.json$|\.codex\/hooks\.json$|\.github\/(?:hooks\/|workflows\/|CODEOWNERS$)|\.grok\/hooks\/|docs\/CODEOWNERS$)/i;
+  /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|bunfig\.toml|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook\.yml|CODEOWNERS|package\.json|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|mypy\.ini|pyrightconfig\.json|biome\.jsonc?|\.?ruff\.toml|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.props|Directory\.Packages\.props|control-plan\.json|escapes\.json|invariants\.json|chokepoints\.json|(?:vitest|vite|jest|playwright|eslint|stryker)\.config\.[cm]?[jt]s|jest\.config\.json|\.eslintrc(?:\.[^/]+)?|stryker-config\.json|mutants\.toml)$|(?:^|\/)(?:\.verification\/|\.claude\/(?:settings(?:\.local)?\.json$|hooks\/)|\.cursor\/hooks\.json$|\.codex\/hooks\.json$|\.github\/(?:hooks\/|workflows\/|CODEOWNERS$)|\.grok\/hooks\/|docs\/CODEOWNERS$)/i;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -41,11 +42,7 @@ function safeRealpath(p: string): string {
   } catch {
     const parent = path.dirname(p);
     if (parent !== p) {
-      try {
-        return path.join(fs.realpathSync(parent), path.basename(p));
-      } catch {
-        return path.resolve(p);
-      }
+      try { return path.join(fs.realpathSync(parent), path.basename(p)); } catch { return path.resolve(p); }
     }
     return path.resolve(p);
   }
@@ -54,8 +51,30 @@ function safeRealpath(p: string): string {
 function resolveCanonicalRepoRoot(candidateDir: string): string {
   const abs = safeRealpath(candidateDir);
   const gitTop = spawnSync("git", ["-C", abs, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  if (gitTop.status === 0 && gitTop.stdout.trim()) return safeRealpath(gitTop.stdout.trim());
+  if (gitTop.status === 0 && gitTop.stdout.trim()) {
+    let top = safeRealpath(gitTop.stdout.trim());
+    const parentDir = path.dirname(top);
+    if (parentDir !== top) {
+      const outer = spawnSync("git", ["-C", parentDir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+      if (outer.status === 0 && outer.stdout.trim()) {
+        const outerTop = safeRealpath(outer.stdout.trim());
+        if (fs.existsSync(path.join(outerTop, ".verification"))) top = outerTop;
+      }
+    }
+    return top;
+  }
   return abs;
+}
+
+function isHooksConfigTamperedToDisabled(repoRoot: string): boolean {
+  const baseShow = spawnSync("git", ["-C", repoRoot, "show", "HEAD:.verification/hooks.json"], { encoding: "utf8" });
+  if (baseShow.status !== 0) return false;
+  try {
+    const baseCfg = JSON.parse(baseShow.stdout) as Record<string, unknown>;
+    return baseCfg.enabled !== false;
+  } catch {
+    return false;
+  }
 }
 
 export function loadHookConfig(repoRoot: string): HookProjectConfig {
@@ -65,8 +84,9 @@ export function loadHookConfig(repoRoot: string): HookProjectConfig {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
     if (!isRecord(parsed)) return defaults;
+    const enabled = typeof parsed.enabled === "boolean" ? parsed.enabled : true;
     return {
-      enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : true,
+      enabled: !enabled && isHooksConfigTamperedToDisabled(repoRoot) ? true : enabled,
       tier: parsed.tier === "all" ? "all" : "immediate",
       auditLog: typeof parsed.auditLog === "string" && parsed.auditLog.trim() ? parsed.auditLog.trim() : undefined,
       harnesses: Array.isArray(parsed.harnesses)
@@ -115,6 +135,17 @@ function appendAuditLog(repoRoot: string, auditLogPath: string | undefined, entr
   }
 }
 
+function extractPatchPaths(text: string): string[] {
+  const paths: string[] = [];
+  for (const m of text.matchAll(/^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s+(.+)$/gm)) {
+    if (m[1]) paths.push(m[1].trim());
+  }
+  for (const m of text.matchAll(/^\*\*\*\s+Move\s+to:\s+(.+)$/gm)) {
+    if (m[1]) paths.push(m[1].trim());
+  }
+  return paths;
+}
+
 function extractEditedPaths(payload: Record<string, unknown>): string[] {
   const paths: string[] = [];
   const toolInput = isRecord(payload.tool_input) ? payload.tool_input : payload;
@@ -122,10 +153,12 @@ function extractEditedPaths(payload: Record<string, unknown>): string[] {
     const val = toolInput[key];
     if (typeof val === "string" && val.trim()) paths.push(val.trim());
   }
-  if (typeof toolInput.patch === "string") {
-    for (const m of toolInput.patch.matchAll(/^\*\*\*\s+(?:Update|Add)\s+File:\s+(.+)$/gm)) {
-      if (m[1]) paths.push(m[1].trim());
-    }
+  for (const key of ["patch", "input", "command"]) {
+    const val = toolInput[key];
+    if (typeof val === "string" && val.includes("*** ")) paths.push(...extractPatchPaths(val));
+  }
+  if (typeof payload.input === "string" && payload.input.includes("*** ")) {
+    paths.push(...extractPatchPaths(payload.input));
   }
   return [...new Set(paths)];
 }
@@ -135,13 +168,13 @@ function extractProposedContent(payload: Record<string, unknown>, absFilePath: s
   for (const key of ["content", "contents", "new_content", "file_text"]) {
     if (typeof toolInput[key] === "string") return toolInput[key];
   }
-  let base = fs.existsSync(absFilePath) && fs.statSync(absFilePath).isFile() ? fs.readFileSync(absFilePath, "utf8") : undefined;
+  const base = fs.existsSync(absFilePath) && fs.statSync(absFilePath).isFile() ? fs.readFileSync(absFilePath, "utf8") : undefined;
   if (Array.isArray(toolInput.edits) && base !== undefined) {
     let cur = base;
     for (const item of toolInput.edits) {
       if (!isRecord(item)) continue;
-      const o = typeof item.old_string === "string" ? item.old_string : typeof item.old_str === "string" ? item.old_str : undefined;
-      const n = typeof item.new_string === "string" ? item.new_string : typeof item.new_str === "string" ? item.new_str : undefined;
+      const o = typeof item.old_string === "string" ? item.old_string : typeof item.oldString === "string" ? item.oldString : typeof item.old_str === "string" ? item.old_str : undefined;
+      const n = typeof item.new_string === "string" ? item.new_string : typeof item.newString === "string" ? item.newString : typeof item.new_str === "string" ? item.new_str : undefined;
       if (o !== undefined && n !== undefined && cur.includes(o)) {
         cur = item.replace_all === true ? cur.split(o).join(n) : cur.replace(o, n);
       }
@@ -176,10 +209,11 @@ function formatReminder(header: string, findings: readonly Finding[]): string {
   return lines.join("\n");
 }
 
-function formatPreEditDeny(harness: HookHarness, count: number, msg: string): { exitCode: number; stdout: string } {
+function formatPreEditDeny(harness: HookHarness, count: number, msg: string): { exitCode: number; stdout: string; stderr?: string } {
   if (harness === "claude") {
     return {
       exitCode: 2,
+      stderr: msg,
       stdout: JSON.stringify({
         permission: "deny",
         hookSpecificOutput: {
@@ -203,14 +237,22 @@ function formatPreEditDeny(harness: HookHarness, count: number, msg: string): { 
 }
 
 function listGitDirtyFiles(repoRoot: string): string[] {
-  const res = spawnSync("git", ["-C", repoRoot, "status", "--porcelain"], { encoding: "utf8" });
+  const res = spawnSync("git", ["-C", repoRoot, "status", "-z", "--untracked-files=all"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
   if (res.status !== 0) return [];
+  const tokens = (res.stdout ?? "").split("\0");
   const out: string[] = [];
-  for (const raw of (res.stdout ?? "").split(/\r?\n/)) {
-    const trimmed = raw.slice(3).trim();
-    if (!trimmed) continue;
-    const rel = trimmed.includes(" -> ") ? (trimmed.split(" -> ").pop() ?? trimmed) : trimmed;
-    out.push(rel);
+  for (let i = 0; i < tokens.length; i++) {
+    const entry = tokens[i] ?? "";
+    if (entry.length < 4) continue;
+    const status = entry.slice(0, 2);
+    const rel = entry.slice(3);
+    if (status.includes("R") || status.includes("C")) {
+      const next = tokens[i + 1];
+      if (next) out.push(rel);
+      i += 1;
+    } else if (rel) {
+      out.push(rel);
+    }
   }
   return out;
 }
@@ -224,18 +266,28 @@ export function executeHookEvent(
   if (process.env.VSTACK_HOOK_DISABLED === "1") return { exitCode: 0, stdout: "", findings: [] };
 
   let payload: Record<string, unknown> = {};
-  if (rawStdin.trim()) {
+  if (!rawStdin.trim()) {
+    if (event === "pre-edit") {
+      const deny = formatPreEditDeny(harness, 1, "Veristack blocked pre-edit: empty stdin payload (fail-closed).");
+      return { ...deny, findings: [] };
+    }
+  } else {
     try {
       const parsed: unknown = JSON.parse(rawStdin);
       if (isRecord(parsed)) payload = parsed;
       else if (event === "pre-edit") {
         const deny = formatPreEditDeny(harness, 1, "Veristack blocked pre-edit: non-object JSON payload.");
         return { ...deny, findings: [] };
+      } else if (event === "stop") {
+        return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason: "Veristack blocked stop: non-object JSON payload (fail-closed)." }), findings: [] };
       }
     } catch {
       if (event === "pre-edit") {
         const deny = formatPreEditDeny(harness, 1, "Veristack blocked pre-edit: malformed JSON payload (fail-closed).");
         return { ...deny, findings: [] };
+      }
+      if (event === "stop") {
+        return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason: "Veristack blocked stop: malformed JSON payload (fail-closed)." }), findings: [] };
       }
       return { exitCode: 0, stdout: "", findings: [] };
     }
@@ -252,6 +304,10 @@ export function executeHookEvent(
 
   if (event === "pre-edit") {
     const edited = extractEditedPaths(payload);
+    if (edited.length === 0) {
+      const deny = formatPreEditDeny(harness, 1, "Veristack blocked pre-edit: no extractable target file path in payload (fail-closed).");
+      return { ...deny, findings: [] };
+    }
     const findings: Finding[] = [];
     for (const filePath of edited) {
       const abs = safeRealpath(path.isAbsolute(filePath) ? filePath : path.resolve(baseDir, filePath));
@@ -266,7 +322,7 @@ export function executeHookEvent(
           severity: "error",
           file: rel,
           line: 1,
-          message: `Direct agent edit to verification control-plane file '${rel}' is blocked by pre-edit policy.`,
+          message: `Direct agent edit to verification control-plane/config file '${rel}' is blocked by pre-edit policy.`,
           fix: "Fix the underlying code defect instead of weakening verification configs, manifests, receipts, or hooks.",
         });
         continue;
@@ -286,11 +342,9 @@ export function executeHookEvent(
   if (event === "post-edit") {
     const edited = extractEditedPaths(payload);
     if (edited.length === 0) return { exitCode: 0, stdout: "", findings: [] };
-
     const state = readSessionState(statePath);
     const touchedSet = new Set(state.touchedFiles);
     const findings: Finding[] = [];
-
     for (const filePath of edited) {
       const abs = safeRealpath(path.isAbsolute(filePath) ? filePath : path.resolve(baseDir, filePath));
       if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
@@ -298,10 +352,8 @@ export function executeHookEvent(
       touchedSet.add(res.file);
       findings.push(...res.findings);
     }
-
     writeSessionState(statePath, { touchedFiles: [...touchedSet], reportedKeys: state.reportedKeys });
     appendAuditLog(repoRoot, config.auditLog, { event, harness, files: edited, findings: findings.length });
-
     if (findings.length === 0 || harness === "grok") return { exitCode: 0, stdout: "", findings };
     const msg = formatReminder(`Veristack detected ${findings.length} issue(s) on your edit — fix before continuing:`, findings);
     return {
@@ -316,7 +368,6 @@ export function executeHookEvent(
   const state = readSessionState(statePath);
   const candidateFiles = new Set<string>([...state.touchedFiles, ...listGitDirtyFiles(repoRoot)]);
   const findings: Finding[] = [];
-
   for (const rel of candidateFiles) {
     const abs = path.resolve(repoRoot, rel);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
@@ -324,16 +375,32 @@ export function executeHookEvent(
     findings.push(...res.findings);
   }
   for (const cheat of scanGitDiffCheats(repoRoot, "HEAD")) findings.push(cheat);
-
+  if (isHooksConfigTamperedToDisabled(repoRoot)) {
+    const cfgPath = path.join(repoRoot, ".verification", "hooks.json");
+    try {
+      const rawCfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+      if (rawCfg.enabled === false) {
+        findings.push({
+          id: "HOOK:tampered:.verification/hooks.json",
+          rule: "hook-protected-control-plane",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: ".verification/hooks.json",
+          line: 1,
+          message: "Agent disabled Veristack hooks by setting enabled: false in .verification/hooks.json.",
+          fix: "Restore enabled: true in .verification/hooks.json.",
+        });
+      }
+    } catch { void 0; }
+  }
   if (findings.length === 0) {
     try { if (fs.existsSync(statePath)) fs.unlinkSync(statePath); } catch { void 0; }
   }
-
   appendAuditLog(repoRoot, config.auditLog, { event, harness, touched: candidateFiles.size, findings: findings.length });
   if (findings.length === 0) return { exitCode: 0, stdout: "", findings: [] };
 
   const msg = formatReminder(`Veristack deep stop-pass found ${findings.length} unaddressed issue(s):`, findings);
   if (harness === "grok") return { exitCode: 0, stdout: JSON.stringify({ additionalContext: msg }), findings };
-  if (payload.stop_hook_active === true) return { exitCode: 0, stdout: "", findings };
   return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason: msg }), findings };
 }

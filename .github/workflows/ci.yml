@@ -55,6 +55,7 @@ jobs:
           node bin/vstack.mjs formal-sync . --fail
           node bin/vstack.mjs laws . --fail
           node bin/vstack.mjs bench . --fail
+          node bin/vstack.mjs doctor . --fail
       - if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -131,8 +132,10 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: |
-          curl -fsSL -o /tmp/bend-install.sh https://bend-lang.com/install.sh
-          sh /tmp/bend-install.sh
-          rm -f /tmp/bend-install.sh
+          mkdir -p /tmp/bend-dl "$HOME/.bend"
+          curl -fsSL -o /tmp/bend-dl/bend.tar.gz "https://github.com/bendlang/bend/releases/download/v2.0.40/bend-2.0.40-linux-x64.tar.gz"
+          echo "c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b  /tmp/bend-dl/bend.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/bend-dl/bend.tar.gz -C "$HOME/.bend" --strip-components=1
+          rm -rf /tmp/bend-dl
           ~/.bend/bin/bend templates/bend2-reference/PROOF.bend --check-only
       - run: bun src/cli.ts bench . --fail

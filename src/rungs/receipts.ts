@@ -8,6 +8,7 @@ import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./comm
 import { loadRungManifest } from "./manifest.ts";
 import { runPlantedFaultCanary } from "./mutation-probe.ts";
 import { parseStructuredReports, reportParsers } from "./reports.ts";
+import { parseRunnerTestCounts, stripAnsi } from "./runner-metrics.ts";
 
 const RECEIPTS_REL_DIR = ".verification/receipts";
 
@@ -61,17 +62,11 @@ export function computeRepoTreeHash(repo: DiscoveredRepo): string {
     try {
       const stat = fs.lstatSync(abs);
       if (stat.isSymbolicLink()) {
-        hasher.update(rel);
-        hasher.update("\0symlink:");
-        hasher.update(fs.readlinkSync(abs));
-        hasher.update("\0");
+        hasher.update(rel); hasher.update("\0symlink:"); hasher.update(fs.readlinkSync(abs)); hasher.update("\0");
         continue;
       }
       if (!stat.isFile()) continue;
-      hasher.update(rel);
-      hasher.update("\0");
-      hasher.update(fs.readFileSync(abs));
-      hasher.update("\0");
+      hasher.update(rel); hasher.update("\0"); hasher.update(fs.readFileSync(abs)); hasher.update("\0");
     } catch {
       continue;
     }
@@ -105,120 +100,31 @@ function snapshotReportFiles(repoRoot: string): Map<string, { mtimeMs: number; s
   return snap;
 }
 
-function sumMatches(text: string, regex: RegExp): { found: boolean; sum: number } {
-  let found = false;
-  let sum = 0;
-  for (const m of text.matchAll(regex)) {
-    if (m[1] !== undefined) {
-      found = true;
-      sum += Number(m[1]);
-    }
-  }
-  return { found, sum };
-}
-
-function detectRunners(steps: readonly string[][]): Set<string> {
-  const runners = new Set<string>();
-  for (const seg of steps) {
-    for (const tok of seg.slice(0, 4)) {
-      const low = tok.toLowerCase();
-      if (/^(?:bun|node|vitest|jest|mocha|ava|pytest|cargo|dotnet|go|phpunit|rspec|unittest)$/.test(low)) {
-        runners.add(low);
-      }
-    }
-  }
-  return runners;
-}
-
 function parseCommandMetrics(
   repoRoot: string,
-  output: string,
+  rawOutput: string,
   rung: RungId,
   steps: readonly string[][],
   preSnapshot: ReadonlyMap<string, { mtimeMs: number; size: number }>,
-): RungReceipt["metrics"] {
+): { metrics: RungReceipt["metrics"]; hasTestRunner: boolean } {
+  const output = stripAnsi(rawOutput);
   const structured = parseStructuredReports(repoRoot, { rung, preSnapshot });
   const metrics: NonNullable<RungReceipt["metrics"]> = {};
-  if (structured.testsPassed !== undefined && Number.isFinite(structured.testsPassed)) metrics.testsPassed = structured.testsPassed;
-  if (structured.testsFailed !== undefined && Number.isFinite(structured.testsFailed)) metrics.testsFailed = structured.testsFailed;
-  if (structured.mutationScore !== undefined && Number.isFinite(structured.mutationScore)) metrics.mutationScore = structured.mutationScore;
+  if (typeof structured.testsPassed === "number") metrics.testsPassed = structured.testsPassed;
+  if (typeof structured.testsFailed === "number") metrics.testsFailed = structured.testsFailed;
+  if (typeof structured.mutationScore === "number") metrics.mutationScore = structured.mutationScore;
 
-  if (metrics.testsPassed === undefined) {
-    const runners = detectRunners(steps);
-    let passed = 0;
-    let failed = 0;
-    let matched = false;
-
-    if (runners.has("cargo")) {
-      const p = sumMatches(output, /test result:\s*(?:ok|FAILED)\.\s*(\d+)\s+passed/gi);
-      const f = sumMatches(output, /test result:[^;\n]*?(\d+)\s+failed/gi);
-      if (p.found) { passed += p.sum; failed += f.sum; matched = true; }
-    }
-    if (runners.has("bun")) {
-      const p = sumMatches(output, /^\s*(\d+)\s+pass$/gm);
-      const f = sumMatches(output, /^\s*(\d+)\s+fail$/gm);
-      if (p.found) { passed += p.sum; failed += f.sum; matched = true; }
-    }
-    if (runners.has("node")) {
-      const p = sumMatches(output, /^\s*(?:ℹ|#)\s*pass\s+(\d+)\s*$/gm);
-      const f = sumMatches(output, /^\s*(?:ℹ|#)\s*fail\s+(\d+)\s*$/gm);
-      if (p.found) { passed += p.sum; failed += f.sum; matched = true; }
-    }
-    if (runners.has("vitest") || runners.has("jest")) {
-      const p = sumMatches(output, /^\s*Tests:?\s+[^\n]*?(\d+)\s+passed\b/gm);
-      const f = sumMatches(output, /^\s*Tests:?\s+[^\n]*?(\d+)\s+failed\b/gm);
-      if (p.found) { passed += p.sum; failed += f.sum; matched = true; }
-    }
-    if (runners.has("pytest")) {
-      const p = sumMatches(output, /\b(\d+)\s+passed\b/gi);
-      const f = sumMatches(output, /\b(\d+)\s+failed\b/gi);
-      if (p.found) { passed += p.sum; failed += f.sum; matched = true; }
-    }
-    if (runners.has("dotnet")) {
-      const p = sumMatches(output, /\bPassed:\s*(\d+)/gi);
-      const f = sumMatches(output, /\bFailed:\s*(\d+)/gi);
-      if (p.found) { passed += p.sum; failed += f.sum; matched = true; }
-    }
-    if (runners.has("go")) {
-      const noTestsWarn = /testing:\s*warning:\s*no tests to run/i.test(output);
-      const goVerbose = (output.match(/^---\s+PASS:/gm) ?? []).length;
-      const goPkg = noTestsWarn ? 0 : (output.match(/^ok\s+\S+(?![^\n]*\[no tests to run\])/gm) ?? []).length;
-      const goFail = (output.match(/^FAIL\s+\S+/gm) ?? []).length;
-      if (goVerbose > 0 || goPkg > 0 || goFail > 0) {
-        passed += goVerbose > 0 ? goVerbose : goPkg;
-        failed += goFail;
-        matched = true;
-      }
-    }
-    if (runners.has("mocha")) {
-      const p = sumMatches(output, /^\s*(\d+)\s+passing\b/gm);
-      const f = sumMatches(output, /^\s*(\d+)\s+failing\b/gm);
-      if (p.found) { passed += p.sum; failed += f.sum; matched = true; }
-    }
-    if (runners.has("ava")) {
-      const p = sumMatches(output, /^\s*(\d+)\s+tests?\s+passed\b/gm);
-      if (p.found) { passed += p.sum; matched = true; }
-    }
-    if (runners.has("phpunit")) {
-      const p = sumMatches(output, /OK\s*\((\d+)\s+tests?/gi);
-      if (p.found) { passed += p.sum; matched = true; }
-    }
-    if (runners.has("rspec")) {
-      const p = sumMatches(output, /(\d+)\s+examples?,\s*0\s+failures?/gi);
-      if (p.found) { passed += p.sum; matched = true; }
-    }
-    if (matched) {
-      metrics.testsPassed = passed;
-      metrics.testsFailed = failed;
-    }
+  const parsedCounts = parseRunnerTestCounts(output, steps);
+  if (metrics.testsPassed === undefined && parsedCounts.matched) {
+    metrics.testsPassed = parsedCounts.passed;
+    metrics.testsFailed = parsedCounts.failed;
   }
-
   if (metrics.mutationScore === undefined && rung === "R5") {
     const mutationMatch = /mutation\s+score[:\s]+(\d+(?:\.\d+)?)%/i.exec(output);
     if (mutationMatch?.[1]) metrics.mutationScore = Number(mutationMatch[1]);
   }
   if (/check-perf-budget:\s*PASS|Big-O\s*\[PASS\]/i.test(output)) metrics.perfPassed = true;
-  return Object.keys(metrics).length > 0 ? metrics : undefined;
+  return { metrics: Object.keys(metrics).length > 0 ? metrics : undefined, hasTestRunner: parsedCounts.hasTestRunner };
 }
 
 export function runRungAndWriteReceipt(
@@ -240,7 +146,7 @@ export function runRungAndWriteReceipt(
   const durationMs = Math.round(performance.now() - started);
   const exitCode = proc.status;
   const combined = `${proc.stdout}\n${proc.stderr}`;
-  const metrics = parseCommandMetrics(repo.root, combined, rung, parsedCmd.steps, preSnapshot);
+  const { metrics, hasTestRunner } = parseCommandMetrics(repo.root, combined, rung, parsedCmd.steps, preSnapshot);
   const treeHashAfter = computeRepoTreeHash(repo);
   const mutatedTree = treeHashBefore !== treeHashAfter;
 
@@ -257,8 +163,9 @@ export function runRungAndWriteReceipt(
 
   const testsPassed = metrics?.testsPassed;
   const testsFailed = metrics?.testsFailed ?? 0;
+  const requiresPositiveTests = rung === "R2" || rung === "R3" || ((rung === "R4" || rung === "R7") && hasTestRunner);
   const testCountMissing =
-    (rung === "R2" || rung === "R3") &&
+    requiresPositiveTests &&
     (testsPassed === undefined || !Number.isFinite(testsPassed) || testsPassed <= 0 || !Number.isFinite(testsFailed) || testsFailed > 0);
   const minCanaryMutants = entry.canary?.enabled ? Math.min(4, entry.canary.maxMutants ?? 4) : 0;
   const canaryFailed = Boolean(canary && (!canary.passed || canary.totalMutants < minCanaryMutants || canary.invalidKills > 0));
@@ -346,7 +253,8 @@ export function loadValidReceipts(
       if (raw.exitCode !== 0 || raw.treeHash !== expectedTreeHash) continue;
       if (expectedHead !== "no-git" && raw.commitSha !== expectedHead) continue;
       if (activeCiRunId && raw.ciRunId !== activeCiRunId) continue;
-      if ((raw.rung === "R2" || raw.rung === "R3") && ((raw.metrics?.testsPassed ?? 0) <= 0 || (raw.metrics?.testsFailed ?? 0) > 0)) continue;
+      const needsTests = raw.rung === "R2" || raw.rung === "R3" || ((raw.rung === "R4" || raw.rung === "R7") && /\b(?:test|pytest|vitest|jest|mocha|ava|playwright|cypress|unittest|nextest)\b/i.test(declared.command));
+      if (needsTests && ((raw.metrics?.testsPassed ?? 0) <= 0 || (raw.metrics?.testsFailed ?? 0) > 0)) continue;
       if (declared.canary?.enabled) {
         const minFloor = Math.max(0.75, declared.canary.minKillRate ?? 0.8);
         const minMutants = Math.min(4, declared.canary.maxMutants ?? 4);

@@ -12,8 +12,10 @@ interface ChokePointRule {
 }
 
 const HEX_40 = /^[0-9a-f]{40}$/i;
+const VALID_CHOKE_LANGS = new Set(["typescript", "javascript", "csharp", "python", "rust", "go"]);
 const FETCH_TO_SHELL =
-  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-[A-Za-z]+\s+)*)?(?:sh|bash|zsh|python3?|perl|ruby|tee\b[^\n]*\|\s*(?:sh|bash))|\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b|\b(?:sh|bash)\s+-c\s+["']?\$\(\s*(?:curl|wget)\b/i;
+  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-[A-Za-z]+\s+)*)?(?:sh|bash|zsh|node|python3?|perl|ruby|tee\b[^\n]*\|\s*(?:sh|bash))|\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b|\b(?:sh|bash|eval)\s+(?:-c\s+)?["']?\$\(\s*(?:curl|wget)\b/i;
+const DOWNLOAD_TO_FILE = /\b(?:curl\b[^\n]*(?:-o|--output)\s+([^\s;|&]+)|wget\b[^\n]*(?:-O|--output-document=?)\s*([^\s;|&]+))/i;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -47,9 +49,22 @@ function loadChokePoints(repo: DiscoveredRepo, findings: Finding[]): ChokePointR
         push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} contains a malformed or null choke-point rule entry.`, "Give every choke-point rule a non-empty 'pattern' and 'replacement'.");
         continue;
       }
-      if (Array.isArray(raw.allowPaths) && raw.allowPaths.some((p) => typeof p !== "string" || p.trim().replace(/^\/+/, "") === "" || p.trim() === "*" || p.trim() === "**")) {
-        push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} rule '${raw.pattern}' has an empty or universal allowPaths entry.`, "Scope allowPaths to the exact choke-point wrapper file.");
+      if (
+        Array.isArray(raw.allowPaths) &&
+        raw.allowPaths.some((p) => {
+          if (typeof p !== "string") return true;
+          const clean = p.trim().replace(/^\/+/, "");
+          return clean === "" || clean === "*" || clean === "**" || clean.length < 4 || (!clean.includes("/") && !clean.includes("."));
+        })
+      ) {
+        push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} rule '${raw.pattern}' has an overly broad or invalid allowPaths entry.`, "Scope allowPaths to the exact choke-point wrapper file (e.g. 'src/db/client.ts').");
         continue;
+      }
+      if (raw.languages !== undefined) {
+        if (!Array.isArray(raw.languages) || raw.languages.length === 0 || raw.languages.some((l) => typeof l !== "string" || !VALID_CHOKE_LANGS.has(l))) {
+          push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} rule '${raw.pattern}' has empty or unrecognized languages (expected lowercase: typescript, javascript, csharp, python, rust, go).`, "List valid lowercase language identifiers or omit 'languages' to apply to all.");
+          continue;
+        }
       }
       valid.push({
         pattern: raw.pattern,
@@ -143,6 +158,37 @@ function auditContainerImage(file: ScannedFile, lines: readonly string[], img: u
   }
 }
 
+function auditRunScriptSupplyChain(file: ScannedFile, lines: readonly string[], runScript: string, findings: Finding[]): void {
+  const joinedLines: string[] = [];
+  let buf = "";
+  for (const rawLine of runScript.split(/\r?\n/)) {
+    const trimmedEnd = rawLine.replace(/\s+$/, "");
+    if (trimmedEnd.endsWith("\\")) buf += `${trimmedEnd.slice(0, -1)} `;
+    else { joinedLines.push(buf + rawLine); buf = ""; }
+  }
+  if (buf) joinedLines.push(buf);
+  const downloadedFiles = new Set<string>();
+  const hasChecksumVerify = /\b(?:sha256sum|shasum|openssl\s+dgst|gpg\s+--verify)\b/i.test(runScript);
+  for (const line of joinedLines) {
+    if (/^\s*#/.test(line)) continue;
+    if (FETCH_TO_SHELL.test(line)) {
+      push(findings, file.rel, findLineForNeedle(lines, line.trim().slice(0, 32)), "ci-curl-pipe-shell", "R0", "error", "Workflow pipes or evals remote download directly into a shell/script interpreter.", "Download a pinned checksum-verified release artifact or use a SHA-pinned action.");
+      continue;
+    }
+    const dl = DOWNLOAD_TO_FILE.exec(line);
+    const dlTarget = (dl?.[1] ?? dl?.[2] ?? "").replace(/^["']|["']$/g, "");
+    if (dlTarget) downloadedFiles.add(dlTarget);
+    if (!hasChecksumVerify && downloadedFiles.size > 0) {
+      for (const f of downloadedFiles) {
+        if (!line.includes(f) || /\b(?:curl|wget|rm)\b/.test(line)) continue;
+        if (/\b(?:sh|bash|zsh|node|python3?|chmod\s+\+x)\b/.test(line) || line.includes(`./${f}`)) {
+          push(findings, file.rel, findLineForNeedle(lines, f), "ci-curl-pipe-shell", "R0", "error", `Workflow downloads and executes '${f}' without checksum/signature verification.`, "Verify sha256sum before executing downloaded scripts or use a SHA-pinned action.");
+        }
+      }
+    }
+  }
+}
+
 function auditWorkflowImmuneSupplyChain(file: ScannedFile, findings: Finding[]): void {
   const lines = file.content.split(/\r?\n/);
 
@@ -150,33 +196,43 @@ function auditWorkflowImmuneSupplyChain(file: ScannedFile, findings: Finding[]):
     push(findings, file.rel, 1, "ci-missing-explicit-permissions", "R0", "warn", "GitHub Actions workflow omits top-level 'permissions:' block.", "Add top-level 'permissions: { contents: read }' and grant narrower write scopes only on release jobs.");
   }
 
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i] ?? "";
-    if (!/^\s*#/.test(raw) && FETCH_TO_SHELL.test(raw)) {
-      push(findings, file.rel, i + 1, "ci-curl-pipe-shell", "R0", "error", "Workflow pipes remote download directly into a shell/script interpreter.", "Download a pinned checksum-verified release artifact or use a SHA-pinned action.");
-    }
-  }
-
+  let parsedSteps = false;
   try {
     const doc: unknown = YAML.parse(file.content);
-    if (isRecord(doc) && isRecord(doc.jobs)) {
-      for (const job of Object.values(doc.jobs)) {
-        if (!isRecord(job)) continue;
-        if (typeof job.uses === "string") auditUsesRef(file, lines, job.uses, findings);
-        if (job.container) auditContainerImage(file, lines, job.container, findings);
-        if (isRecord(job.services)) {
-          for (const svc of Object.values(job.services)) auditContainerImage(file, lines, svc, findings);
+    if (isRecord(doc)) {
+      if (isRecord(doc.runs) && Array.isArray(doc.runs.steps)) {
+        parsedSteps = true;
+        for (const step of doc.runs.steps) {
+          if (!isRecord(step)) continue;
+          if (typeof step.uses === "string") auditUsesRef(file, lines, step.uses, findings);
+          if (typeof step.run === "string") auditRunScriptSupplyChain(file, lines, step.run, findings);
         }
-        if (Array.isArray(job.steps)) {
-          for (const step of job.steps) {
-            if (!isRecord(step)) continue;
-            if (typeof step.uses === "string") auditUsesRef(file, lines, step.uses, findings);
+      }
+      if (isRecord(doc.jobs)) {
+        parsedSteps = true;
+        for (const job of Object.values(doc.jobs)) {
+          if (!isRecord(job)) continue;
+          if (typeof job.uses === "string") auditUsesRef(file, lines, job.uses, findings);
+          if (job.container) auditContainerImage(file, lines, job.container, findings);
+          if (isRecord(job.services)) {
+            for (const svc of Object.values(job.services)) auditContainerImage(file, lines, svc, findings);
+          }
+          if (Array.isArray(job.steps)) {
+            for (const step of job.steps) {
+              if (!isRecord(step)) continue;
+              if (typeof step.uses === "string") auditUsesRef(file, lines, step.uses, findings);
+              if (typeof step.run === "string") auditRunScriptSupplyChain(file, lines, step.run, findings);
+            }
           }
         }
       }
     }
   } catch {
     void 0;
+  }
+
+  if (!parsedSteps) {
+    auditRunScriptSupplyChain(file, lines, file.content, findings);
   }
 
   const hasDeployOrWrite = /\b(?:id-token:\s*write|packages:\s*write|deployments:\s*write|vercel\s+deploy|npm\s+publish|docker\s+push|aws-actions\/configure-aws-credentials)\b/i.test(file.content);
@@ -206,8 +262,11 @@ export function analyzeImmuneSystemGates(repo: DiscoveredRepo): Finding[] {
   const findings: Finding[] = [];
   auditChokePoints(repo, findings);
   for (const file of repo.files) {
-    if (file.isWorkflow) auditWorkflowImmuneSupplyChain(file, findings);
-    else auditLinterImmuneConfigs(file, findings);
+    if (file.isWorkflow || /(?:^|\/)\.github\/(?:.+\/)?action\.ya?ml$/i.test(file.rel)) {
+      auditWorkflowImmuneSupplyChain(file, findings);
+    } else {
+      auditLinterImmuneConfigs(file, findings);
+    }
   }
   return findings;
 }

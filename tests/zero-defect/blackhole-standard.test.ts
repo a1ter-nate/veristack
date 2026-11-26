@@ -160,6 +160,7 @@ test("Black Hole immune gates enforce repo chokepoints, CI supply-chain hardenin
       ".verification/laws/core.laws.json": JSON.stringify({
         laws: [{ id: "law-pass", invariant: "1+1=2", witnessRef: "tests/law.test.ts" }],
       }),
+      "CODEOWNERS": "/.verification/laws/ @owner\n",
       "tests/law.test.ts": [
         'import assert from "node:assert/strict";',
         'import { test } from "node:test";',
