@@ -199,3 +199,88 @@ test("CI shell-script expansion, Rust inline cfg(test), pure re-export facade cr
     fs.rmSync(scopedDir, { recursive: true, force: true });
   }
 });
+
+test("AI-first CI patterns: draft guard, parallel steps, benign git token rewrite, QML pragma, shell tests, and agent-doc symlinks", () => {
+  const wfDraftAndParallel = parseGitHubWorkflow({
+    abs: "/tmp/ci.yml",
+    rel: ".github/workflows/ci.yml",
+    isTest: false,
+    isWorkflow: true,
+    lines: 22,
+    content: [
+      "on: [pull_request]",
+      "env:",
+      '  GIT_CONFIG_COUNT: "1"',
+      "  GIT_CONFIG_KEY_0: url.https://x-access-token:${{ github.token }}@github.com/.insteadOf",
+      "  GIT_CONFIG_VALUE_0: https://github.com/",
+      "jobs:",
+      "  check:",
+      "    if: ${{ !github.event.pull_request.draft }}",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - parallel:",
+      "          - name: Lint",
+      "            run: pnpm biome ci",
+      "          - name: Test",
+      "            env:",
+      "              MUTATION_TARGET: MutationTestsCore",
+      "            shell: pwsh",
+      "            run: ./build.ps1 -Target ${env:MUTATION_TARGET}",
+    ].join("\n"),
+  });
+  assert.equal(wfDraftAndParallel.isPrBlocking, true);
+  assert.ok(wfDraftAndParallel.activeCommands.some((c) => c.includes("biome ci")));
+  assert.ok(wfDraftAndParallel.activeCommands.some((c) => c.includes("MutationTestsCore")));
+
+  const wfBadGitConfig = parseGitHubWorkflow({
+    abs: "/tmp/bad.yml",
+    rel: ".github/workflows/bad.yml",
+    isTest: false,
+    isWorkflow: true,
+    lines: 10,
+    content: [
+      "on: [pull_request]",
+      "env:",
+      '  GIT_CONFIG_COUNT: "1"',
+      "  GIT_CONFIG_KEY_0: core.hooksPath",
+      "  GIT_CONFIG_VALUE_0: /tmp/evil",
+      "jobs:",
+      "  t:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: bun test",
+    ].join("\n"),
+  });
+  assert.equal(wfBadGitConfig.activeCommands.length, 0);
+
+  const dir = makeTempRepo({
+    "shell/ui.js": ".pragma library\nfunction fmt(x) { return String(x); }\n",
+    "test/shell.d/proc-test.sh": "#!/usr/bin/env bash\npkill -f dummy\n",
+    "bin/run.sh": "#!/usr/bin/env bash\necho ok\n",
+    "AGENTS.md": "# Agent Rules\n",
+    "web/docs/package.json": JSON.stringify({ name: "docs", dependencies: { astro: "^5.0.0" } }),
+    "web/docs/src/Page.astro": "---\n---\n<div/>",
+    "common/eslint-config/package.json": JSON.stringify({ name: "@org/eslint-config" }),
+    "common/eslint-config/index.js": "export default [];\n",
+    "samples/DemoApp/DemoApp.csproj": "<Project Sdk=\"Microsoft.NET.Sdk.Web\"></Project>\n",
+    "samples/DemoApp/Program.cs": "var b = WebApplication.CreateBuilder(args);\n",
+    "src/Core/Core.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>\n",
+    "src/Core/Policy.cs": "namespace Core; public class Policy { public int Ok() => 1; }\n",
+    "test/Core.Tests/Core.Tests.csproj": "<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup><ItemGroup><ProjectReference Include=\"..\\..\\src\\Core\\Core.csproj\" /></ItemGroup></Project>\n",
+    "test/Core.Tests/PolicyTests.cs": "using Core; using Xunit; public class PolicyTests { [Fact] public void T() => Assert.Equal(1, new Policy().Ok()); }\n",
+    ".github/workflows/agent-sweep.lock.yml": "on:\n  schedule:\n    - cron: '0 0 * * *'\njobs:\n  sweep:\n    runs-on: ubuntu-latest\n    steps:\n      - continue-on-error: true\n        run: echo sweep\n",
+  });
+  fs.symlinkSync(path.join(dir, "AGENTS.md"), path.join(dir, "CLAUDE.md"));
+  try {
+    const rep = scanRepo(dir);
+    assert.equal(rep.archetype, "library");
+    assert.equal(rep.summary.excludedCount, 0);
+    assert.equal(rep.findings.filter((f) => f.rule === "ts-syntax-parse-error").length, 0);
+    assert.equal(rep.findings.filter((f) => f.rule === "sh-pkill-f-pattern-kill").length, 0);
+    assert.equal(rep.findings.filter((f) => f.rule === "ci-continue-on-error").length, 0);
+    assert.equal(rep.workspaces?.length, 1);
+    assert.equal(rep.workspaces?.[0]?.path, "src/Core");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -68,13 +68,13 @@ function parsePackageScriptsByDir(files: readonly ScannedFile[]): Map<string, Ma
   return byDir;
 }
 
-function collectReferencedScriptNames(text: string): string[] {
-  const names: string[] = [];
-  const runRe = /\b(?:npm|pnpm|yarn|bun|turbo)\s+(?:run\s+)?([a-zA-Z0-9:_-]+)/g;
+function collectReferencedScriptNames(text: string): Array<{ name: string; recursive: boolean }> {
+  const names: Array<{ name: string; recursive: boolean }> = [];
+  const runRe = /\b(?:npm|pnpm|yarn|bun|turbo)\s+(?:(-r|--recursive)\s+)?(?:run\s+)?([a-zA-Z0-9:_-]+)/g;
   for (const match of text.matchAll(runRe)) {
-    const candidate = match[1];
-    if (candidate && candidate !== "install" && candidate !== "ci" && candidate !== "exec" && candidate !== "dlx") {
-      names.push(candidate);
+    const candidate = match[2];
+    if (candidate && candidate !== "install" && candidate !== "ci" && candidate !== "exec" && candidate !== "dlx" && candidate !== "x") {
+      names.push({ name: candidate, recursive: Boolean(match[1]) });
     }
   }
   return names;
@@ -151,16 +151,18 @@ function buildActivePrCiText(files: readonly ScannedFile[]): {
         const shLines = sanitizeShellBlock(shFile.content);
         if (shLines.length > 0) { const joined = shLines.join("\n"); chunks.push(joined); nextFrontier.push({ cwd: item.cwd, text: joined }); }
       }
-      const dirScripts = pkgByDir.get(item.cwd) ?? pkgByDir.get("");
-      if (!dirScripts) continue;
-      for (const name of collectReferencedScriptNames(item.text)) {
-        const key = `${item.cwd}::${name}`;
-        if (visitedScripts.has(key)) continue;
-        visitedScripts.add(key);
-        const rawBody = dirScripts.get(name);
-        if (!rawBody) continue;
-        const bodyLines = sanitizeShellBlock(rawBody);
-        if (bodyLines.length > 0) { const joined = bodyLines.join("\n"); chunks.push(joined); nextFrontier.push({ cwd: item.cwd, text: joined }); }
+      for (const { name, recursive } of collectReferencedScriptNames(item.text)) {
+        const dirs = recursive ? [...pkgByDir.keys()] : [pkgByDir.has(item.cwd) ? item.cwd : ""];
+        for (const d of dirs) {
+          const dirScripts = pkgByDir.get(d);
+          const key = `${d}::${name}`;
+          if (!dirScripts || visitedScripts.has(key)) continue;
+          visitedScripts.add(key);
+          const rawBody = dirScripts.get(name);
+          if (!rawBody) continue;
+          const bodyLines = sanitizeShellBlock(rawBody);
+          if (bodyLines.length > 0) { const joined = bodyLines.join("\n"); chunks.push(joined); nextFrontier.push({ cwd: d, text: joined }); }
+        }
       }
     }
     if (nextFrontier.length === 0) break;
@@ -431,7 +433,7 @@ export function extractSignals(
   const runsUnitTests =
     runsVerifyAll ||
     (hasCiWorkflows &&
-      /\b(?:bun\s+test|vitest|jest|node\s+--test|vp\s+test|deno\s+test|mocha|ava|dotnet\s+test|cargo\s+(?:test|nextest)|pytest|go\s+test|phpunit|rspec|test:unit|test:coverage|pr-affected-vitest|run-rung\s+(?:R2|all))\b/i.test(
+      /\b(?:bun\s+test|vitest|jest|node\s+--test|vp\s+test|deno\s+test|mocha|ava|dotnet\s+test|cargo\s+(?:test|nextest)|pytest|go\s+test|phpunit|rspec|bats\b|test\/ci-vm|test\/all|test:unit|test:coverage|pr-affected-vitest|run-rung\s+(?:R2|all))\b/i.test(
         effectiveCiText,
       ));
 
@@ -466,7 +468,7 @@ export function extractSignals(
           ))),
     runsMutationOrFormal:
       runsVerifyAll ||
-      (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|gremlins|go-mutesting|go\s+test[^\n]*-fuzz|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|mutation|run-rung\s+(?:R5|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`) ||
+      (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|gremlins|go-mutesting|go\s+test[^\n]*-fuzz|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|mutation(?:tests)?|run-rung\s+(?:R5|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`) ||
         (hasCiWorkflows && (/\bbend\b[^\n]*--check-only/i.test(effectiveCiText) || /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText)))),
     runsPerfOrBench:
       runsVerifyAll ||

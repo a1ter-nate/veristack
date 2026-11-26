@@ -35,11 +35,13 @@ function isUnconditionalIf(cond: unknown): boolean {
   if (cond === undefined || cond === null) return true;
   if (typeof cond === "boolean") return cond === true;
   if (typeof cond !== "string") return false;
-  const norm = cond.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
+  let norm = cond.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
   if (norm === "true" || norm === "success()" || norm === "always()") return true;
   if (/\b(?:false|failure\s*\(|cancelled\s*\(|workflow_dispatch|skip)\b/.test(norm)) return false;
+  if (norm === "!github.event.pull_request.draft" || norm === "github.event.pull_request.draft == false") return true;
+  norm = norm.replace(/^!github\.event\.pull_request\.draft\s*&&\s*/, "").replace(/\s*&&\s*!github\.event\.pull_request\.draft$/, "").trim();
   if (/^matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]*['"](?:\s*&&\s*matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]*['"])*$/.test(norm)) return true;
-  if (/^needs\.[a-z0-9_-]+\.outputs\.[a-z0-9_-]+\s*==\s*['"]true['"]/.test(norm)) return true;
+  if (/^needs\.[a-z0-9_-]+\.outputs\.[a-z0-9_-]+\s*(?:==|!=)\s*['"](?:true|false)['"]/.test(norm)) return true;
   if (/^github\.event_name\s*!=\s*['"]pull_request['"]\s*\|\|/.test(norm)) return true;
   return false;
 }
@@ -207,24 +209,34 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
     if (!/\bGITHUB_ENV\b/i.test(runText)) return false;
     return BAD_ENV_INLINE.test(runText) || /\b(?:eval|base64|xxd)\b|\$[A-Za-z_]\w*=/.test(runText);
   };
+  const SAFE_GIT_AUTH_KEY = /^url\.https:\/\/x-access-token:\$\{\{\s*(?:github\.token|secrets\.[A-Z0-9_]+)\s*\}\}@github\.com\/\.insteadOf$/i;
+  const isBenignGitAuthEnv = (envObj: Record<string, unknown>): boolean =>
+    String(envObj.GIT_CONFIG_COUNT ?? "").trim() === "1" &&
+    typeof envObj.GIT_CONFIG_KEY_0 === "string" &&
+    SAFE_GIT_AUTH_KEY.test(envObj.GIT_CONFIG_KEY_0.trim()) &&
+    typeof envObj.GIT_CONFIG_VALUE_0 === "string" &&
+    envObj.GIT_CONFIG_VALUE_0.trim() === "https://github.com/";
   const hasPoisonedEnv = (envObj: unknown): boolean =>
     isRecord(envObj) &&
     Object.entries(envObj).some(([k, v]) => {
       if (!BAD_ENV_KEY.test(k)) return false;
       if (/^GOFLAGS$/i.test(k) && typeof v === "string" && SAFE_GOFLAGS.test(v)) return false;
+      if (/^GIT_CONFIG_(?:COUNT|KEY_0|VALUE_0)$/i.test(k) && isBenignGitAuthEnv(envObj)) return false;
       return true;
     });
   const extractSafeEnvLiterals = (envObj: unknown): Map<string, string> => {
     const out = new Map<string, string>();
     if (!isRecord(envObj)) return out;
     for (const [k, v] of Object.entries(envObj)) {
-      if (typeof v === "string" && !BAD_ENV_KEY.test(k) && /^[A-Za-z0-9_./:-]+$/.test(v.trim())) out.set(k, v.trim());
+      if (typeof v === "string" && !BAD_ENV_KEY.test(k) && /^[A-Za-z0-9_./:${}\s-]+$/.test(v.trim())) out.set(k, v.trim());
     }
     return out;
   };
   const wfEnvMap = extractSafeEnvLiterals(doc.env);
   const expandSafeEnv = (runText: string, envMap: ReadonlyMap<string, string>): string =>
-    runText.replace(/\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (m, key: string) => envMap.get(key) ?? m);
+    runText
+      .replace(/\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (m, key: string) => envMap.get(key) ?? m)
+      .replace(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, key: string) => envMap.get(key) ?? m);
   const knownActionCommands = (step: Record<string, unknown>, envMap: ReadonlyMap<string, string>): string[] => {
     if (typeof step.uses !== "string") return [];
     const uses = step.uses.trim().split("@")[0]?.toLowerCase() ?? "";
@@ -263,7 +275,8 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
     for (const [k, v] of extractSafeEnvLiterals(jobVal.env)) jobEnvMap.set(k, v);
     const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : wfDefaults;
     const jobWorkDir = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run["working-directory"] : wfWorkDir;
-    const steps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
+    const rawSteps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
+    const steps = rawSteps.flatMap((s) => (isRecord(s) && Array.isArray(s.parallel) ? s.parallel : [s]));
     let jobEnvPoisoned = false;
     for (const step of steps) {
       if (!isRecord(step)) continue;
@@ -275,8 +288,10 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
       const rawWd = step["working-directory"] ?? jobWorkDir;
       const cwd = typeof rawWd === "string" ? rawWd.trim().replace(/^\.\/+/, "").replace(/\/+$/, "") : "";
       if (cwd.startsWith("/") || cwd.includes("..")) continue;
-      const stepCmds: string[] = knownActionCommands(step, jobEnvMap);
-      if (typeof step.run === "string") stepCmds.push(...sanitizeShellBlock(expandSafeEnv(step.run, jobEnvMap)));
+      const stepEnvMap = new Map(jobEnvMap);
+      for (const [k, v] of extractSafeEnvLiterals(step.env)) stepEnvMap.set(k, v);
+      const stepCmds: string[] = knownActionCommands(step, stepEnvMap);
+      if (typeof step.run === "string") stepCmds.push(...sanitizeShellBlock(expandSafeEnv(step.run, stepEnvMap)));
       for (const cmd of stepCmds) {
         if (isDeployJob) deployCommands.push(cmd);
         else { activeCommands.push(cmd); scopedCommands.push({ cwd: cwd === "." ? "" : cwd, command: cmd }); }

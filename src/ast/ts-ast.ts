@@ -80,6 +80,11 @@ export function parseTsAst(file: ScannedFile): AstNode | null {
       const wrapped = parseSync(virtualName, `(function(){\n${body}\n})();`);
       if (wrapped.errors.length === 0 && isAstNode(wrapped.program)) return wrapped.program;
     }
+    if (file.language === "javascript" && /^\s*\.(?:pragma|import)\s+/m.test(file.content)) {
+      const qmlStripped = file.content.replace(/^\s*\.(?:pragma|import)\s+[^\n]*/gm, "");
+      const qmlRes = parseSync(virtualName, qmlStripped);
+      if (qmlRes.errors.length === 0 && isAstNode(qmlRes.program)) return qmlRes.program;
+    }
     return null;
   } catch {
     return null;

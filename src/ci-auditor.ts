@@ -42,6 +42,7 @@ export function auditCiWorkflows(repo: DiscoveredRepo): Finding[] {
     }
     const lines = file.content.split(/\r?\n/);
 
+    const isGeneratedAgentLock = /\.lock\.ya?ml$/i.test(file.rel) && !/^\s*(?:pull_request|merge_group)\s*:/m.test(file.content);
     for (let idx = 0; idx < lines.length; idx++) {
       const raw = lines[idx] ?? "";
       const stripped = raw.replace(/\s+#.*$/, "");
@@ -64,6 +65,7 @@ export function auditCiWorkflows(repo: DiscoveredRepo): Finding[] {
       for (const rule of WORKFLOW_CHEATS) {
         if (!rule.regex.test(stripped)) continue;
         if (rule.rule === "ci-pipe-tail-head" && !CHECK_TOOL.test(stripped)) continue;
+        if (rule.rule === "ci-continue-on-error" && isGeneratedAgentLock) continue;
         findings.push({
           id: `CI:${rule.rule}:${file.rel}:${idx + 1}`,
           rule: rule.rule,

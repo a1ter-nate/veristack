@@ -138,6 +138,7 @@ export function analyzeT3ProdGuards(file: ScannedFile, ast?: AstNode | null): Fi
   const raw = file.content;
 
   if (/\.(?:sh|bash)$/i.test(file.rel)) {
+    if (file.isTest) return findings;
     const lines = raw.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? "";

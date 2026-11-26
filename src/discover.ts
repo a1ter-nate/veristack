@@ -167,6 +167,7 @@ export function isTestFilePath(rel: string): boolean {
   if (/_test\.go$|(?:^|[-_])tests?\.rs$|^test[-_].*\.rs$/.test(base)) return true;
   if (/tests?\.cs$|specs?\.cs$/.test(base)) return true;
   if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests|specs?)\//.test(lower) && lower.endsWith(".cs")) return true;
+  if (/(?:^|[-_])tests?\.(?:sh|bash)$/.test(base) || (/^(?:tests?|__tests__)\//.test(lower) && /\.(?:sh|bash)$/.test(base))) return true;
   if (/^(?:tests?|__tests__|specs?|e2e)\//.test(lower) || /\/(?:tests?|__tests__|specs?|e2e)\//.test(lower)) {
     if (/(?:^|\.)config\.[cm]?[jt]sx?$/.test(base)) return false;
     if (/\/(?:contracts|fixtures|helpers|support|mocks|stubs)\//.test(lower)) return false;
@@ -373,7 +374,8 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
       const abs = path.join(dir, entry.name);
       const rel = path.relative(root, abs).split(path.sep).join("/");
       if (entry.isSymbolicLink()) {
-        if (rel !== "node_modules" && !rel.startsWith("node_modules/")) {
+        const isDocSymlink = /^(?:CLAUDE|AGENTS|GEMINI|README)\.md$|^\.(?:claude|agents|cursor|codex)\/|^docs\//i.test(rel);
+        if (rel !== "node_modules" && !rel.startsWith("node_modules/") && !isDocSymlink) {
           scopeExclusions.push({ path: rel, reason: "symlink", detail: "symlinked path not followed" });
         }
         continue;

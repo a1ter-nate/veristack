@@ -142,6 +142,7 @@ export function buildWorkspaceLadders(
 
     const wsStem = ws.path.split("/").pop()?.toLowerCase() ?? "";
     const wsRelLower = ws.path.toLowerCase();
+    const wsShortStem = wsStem.includes("_") ? (wsStem.split("_").pop() ?? "") : "";
     const isUniqueStem = wsStem.length > 0 && (stemCounts.get(wsStem) ?? 0) === 1;
     const externalTestPrefixes = new Set<string>();
     for (const f of repo.files) {
@@ -154,7 +155,8 @@ export function buildWorkspaceLadders(
       for (const ep of externalTestPrefixes) if (rel.startsWith(ep)) return true;
       const lowerRel = rel.toLowerCase();
       if (lowerRel.startsWith(`tests/${wsRelLower}/`) || lowerRel.startsWith(`test/${wsRelLower}/`)) return true;
-      if (isUniqueStem && (lowerRel.startsWith(`tests/${wsStem}/`) || lowerRel.includes(`/tests/${wsStem}/`) || lowerRel.startsWith(`test/${wsStem}/`) || lowerRel.includes(`/test/${wsStem}/`))) return true;
+      if (isUniqueStem && (lowerRel.startsWith(`tests/${wsStem}/`) || lowerRel.includes(`/tests/${wsStem}/`) || lowerRel.startsWith(`test/${wsStem}/`) || lowerRel.includes(`/test/${wsStem}/`) || lowerRel === `tests/test_${wsStem}.py` || lowerRel.endsWith(`/test_${wsStem}.py`))) return true;
+      if (wsShortStem.length >= 4 && (lowerRel.startsWith(`tests/${wsShortStem}/`) || lowerRel === `tests/test_${wsShortStem}.py`)) return true;
       return false;
     };
 

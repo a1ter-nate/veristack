@@ -132,7 +132,7 @@ export function loadRungManifest(repoRoot: string): { path?: string; manifest?: 
 export function isHostRepoFile(rel: string): boolean {
   const norm = rel.replace(/\\/g, "/");
   if (norm === "docs/CODEOWNERS") return true;
-  return !/^(?:templates|examples|docs_src|benchmarks?|perf-measures|fuzz|docs|runtime-tests)\//i.test(norm);
+  return !/^(?:templates|examples|samples|demo|demos|snippets|docs_src|benchmarks?|perf-measures|fuzz|docs|web\/docs|website|runtime-tests|default\/(?:agents|games|chromium))\//i.test(norm);
 }
 
 function extractManifestDependencyText(files: readonly ScannedFile[]): { prodDeps: string; uiDeps: string } {
@@ -285,7 +285,7 @@ export function discoverWorkspaces(
     }
     const dir = path.posix.dirname(norm);
     if (dir === "." || dir === "" || seen.has(dir)) continue;
-    if (/(?:^|\/)(?:node_modules|fixtures|testdata|__fixtures__|test|tests|lint|benchmarks?|bench|fuzz|scripts|perf-measures|docs_src|docs)(?:\/|$)|^tools\/(?:oxlint|eslint|lint)(?:\/|$)/i.test(dir)) continue;
+    if (/(?:^|\/)(?:node_modules|fixtures|testdata|__fixtures__|test|tests|lint|benchmarks?|bench|fuzz|scripts|perf-measures|docs_src|docs|samples|demo|demos|snippets|e2e|stories|website|site|proc-macros?|gen-protos?|npm)(?:\/|$)|^tools\/(?:oxlint|eslint|lint)(?:\/|$)|^common\/[^/]*config(?:\/|$)|(?:^|\/)(?:eslint|vitest|tsconfig|prettier|biome)-config(?:\/|$)|^web\/docs(?:\/|$)/i.test(dir)) continue;
     if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests|specs?)$/i.test(dir)) continue;
     if (base === "Cargo.toml" && /^\s*\[workspace\]/m.test(file.content) && !/^\s*\[package\]/m.test(file.content)) continue;
     if (base.endsWith(".csproj") && (/<IsTestProject>\s*true\s*<\/IsTestProject>/i.test(file.content) || /Microsoft\.NET\.Test\.Sdk|PackageReference\s+Include="(?:xunit|NUnit|MSTest\.TestFramework)"/i.test(file.content))) continue;
