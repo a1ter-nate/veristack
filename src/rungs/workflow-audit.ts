@@ -10,6 +10,10 @@ export interface ActiveWorkflowInfo {
   triggers: string[];
   activeCommands: string[];
   scopedCommands?: Array<{ cwd: string; command: string }>;
+  deployCommands?: string[];
+  ignoredPaths?: string[];
+  matchedPaths?: string[];
+  hasPrOrPushTrigger?: boolean;
   deadJobs: string[];
 }
 
@@ -34,10 +38,16 @@ function isUnconditionalIf(cond: unknown): boolean {
   const norm = cond.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
   if (norm === "true" || norm === "success()" || norm === "always()") return true;
   if (/\b(?:false|failure\s*\(|cancelled\s*\(|workflow_dispatch|skip)\b/.test(norm)) return false;
-  if (/^matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]+['"](?:\s*&&\s*matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]+['"])*$/.test(norm)) return true;
+  if (/^matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]*['"](?:\s*&&\s*matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]*['"])*$/.test(norm)) return true;
   if (/^needs\.[a-z0-9_-]+\.outputs\.[a-z0-9_-]+\s*==\s*['"]true['"]/.test(norm)) return true;
   if (/^github\.event_name\s*!=\s*['"]pull_request['"]\s*\|\|/.test(norm)) return true;
   return false;
+}
+
+function isMainPushDeployIf(cond: unknown): boolean {
+  if (typeof cond !== "string") return false;
+  const norm = cond.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
+  return /^(?:github\.event_name\s*==\s*['"]push['"]\s*&&\s*)?github\.ref\s*==\s*['"]refs\/heads\/(?:main|master)['"]$/.test(norm);
 }
 
 function isContinueOnError(val: unknown): boolean {
@@ -55,6 +65,9 @@ function isAllowedShell(shellVal: unknown): boolean {
   return ALLOWED_SHELLS.has(shellVal.trim().toLowerCase());
 }
 
+const SAFE_DOCS_IGNORE =
+  /^(?:\*\*\/)?(?:docs\/.+|README(?:\.[^/]+)?|CHANGELOG(?:\.[^/]+)?|LICENSE(?:\.[^/]+)?|\*\.md|\*\*\/\*\.md|\*\.txt|\*\.png|\*\.svg|\.vscode\/.+|\.gitignore|\.gitattributes|\.editorconfig)$/i;
+
 function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
   if (name === "merge_group") return true;
   if (name !== "pull_request" && name !== "push") return false;
@@ -65,7 +78,6 @@ function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
   }
   if (Array.isArray(cfg.paths) && cfg.paths.length > 0) return false;
   if (Array.isArray(cfg["paths-ignore"]) && cfg["paths-ignore"].length > 0) {
-    const SAFE_DOCS_IGNORE = /^(?:\*\*\/)?(?:docs\/.+|README(?:\.[^/]+)?|CHANGELOG(?:\.[^/]+)?|LICENSE(?:\.[^/]+)?|\*\.md|\*\*\/\*\.md|\*\.txt|\*\.png|\*\.svg|\.vscode\/.+)$/i;
     const risky = cfg["paths-ignore"].some((p) => typeof p !== "string" || !SAFE_DOCS_IGNORE.test(p.trim()));
     if (risky) return false;
   }
@@ -82,26 +94,61 @@ function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
   return true;
 }
 
-function extractTriggers(onField: unknown): { triggers: string[]; isPrBlocking: boolean } {
+function extractTriggers(onField: unknown): {
+  triggers: string[];
+  isPrBlocking: boolean;
+  ignoredPaths: string[];
+  matchedPaths: string[];
+  hasPrOrPushTrigger: boolean;
+} {
   const triggers: string[] = [];
+  const ignoredPaths: string[] = [];
+  const matchedPaths: string[] = [];
   let isPrBlocking = false;
+  let hasPrOrPushTrigger = false;
+  const collectPaths = (name: string, cfg: unknown): void => {
+    if (name !== "pull_request" && name !== "push") return;
+    if (!isRecord(cfg)) { hasPrOrPushTrigger = true; return; }
+    const defaultBranches = new Set(["main", "master", "trunk", "**", "*"]);
+    const badBranches =
+      (Array.isArray(cfg["branches-ignore"]) && cfg["branches-ignore"].some((b) => typeof b === "string" && defaultBranches.has(b.trim()))) ||
+      (Array.isArray(cfg.branches) && cfg.branches.length > 0 && !cfg.branches.some((b) => typeof b === "string" && defaultBranches.has(b.trim()))) ||
+      (name === "push" && Array.isArray(cfg.tags) && cfg.tags.length > 0 && (!Array.isArray(cfg.branches) || cfg.branches.length === 0));
+    if (badBranches) return;
+    hasPrOrPushTrigger = true;
+    if (Array.isArray(cfg["paths-ignore"])) {
+      for (const p of cfg["paths-ignore"]) if (typeof p === "string" && !SAFE_DOCS_IGNORE.test(p.trim())) ignoredPaths.push(p.trim());
+    }
+    if (Array.isArray(cfg.paths)) {
+      for (const p of cfg.paths) if (typeof p === "string" && p.trim()) matchedPaths.push(p.trim());
+    }
+  };
   if (typeof onField === "string") {
     triggers.push(onField);
     isPrBlocking = isBlockingTriggerConfig(onField, undefined);
+    collectPaths(onField, undefined);
   } else if (Array.isArray(onField)) {
     for (const item of onField) {
       if (typeof item === "string") {
         triggers.push(item);
         if (isBlockingTriggerConfig(item, undefined)) isPrBlocking = true;
+        collectPaths(item, undefined);
       }
     }
   } else if (isRecord(onField)) {
     for (const [key, val] of Object.entries(onField)) {
       triggers.push(key);
       if (isBlockingTriggerConfig(key, val)) isPrBlocking = true;
+      collectPaths(key, val);
     }
   }
-  return { triggers: [...new Set(triggers)], isPrBlocking };
+  return {
+    triggers: [...new Set(triggers)],
+    isPrBlocking,
+    ignoredPaths: [...new Set(ignoredPaths)],
+    matchedPaths: [...new Set(matchedPaths)],
+    hasPrOrPushTrigger,
+  };
 }
 
 export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly ScannedFile[]): ActiveWorkflowInfo {
@@ -116,12 +163,18 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
   }
 
   const onField = doc.on ?? doc.true;
-  const { triggers, isPrBlocking } = extractTriggers(onField);
+  const { triggers, isPrBlocking, ignoredPaths, matchedPaths, hasPrOrPushTrigger } = extractTriggers(onField);
   const rawJobs = isRecord(doc.jobs) ? doc.jobs : {};
 
   const deadJobSet = new Set<string>();
+  const deployJobSet = new Set<string>();
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
     if (!isRecord(jobVal)) continue;
+    if (isMainPushDeployIf(jobVal.if) && !isContinueOnError(jobVal["continue-on-error"])) {
+      deployJobSet.add(jobId);
+      deadJobSet.add(jobId);
+      continue;
+    }
     if (!isUnconditionalIf(jobVal.if) || isContinueOnError(jobVal["continue-on-error"])) {
       deadJobSet.add(jobId);
     }
@@ -143,16 +196,47 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
 
   const activeCommands: string[] = [];
   const scopedCommands: Array<{ cwd: string; command: string }> = [];
+  const deployCommands: string[] = [];
   const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
   const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
   const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?=$|_))/i;
   const BAD_ENV_INLINE = /\b(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?:_[A-Z0-9_]+)?)\s*=/i;
+  const SAFE_GOFLAGS = /^(?:\s*-(?:tags=[A-Za-z0-9_,.-]+|race|mod=readonly|count=1|trimpath|v))+\s*$/;
   const isPoisoningGithubEnv = (runText: string): boolean => {
     if (/\bGITHUB_PATH\b/i.test(runText)) return true;
     if (!/\bGITHUB_ENV\b/i.test(runText)) return false;
     return BAD_ENV_INLINE.test(runText) || /\b(?:eval|base64|xxd)\b|\$[A-Za-z_]\w*=/.test(runText);
   };
-  const hasPoisonedEnv = (envObj: unknown): boolean => isRecord(envObj) && Object.keys(envObj).some((k) => BAD_ENV_KEY.test(k));
+  const hasPoisonedEnv = (envObj: unknown): boolean =>
+    isRecord(envObj) &&
+    Object.entries(envObj).some(([k, v]) => {
+      if (!BAD_ENV_KEY.test(k)) return false;
+      if (/^GOFLAGS$/i.test(k) && typeof v === "string" && SAFE_GOFLAGS.test(v)) return false;
+      return true;
+    });
+  const extractSafeEnvLiterals = (envObj: unknown): Map<string, string> => {
+    const out = new Map<string, string>();
+    if (!isRecord(envObj)) return out;
+    for (const [k, v] of Object.entries(envObj)) {
+      if (typeof v === "string" && !BAD_ENV_KEY.test(k) && /^[A-Za-z0-9_./:-]+$/.test(v.trim())) out.set(k, v.trim());
+    }
+    return out;
+  };
+  const wfEnvMap = extractSafeEnvLiterals(doc.env);
+  const expandSafeEnv = (runText: string, envMap: ReadonlyMap<string, string>): string =>
+    runText.replace(/\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (m, key: string) => envMap.get(key) ?? m);
+  const knownActionCommands = (step: Record<string, unknown>, envMap: ReadonlyMap<string, string>): string[] => {
+    if (typeof step.uses !== "string") return [];
+    const uses = step.uses.trim().split("@")[0]?.toLowerCase() ?? "";
+    if (uses === "golangci/golangci-lint-action") return ["golangci-lint run"];
+    if (uses === "golang/govulncheck-action") return ["govulncheck"];
+    if (uses === "astral-sh/ruff-action") return ["ruff check"];
+    if (uses === "actions-rs/clippy-check") return ["cargo clippy"];
+    if (uses === "codspeedhq/action" && isRecord(step.with) && typeof step.with.run === "string") {
+      return ["codspeed", ...sanitizeShellBlock(expandSafeEnv(step.with.run, envMap))];
+    }
+    return [];
+  };
   const isLocalActionSafe = (usesVal: string, depth = 0): boolean => {
     if (depth > 2 || !allFiles || allFiles.length === 0) return false;
     const base = usesVal.trim().replace(/^\.\//, "").replace(/\/+$/, "");
@@ -172,8 +256,11 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
   };
   const wfPoisoned = hasPoisonedEnv(doc.env);
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
-    if (deadJobSet.has(jobId) || !isRecord(jobVal)) continue;
+    const isDeployJob = deployJobSet.has(jobId);
+    if ((deadJobSet.has(jobId) && !isDeployJob) || !isRecord(jobVal)) continue;
     if (wfPoisoned || hasPoisonedEnv(jobVal.env)) continue;
+    const jobEnvMap = new Map(wfEnvMap);
+    for (const [k, v] of extractSafeEnvLiterals(jobVal.env)) jobEnvMap.set(k, v);
     const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : wfDefaults;
     const jobWorkDir = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run["working-directory"] : wfWorkDir;
     const steps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
@@ -188,12 +275,11 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
       const rawWd = step["working-directory"] ?? jobWorkDir;
       const cwd = typeof rawWd === "string" ? rawWd.trim().replace(/^\.\/+/, "").replace(/\/+$/, "") : "";
       if (cwd.startsWith("/") || cwd.includes("..")) continue;
-      if (typeof step.run === "string") {
-        const cmds = sanitizeShellBlock(step.run);
-        for (const cmd of cmds) {
-          activeCommands.push(cmd);
-          scopedCommands.push({ cwd: cwd === "." ? "" : cwd, command: cmd });
-        }
+      const stepCmds: string[] = knownActionCommands(step, jobEnvMap);
+      if (typeof step.run === "string") stepCmds.push(...sanitizeShellBlock(expandSafeEnv(step.run, jobEnvMap)));
+      for (const cmd of stepCmds) {
+        if (isDeployJob) deployCommands.push(cmd);
+        else { activeCommands.push(cmd); scopedCommands.push({ cwd: cwd === "." ? "" : cwd, command: cmd }); }
       }
     }
   }
@@ -204,6 +290,10 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
     triggers,
     activeCommands,
     scopedCommands,
+    ...(deployCommands.length > 0 ? { deployCommands } : {}),
+    ...(ignoredPaths.length > 0 ? { ignoredPaths } : {}),
+    ...(matchedPaths.length > 0 ? { matchedPaths } : {}),
+    hasPrOrPushTrigger,
     deadJobs: [...deadJobSet].sort(),
   };
 }
@@ -315,69 +405,35 @@ export function auditCodeownersPerimeter(
 }
 
 export function checkGitHubBranchProtection(repoRoot: string): {
-  checked: boolean;
-  passed: boolean;
-  requiredChecks: string[];
-  codeOwnerReviewsRequired: boolean;
-  adminsEnforced: boolean;
-  detail: string;
+  checked: boolean; passed: boolean; requiredChecks: string[]; codeOwnerReviewsRequired: boolean; adminsEnforced: boolean; detail: string;
 } {
   const remote = runGitClean(repoRoot, ["remote", "get-url", "origin"]);
   const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i.exec((remote.stdout ?? "").trim());
   if (!match?.[1]) {
-    return {
-      checked: false,
-      passed: false,
-      requiredChecks: [],
-      codeOwnerReviewsRequired: false,
-      adminsEnforced: false,
-      detail: "No GitHub origin remote detected.",
-    };
+    return { checked: false, passed: false, requiredChecks: [], codeOwnerReviewsRequired: false, adminsEnforced: false, detail: "No GitHub origin remote detected." };
   }
   const slug = match[1];
-  const repoInfo = spawnSync("gh", ["api", `repos/${slug}`, "--jq", ".default_branch"], {
-    encoding: "utf8",
-    timeout: 10_000,
-  });
+  const repoInfo = spawnSync("gh", ["api", `repos/${slug}`, "--jq", ".default_branch"], { encoding: "utf8", timeout: 10_000 });
   const defaultBranch = repoInfo.status === 0 && repoInfo.stdout.trim() ? repoInfo.stdout.trim() : "main";
-
-  const api = spawnSync("gh", ["api", `repos/${slug}/branches/${defaultBranch}/protection`], {
-    encoding: "utf8",
-    timeout: 10_000,
-  });
+  const api = spawnSync("gh", ["api", `repos/${slug}/branches/${defaultBranch}/protection`], { encoding: "utf8", timeout: 10_000 });
   if (api.status !== 0) {
     const stderr = (api.stderr ?? api.stdout ?? "").trim();
     const isUnprotected = /404|Branch not protected/i.test(stderr);
     return {
-      checked: isUnprotected,
-      passed: false,
-      requiredChecks: [],
-      codeOwnerReviewsRequired: false,
-      adminsEnforced: false,
-      detail: isUnprotected
-        ? `Branch '${defaultBranch}' on ${slug} is NOT protected (HTTP 404).`
-        : `Unable to read branch protection for ${slug}/${defaultBranch}: ${stderr.slice(0, 140)}`,
+      checked: isUnprotected, passed: false, requiredChecks: [], codeOwnerReviewsRequired: false, adminsEnforced: false,
+      detail: isUnprotected ? `Branch '${defaultBranch}' on ${slug} is NOT protected (HTTP 404).` : `Unable to read branch protection for ${slug}/${defaultBranch}: ${stderr.slice(0, 140)}`,
     };
   }
   return evaluateBranchProtectionJson(defaultBranch, api.stdout);
 }
 
 export function evaluateBranchProtectionJson(defaultBranch: string, rawJson: string): {
-  checked: boolean;
-  passed: boolean;
-  requiredChecks: string[];
-  codeOwnerReviewsRequired: boolean;
-  adminsEnforced: boolean;
-  detail: string;
+  checked: boolean; passed: boolean; requiredChecks: string[]; codeOwnerReviewsRequired: boolean; adminsEnforced: boolean; detail: string;
 } {
   try {
     const parsed = JSON.parse(rawJson) as {
       required_status_checks?: { contexts?: string[]; checks?: Array<{ context?: string }> };
-      required_pull_request_reviews?: {
-        require_code_owner_reviews?: boolean;
-        required_approving_review_count?: number;
-        dismiss_stale_reviews?: boolean;
-      };
+      required_pull_request_reviews?: { require_code_owner_reviews?: boolean; required_approving_review_count?: number; dismiss_stale_reviews?: boolean };
       enforce_admins?: { enabled?: boolean };
       allow_force_pushes?: { enabled?: boolean };
     };
@@ -392,32 +448,14 @@ export function evaluateBranchProtectionJson(defaultBranch: string, rawJson: str
     const dismissStale = Boolean(prRev?.dismiss_stale_reviews);
     const adminsEnforced = Boolean(parsed.enforce_admins?.enabled);
     const noForcePush = parsed.allow_force_pushes?.enabled !== true;
-    const passed =
-      checks.length > 0 &&
-      hasVeristack &&
-      codeOwnerReviewsRequired &&
-      hasApprovals &&
-      dismissStale &&
-      adminsEnforced &&
-      noForcePush;
+    const passed = checks.length > 0 && hasVeristack && codeOwnerReviewsRequired && hasApprovals && dismissStale && adminsEnforced && noForcePush;
     return {
-      checked: true,
-      passed,
-      requiredChecks: [...new Set(checks)],
-      codeOwnerReviewsRequired,
-      adminsEnforced,
+      checked: true, passed, requiredChecks: [...new Set(checks)], codeOwnerReviewsRequired, adminsEnforced,
       detail: passed
         ? `Branch '${defaultBranch}' enforces strict Veristack check, CODEOWNERS reviews (>=1, dismiss stale), admins, and blocks force-push.`
         : `Incomplete protection on '${defaultBranch}': veristackCheck=${hasVeristack}, codeOwnerReviews=${codeOwnerReviewsRequired}, approvals>=1=${hasApprovals}, dismissStale=${dismissStale}, enforceAdmins=${adminsEnforced}, noForcePush=${noForcePush}.`,
     };
   } catch {
-    return {
-      checked: false,
-      passed: false,
-      requiredChecks: [],
-      codeOwnerReviewsRequired: false,
-      adminsEnforced: false,
-      detail: "Failed to parse branch protection JSON.",
-    };
+    return { checked: false, passed: false, requiredChecks: [], codeOwnerReviewsRequired: false, adminsEnforced: false, detail: "Failed to parse branch protection JSON." };
   }
 }

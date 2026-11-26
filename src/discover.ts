@@ -349,6 +349,7 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
   const files: ScannedFile[] = [];
   const allRelPaths: string[] = [];
   const scopeExclusions: ScopeExclusion[] = [];
+  const archivedDocDirs = new Set<string>();
   const stack: string[] = [root];
   let truncated = false;
 
@@ -395,7 +396,12 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
       if (!entry.isFile()) continue;
       if (ARCHIVED_DOCS_PATH.test(rel)) {
         if (detectLanguage(rel) !== undefined) {
-          scopeExclusions.push({ path: rel, reason: "skipped-tracked-dir", detail: "code file under archived docs path" });
+          const m = ARCHIVED_DOCS_PATH.exec(rel);
+          const rootDir = (m?.[0] ?? rel).replace(/\/+$/, "");
+          if (!archivedDocDirs.has(rootDir)) {
+            archivedDocDirs.add(rootDir);
+            scopeExclusions.push({ path: rootDir, reason: "skipped-tracked-dir", detail: "code under archived docs path" });
+          }
         }
         continue;
       }

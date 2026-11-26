@@ -172,60 +172,20 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
     });
   }
 
-  addMatches(
-    code,
-    file.language === "python" ? PY_MODULE_MOCK : JS_MODULE_MOCK,
-    "no-test-doubles",
-    "test-smell",
-    "error",
-    "Module mock replaces real dependency behavior.",
-    "Use the real implementation, a DI port, or strict MSW at the network boundary.",
-  );
-
-  addMatches(
-    raw,
-    FETCH_STUB,
-    "no-fetch-stub",
-    "test-smell",
-    "error",
-    "Replacing global fetch hides unhandled network calls.",
-    "Serve HTTP through a shared strict MSW server (onUnhandledRequest: 'error') instead of stubbing fetch.",
-  );
+  addMatches(code, file.language === "python" ? PY_MODULE_MOCK : JS_MODULE_MOCK, "no-test-doubles", "test-smell", "error", "Module mock replaces real dependency behavior.", "Use the real implementation, a DI port, or strict MSW at the network boundary.");
+  addMatches(raw, FETCH_STUB, "no-fetch-stub", "test-smell", "error", "Replacing global fetch hides unhandled network calls.", "Serve HTTP through a shared strict MSW server (onUnhandledRequest: 'error') instead of stubbing fetch.");
 
   const doubleCount = code.match(TEST_DOUBLE)?.length ?? 0;
   if (doubleCount >= 3) {
     findings.push({
-      id: `TS:overheavy-mocks:${file.rel}:1`,
-      rule: "overheavy-mocks",
-      category: "test-smell",
-      rung: "R0",
-      severity: "error",
-      file: file.rel,
-      line: 1,
+      id: `TS:overheavy-mocks:${file.rel}:1`, rule: "overheavy-mocks", category: "test-smell", rung: "R0", severity: "error", file: file.rel, line: 1,
       message: `${doubleCount} test doubles in one file — tests the mock graph instead of real behavior.`,
       fix: "Deepen the module and test at the outer public seam with real collaborators or boundary adapters.",
     });
   }
 
-  addMatches(
-    code,
-    FIXED_SLEEP,
-    "no-fixed-sleep",
-    "cheat",
-    "error",
-    "Fixed sleep or networkidle wait introduces flakiness and slows CI.",
-    "Await an explicit completion event, emitted signal, or web-first locator assertion.",
-  );
-
-  addMatches(
-    code,
-    isConfigFile ? FLAKE_MASK_CONFIG : FLAKE_MASK_ANYWHERE,
-    "no-flake-masking",
-    "cheat",
-    "error",
-    "Retry config masks flaky tests instead of fixing root causes.",
-    "Remove retries, diagnose the non-determinism, or delete the unfixable test with a note.",
-  );
+  addMatches(code, FIXED_SLEEP, "no-fixed-sleep", "cheat", "error", "Fixed sleep or networkidle wait introduces flakiness and slows CI.", "Await an explicit completion event, emitted signal, or web-first locator assertion.");
+  addMatches(code, isConfigFile ? FLAKE_MASK_CONFIG : FLAKE_MASK_ANYWHERE, "no-flake-masking", "cheat", "error", "Retry config masks flaky tests instead of fixing root causes.", "Remove retries, diagnose the non-determinism, or delete the unfixable test with a note.");
 
   addMatches(
     code,
@@ -235,6 +195,12 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
     "error",
     "Focused (.only) or disabled (.todo/.fixme/Ignore) test committed.",
     "Restore a deterministic assertion or remove dead tests; never silently skip gating checks.",
+    5,
+    (m) => {
+      if (file.language !== "go" || !m[0].startsWith("t.Skip")) return false;
+      const before = code.slice(Math.max(0, (m.index ?? 0) - 220), m.index ?? 0);
+      return /\bif\b[^{\n]*\{\s*$/.test(before);
+    },
   );
 
   addMatches(
@@ -459,18 +425,8 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
 
   return {
     record: {
-      file: file.rel,
-      language: file.language ?? "typescript",
-      lines: file.lines,
-      testCaseCount: testCases,
-      boundary,
-      rung,
-      hasTable,
-      hasPbt,
-      hasMbt,
-      hasRealDb,
-      hasRealBus,
-      hasNetworkMock,
+      file: file.rel, language: file.language ?? "typescript", lines: file.lines, testCaseCount: testCases,
+      boundary, rung, hasTable, hasPbt, hasMbt, hasRealDb, hasRealBus, hasNetworkMock,
     },
     findings,
     pushDowns,
@@ -482,17 +438,32 @@ export function analyzeTests(repo: DiscoveredRepo): TestAnalysisResult {
   const findings: Finding[] = [];
   const pushDownOpportunities: PushDownOpportunity[] = [];
   const repoHasEmulator = repo.signals.hasTestcontainersOrRealDb;
-
   findings.push(...scanVitestConfigs(repo));
 
   for (const file of repo.files) {
-    if (!file.isTest || !file.language) continue;
+    if (!file.language) continue;
+    if (!file.isTest) {
+      if (file.language === "rust") {
+        const cfgIdx = file.content.search(/#\[cfg\(test\)\]/);
+        if (cfgIdx >= 0) {
+          const testTail = maskStrings(file.content.slice(cfgIdx));
+          const inlineCases = testTail.match(/#\[(?:test|tokio::test|sqlx::test|rstest)\]/g)?.length ?? 0;
+          if (inlineCases > 0) {
+            inventory.push({
+              file: file.rel, language: "rust", lines: file.lines, testCaseCount: inlineCases, boundary: "unit", rung: "R2",
+              hasTable: TABLE_TEST.test(file.content.slice(cfgIdx)), hasPbt: PBT_SIGNAL.test(file.content.slice(cfgIdx)),
+              hasMbt: MBT_SIGNAL.test(testTail), hasRealDb: REAL_DB_SIGNAL.test(testTail), hasRealBus: false, hasNetworkMock: false,
+            });
+          }
+        }
+      }
+      continue;
+    }
     const result = scanSingleTestFile(file, repoHasEmulator);
     inventory.push(result.record);
     findings.push(...result.findings);
     findings.push(...analyzeT3TestGuards(file));
     pushDownOpportunities.push(...result.pushDowns);
   }
-
   return { inventory, findings, pushDownOpportunities };
 }
