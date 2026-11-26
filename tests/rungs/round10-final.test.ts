@@ -129,8 +129,10 @@ test("round10 final: lifecycle-script lock, npm:/github:/nested/pnpm overrides &
 
     fs.writeFileSync(path.join(dir, "pytest.ini"), "[pytest]\naddopts = --cov --ignore=tests/real.py\n");
     assert.ok(auditRunnerConfigs(dir));
+    fs.writeFileSync(path.join(dir, "pytest.ini"), "[pytest]\naddopts = --cov-fail-under=80\n");
+    assert.equal(auditRunnerConfigs(dir), null);
     fs.writeFileSync(path.join(dir, "pytest.ini"), "[pytest]\naddopts = --cov-fail-under=0\n");
-    assert.ok(auditRunnerConfigs(dir));
+    assert.ok(auditRunnerConfigs(dir)?.includes("below 1"));
     fs.unlinkSync(path.join(dir, "pytest.ini"));
 
     fs.writeFileSync(path.join(dir, "vitest.workspace.ts"), "const s = ['./evil.ts'];\nexport default { test: { setupFiles: s } };\n");

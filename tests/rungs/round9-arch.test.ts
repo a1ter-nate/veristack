@@ -323,6 +323,8 @@ test("round9 arch: manifest archetype inference & allowExcluded, oracle-check he
     fs.writeFileSync(path.join(dir, "tests", "math.test.ts"), 'import { test, expect } from "bun:test";\nimport { add } from "../src/math.ts";\ntest("add", () => expect(add(2, 3)).toBe(-1));\n');
     const regOracle = runTwoSidedOracleCheck(dir, "HEAD", "bun test ./tests/");
     assert.equal(regOracle.passed, false);
+    assert.ok(regOracle.reason.includes("base tests/configs"));
+    assert.equal(regOracle.reason.includes("0 passing tests"), false);
 
     const h1 = computeRepoTreeHash(discoverRepo(dir));
     fs.writeFileSync(path.join(dir, "src", "math.ts"), "export function add(a: number, b: number) { return a + b + 1; }\n");

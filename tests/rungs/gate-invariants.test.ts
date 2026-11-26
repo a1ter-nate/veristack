@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -129,12 +130,69 @@ test("receipts enforce schema, filename match, HMAC digest, treeHash, test count
     const written = runRungAndWriteReceipt(repo, "R2", manifest, key);
     assert.equal(written.exitCode, 0);
     assert.equal(written.metrics?.testsPassed, 1);
+    assert.equal(Object.hasOwn(written, "canary"), false);
+    assert.equal(written.ciRunId, process.env.GITHUB_RUN_ID || undefined);
 
+    const ciCheck = spawnSync(
+      "bun",
+      [
+        "-e",
+        `import { discoverRepo } from "./src/discover.ts";
+         import { loadValidReceipts, runRungAndWriteReceipt } from "./src/rungs/receipts.ts";
+         const repo = discoverRepo(${JSON.stringify(dir)});
+         const manifest = ${JSON.stringify(manifest)};
+         const key = ${JSON.stringify(key)};
+         const rec = runRungAndWriteReceipt(repo, "R2", manifest, key);
+         const ok = loadValidReceipts(repo, manifest, { strict: true, hmacKeyOverride: key }).receipts.size;
+         console.log(JSON.stringify({ ciRunId: rec.ciRunId ?? null, ok }));`,
+      ],
+      { cwd: process.cwd(), env: { ...process.env, GITHUB_RUN_ID: "ci-run-42" }, encoding: "utf8" },
+    );
+    assert.equal(ciCheck.status, 0);
+    const ciParsed = JSON.parse(ciCheck.stdout.trim()) as { ciRunId: string | null; ok: number };
+    assert.equal(ciParsed.ciRunId, "ci-run-42");
+    assert.equal(ciParsed.ok, 1);
+
+    const rcptPath = path.join(dir, ".verification", "receipts", "R2.json");
+    fs.writeFileSync(rcptPath, JSON.stringify(written));
     const okLoad = loadValidReceipts(repo, manifest, { strict: true, hmacKeyOverride: key });
     assert.equal(okLoad.receipts.size, 1);
 
-    const rcptPath = path.join(dir, ".verification", "receipts", "R2.json");
     const saved = JSON.parse(fs.readFileSync(rcptPath, "utf8")) as RungReceipt;
+    const signReceipt = (base: Omit<RungReceipt, "digest">): RungReceipt => {
+      const canonical = JSON.stringify({
+        schemaVersion: base.schemaVersion,
+        rung: base.rung,
+        command: base.command,
+        commitSha: base.commitSha,
+        treeHash: base.treeHash,
+        exitCode: base.exitCode,
+        ciRunId: base.ciRunId ?? null,
+        metrics: base.metrics ?? null,
+        canary: base.canary ?? null,
+      });
+      return { ...base, digest: `hmac:${crypto.createHmac("sha256", key).update(canonical).digest("hex")}` };
+    };
+    const { digest: _origDigest, ...savedBase } = saved;
+    void _origDigest;
+    const canaryManifest: RungManifest = {
+      ...manifest,
+      rungs: { R2: { command: "bun test ./tests/ok.test.ts", required: true, canary: { enabled: true, maxMutants: 4, minKillRate: 0.75 } } },
+    };
+    const goodCanary = { totalMutants: 4, killedMutants: 4, survivedMutants: 0, invalidKills: 0, killRate: 1, minKillRate: 0.75, passed: true, survivors: [] };
+    fs.writeFileSync(rcptPath, JSON.stringify(signReceipt({ ...savedBase, canary: goodCanary })));
+    assert.equal(loadValidReceipts(repo, canaryManifest, { strict: true, hmacKeyOverride: key }).receipts.size, 1);
+    for (const badCanary of [
+      undefined,
+      { ...goodCanary, passed: false },
+      { ...goodCanary, killRate: 0.5 },
+      { ...goodCanary, totalMutants: 2 },
+      { ...goodCanary, invalidKills: 1 },
+    ]) {
+      const nextBase: Omit<RungReceipt, "digest"> = badCanary ? { ...savedBase, canary: badCanary } : { ...savedBase };
+      fs.writeFileSync(rcptPath, JSON.stringify(signReceipt(nextBase)));
+      assert.equal(loadValidReceipts(repo, canaryManifest, { strict: true, hmacKeyOverride: key }).receipts.size, 0);
+    }
 
     const badVariants: Array<Record<string, unknown>> = [
       { ...saved, schemaVersion: 2 },
@@ -211,6 +269,9 @@ test("reports preSnapshot freshness ignores stale files and accepts newly modifi
     const fresh = parseStructuredReports(dir, { rung: "R2", preSnapshot: snap });
     assert.equal(fresh.testsPassed, 6);
     assert.equal(fresh.testsFailed, 1);
+    const st2 = fs.statSync(junitAbs);
+    assert.equal(parseStructuredReports(dir, { rung: "R2", minMtimeMs: st2.mtimeMs + 10_000 }).testsPassed, undefined);
+    assert.equal(parseStructuredReports(dir, { rung: "R2", minMtimeMs: st2.mtimeMs - 10_000 }).testsPassed, 6);
 
     fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
     fs.writeFileSync(
