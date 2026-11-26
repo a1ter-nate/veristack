@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "description": "Pinned public OSS calibration corpus spanning AI-first TypeScript/Python monorepos, Rust, Go, C#, and Shell/OS repos.",
+  "repos": [
+    { "id": "opencode", "url": "https://github.com/anomalyco/opencode.git", "ecosystem": "ai-first-ts-rust", "scope": "in-scope" },
+    { "id": "pydantic-ai", "url": "https://github.com/pydantic/pydantic-ai.git", "ecosystem": "ai-first-python", "scope": "in-scope" },
+    { "id": "mcp-ts-sdk", "url": "https://github.com/modelcontextprotocol/typescript-sdk.git", "ecosystem": "ai-first-ts", "scope": "in-scope" },
+    { "id": "better-auth", "url": "https://github.com/better-auth/better-auth.git", "ecosystem": "ai-first-ts", "scope": "in-scope" },
+    { "id": "hono", "url": "https://github.com/honojs/hono.git", "ecosystem": "ts-framework", "scope": "in-scope" },
+    { "id": "fastapi", "url": "https://github.com/fastapi/fastapi.git", "ecosystem": "python-framework", "scope": "in-scope" },
+    { "id": "ripgrep", "url": "https://github.com/BurntSushi/ripgrep.git", "ecosystem": "rust-cli-lib", "scope": "in-scope" },
+    { "id": "jj", "url": "https://github.com/jj-vcs/jj.git", "ecosystem": "rust-vcs", "scope": "in-scope" },
+    { "id": "caddy", "url": "https://github.com/caddyserver/caddy.git", "ecosystem": "go-server", "scope": "in-scope" },
+    { "id": "polly", "url": "https://github.com/App-vNext/Polly.git", "ecosystem": "csharp-lib", "scope": "in-scope" },
+    { "id": "omarchy", "url": "https://github.com/basecamp/omarchy.git", "ecosystem": "shell-os", "scope": "bucket-d-partial" }
+  ]
+}
