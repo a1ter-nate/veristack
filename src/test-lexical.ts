@@ -108,56 +108,58 @@ function maskLexical(text: string, stripComments: boolean, language?: string): s
         }
         continue;
       }
-      if (ch === "@" && next === '"') {
-        out[i] = " ";
-        out[i + 1] = " ";
-        i += 1;
-        verbatimCSharp = true;
-        continue;
-      }
+      if (ch === "@" && next === '"') { out[i] = " "; out[i + 1] = " "; i += 1; verbatimCSharp = true; continue; }
       if (ch === "r" && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1] ?? ""))) {
         let hashes = 0;
         while (text[i + 1 + hashes] === "#") hashes += 1;
         if (text[i + 1 + hashes] === '"') {
           for (let k = 0; k <= hashes + 1; k++) out[i + k] = " ";
-          i += hashes + 1;
-          rustRawHashes = hashes;
-          continue;
+          i += hashes + 1; rustRawHashes = hashes; continue;
         }
       }
       if ((ch === '"' || ch === "'") && next === ch && text[i + 2] === ch) {
         let count = 3;
         while (text[i + count] === ch) count += 1;
         for (let k = 0; k < count; k++) out[i + k] = " ";
-        i += count - 1;
-        tripleQuote = ch;
-        tripleLen = count;
-        continue;
+        i += count - 1; tripleQuote = ch; tripleLen = count; continue;
       }
       if (ch === '"' || ch === "'" || ch === "`") {
-        if (language === "rust" && ch === "'" && (next === "_" || /[A-Za-z]/.test(next)) && (text[i + 2] ?? "") !== "'") {
-          continue;
-        }
-        quote = ch;
-        out[i] = " ";
+        if (language === "rust" && ch === "'" && (next === "_" || /[A-Za-z]/.test(next)) && (text[i + 2] ?? "") !== "'") continue;
+        quote = ch; out[i] = " ";
       }
       continue;
     }
-    if (ch === "\n" || ch === "\r") {
-      escaped = false;
-      if (quote !== "`") quote = "";
-      continue;
-    }
+    if (ch === "\n" || ch === "\r") { escaped = false; if (quote !== "`") quote = ""; continue; }
     out[i] = " ";
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
     if (ch === quote) quote = "";
+  }
+  return out.join("");
+}
+
+function blankRustCfgTest(masked: string): string {
+  const out = [...masked];
+  let idx = 0;
+  while (idx < masked.length) {
+    const pos = masked.indexOf("#[cfg(test)]", idx);
+    if (pos < 0) break;
+    const brace = masked.indexOf("{", pos);
+    const semi = masked.indexOf(";", pos);
+    if (semi >= 0 && (brace < 0 || semi < brace)) {
+      for (let i = pos; i <= semi; i++) if (out[i] !== "\n") out[i] = " ";
+      idx = semi + 1;
+      continue;
+    }
+    if (brace < 0) break;
+    let depth = 0;
+    let end = brace;
+    for (let i = brace; i < masked.length; i++) {
+      if (masked[i] === "{") depth += 1;
+      else if (masked[i] === "}" && --depth === 0) { end = i; break; }
+    }
+    for (let i = pos; i <= end; i++) if (out[i] !== "\n") out[i] = " ";
+    idx = end + 1;
   }
   return out.join("");
 }
@@ -166,15 +168,14 @@ export function maskStrings(text: string): string {
   return maskLexical(text, false);
 }
 
-export function maskCode(text: string, language?: string): string {
-  return maskLexical(text, true, language);
+export function maskCode(text: string, language?: string, prodOnly = false): string {
+  const masked = maskLexical(text, true, language);
+  return prodOnly && language === "rust" ? blankRustCfgTest(masked) : masked;
 }
 
 export function lineOf(content: string, index: number): number {
   let line = 1;
-  for (let i = 0; i < index; i++) {
-    if (content[i] === "\n") line += 1;
-  }
+  for (let i = 0; i < index; i++) if (content[i] === "\n") line += 1;
   return line;
 }
 
@@ -216,8 +217,9 @@ export function hasNonFrameworkImport(raw: string, language?: string): boolean {
     return false;
   }
   if (language === "go") {
+    const GO_STDLIB_OR_TEST = /^(?:testing|fmt|os|io|bytes|strings|strconv|errors|context|time|math|sort|slices|maps|sync|net|http|encoding|path|filepath|regexp|reflect|runtime|bufio|crypto|database|flag|log|os\/exec|net\/http|net\/http\/httptest|encoding\/json|path\/filepath|github\.com\/stretchr\/testify|pgregory\.net\/rapid)(?:\/|$)/;
     const goImports = [...raw.matchAll(/"([a-zA-Z0-9._/-]+)"/g)].map((m) => m[1] ?? "");
-    if (goImports.some((imp) => imp.includes(".") && !/^(?:github\.com\/stretchr\/testify|pgregory\.net\/rapid)/.test(imp))) {
+    if (goImports.some((imp) => imp.length > 0 && !GO_STDLIB_OR_TEST.test(imp))) {
       return true;
     }
     const pkgMatch = /^\s*package\s+([a-zA-Z0-9_]+)/m.exec(raw);

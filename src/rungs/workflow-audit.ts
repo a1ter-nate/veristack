@@ -8,6 +8,7 @@ export interface ActiveWorkflowInfo {
   isPrBlocking: boolean;
   triggers: string[];
   activeCommands: string[];
+  scopedCommands?: Array<{ cwd: string; command: string }>;
   deadJobs: string[];
 }
 
@@ -136,6 +137,7 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
   }
 
   const activeCommands: string[] = [];
+  const scopedCommands: Array<{ cwd: string; command: string }> = [];
   const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
   const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
@@ -147,10 +149,15 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
       if (!isRecord(step)) continue;
       if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
       if (!isAllowedShell(step.shell ?? jobShell)) continue;
-      const wd = step["working-directory"] ?? jobWorkDir;
-      if (typeof wd === "string" && wd.trim() !== "" && wd.trim() !== "." && wd.trim() !== "./") continue;
+      const rawWd = step["working-directory"] ?? jobWorkDir;
+      const cwd = typeof rawWd === "string" ? rawWd.trim().replace(/^\.\/+/, "").replace(/\/+$/, "") : "";
+      if (cwd.startsWith("/") || cwd.includes("..")) continue;
       if (typeof step.run === "string") {
-        activeCommands.push(...sanitizeShellBlock(step.run));
+        const cmds = sanitizeShellBlock(step.run);
+        for (const cmd of cmds) {
+          activeCommands.push(cmd);
+          scopedCommands.push({ cwd: cwd === "." ? "" : cwd, command: cmd });
+        }
       }
     }
   }
@@ -160,23 +167,26 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
     isPrBlocking,
     triggers,
     activeCommands,
+    scopedCommands,
     deadJobs: [...deadJobSet].sort(),
   };
 }
 
-function globMatchesPath(pattern: string, target: string): boolean {
-  const normPat = pattern.trim().replace(/^\/+/, "");
+export function globMatchesPath(pattern: string, target: string): boolean {
+  const normPat = pattern.trim().replace(/^\/+/, "").replace(/\/+$/, (m) => (m ? "/" : ""));
   const normTarget = target.replace(/^\/+/, "");
   if (!normPat || normPat.startsWith("!")) return false;
   if (normPat === "*" || normPat === "**") return true;
   if (normPat === normTarget) return true;
   if (normPat.endsWith("/") && (normTarget.startsWith(normPat) || `${normTarget}/` === normPat)) return true;
+  if (!normPat.includes("/") && !normPat.includes("*") && (normTarget === normPat || normTarget.startsWith(`${normPat}/`) || normTarget.endsWith(`/${normPat}`) || normTarget.includes(`/${normPat}/`))) return true;
+  if (!normPat.includes("*") && normTarget.startsWith(`${normPat}/`)) return true;
   const escaped = normPat
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*\*/g, "__DBL__")
     .replace(/\*/g, "[^/]*")
     .replace(/__DBL__/g, ".*");
-  return new RegExp(`^${escaped}$`).test(normTarget);
+  return new RegExp(`^${escaped}(?:$|/.*)$`).test(normTarget);
 }
 
 export function auditCodeownersPerimeter(

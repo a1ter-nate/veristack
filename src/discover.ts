@@ -91,32 +91,36 @@ export function detectLanguage(rel: string): Language | undefined {
   return undefined;
 }
 
-function extractSfcScript(rel: string, raw: string): { language: Language; content: string } | undefined {
+export function extractSfcScript(rel: string, raw: string): { language: Language; content: string } | undefined {
   const lower = rel.toLowerCase();
+  const stripped = raw.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out = Array<string>(raw.length).fill(" ");
+  for (let i = 0; i < raw.length; i++) if (raw[i] === "\n") out[i] = "\n";
+
   if (lower.endsWith(".astro")) {
+    let foundAny = false;
     const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
-    if (!fm?.[1]) return undefined;
-    const out = Array<string>(raw.length).fill(" ");
-    for (let i = 0; i < raw.length; i++) if (raw[i] === "\n") out[i] = "\n";
-    const start = fm[0].indexOf(fm[1]);
-    for (let i = 0; i < fm[1].length; i++) out[start + i] = fm[1][i] ?? " ";
-    return { language: "typescript", content: out.join("") };
+    if (fm?.[1]) {
+      const start = fm[0].indexOf(fm[1]);
+      for (let i = 0; i < fm[1].length; i++) out[start + i] = fm[1][i] ?? " ";
+      foundAny = true;
+    }
+    for (const m of stripped.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+      const body = m[2] ?? "";
+      const start = (m.index ?? 0) + m[0].indexOf(body);
+      for (let i = 0; i < body.length; i++) out[start + i] = body[i] ?? " ";
+      foundAny = true;
+    }
+    return foundAny ? { language: "typescript", content: out.join("") } : undefined;
   }
   if (!lower.endsWith(".vue") && !lower.endsWith(".svelte")) return undefined;
-  const matches = [...raw.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  const matches = [...stripped.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
   if (matches.length === 0) return undefined;
   const isTs = matches.some((m) => /\blang\s*=\s*["']tsx?["']/i.test(m[1] ?? ""));
-  const out = Array<string>(raw.length).fill(" ");
-  for (let i = 0; i < raw.length; i++) {
-    if (raw[i] === "\n") out[i] = "\n";
-  }
   for (const m of matches) {
-    const full = m[0];
     const body = m[2] ?? "";
-    const start = (m.index ?? 0) + full.indexOf(body);
-    for (let i = 0; i < body.length; i++) {
-      out[start + i] = body[i] ?? " ";
-    }
+    const start = (m.index ?? 0) + m[0].indexOf(body);
+    for (let i = 0; i < body.length; i++) out[start + i] = body[i] ?? " ";
   }
   return { language: isTs ? "typescript" : "javascript", content: out.join("") };
 }
@@ -159,7 +163,7 @@ function shouldReadText(rel: string): boolean {
   }
   if (lower.endsWith(".vue") || lower.endsWith(".svelte") || lower.endsWith(".astro") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
   if (lower.endsWith(".sh") || lower.endsWith(".bash")) return true;
-  if (lower.endsWith(".sql") && /(?:^|\/)(?:migrations?|supabase|policies|rls|schema)\//.test(lower)) return true;
+  if (lower.endsWith(".sql") && (/(?:^|\/)(?:migrations?|supabase|policies|rls|schema|db|sql|flyway)\//.test(lower) || base.endsWith("schema.sql"))) return true;
   if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) {
     return true;
   }

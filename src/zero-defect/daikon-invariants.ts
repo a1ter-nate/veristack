@@ -178,6 +178,19 @@ export function compareInvariantSnapshots(
   for (const inv of baseline.invariants) baseMap.set(invariantKey(inv), inv);
 
   const violations: Finding[] = [];
+  if (baseline.invariants.length === 0) {
+    violations.push({
+      id: `DAIKON:empty-baseline:${baselineFile}`,
+      rule: "daikon-empty-baseline",
+      category: "oracle-lock",
+      rung: "R3",
+      severity: "error",
+      file: baselineFile,
+      line: 1,
+      message: `Invariant baseline '${baselineFile}' contains 0 invariants — failing closed.`,
+      fix: "Generate a non-empty invariant baseline from real execution traces.",
+    });
+  }
   const missingFns = new Set<string>();
   for (const baseInv of baseline.invariants) {
     const curCount = current.sampleCounts[baseInv.fn] ?? 0;

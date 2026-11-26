@@ -81,6 +81,19 @@ function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: Fo
 }
 
 export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
+  if (!fs.existsSync(repo.root)) {
+    return [{
+      id: `FS:missing-root:${repo.root}`,
+      rule: "formal-plan-malformed",
+      category: "oracle-lock",
+      rung: "R5",
+      severity: "error",
+      file: repo.root,
+      line: 1,
+      message: `Target repository directory '${repo.root}' does not exist.`,
+      fix: "Pass an existing repository root directory to formal-sync.",
+    }];
+  }
   const parsed = parseFormalChecks(repo);
   if (!parsed) return [];
   if (parsed.error) {
@@ -169,6 +182,32 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       continue;
     }
 
+    const isGitRepo = spawnSync("git", ["-C", repo.root, "rev-parse", "--git-dir"], { encoding: "utf8" }).status === 0;
+    if (isGitRepo) {
+      const ancestor = spawnSync("git", ["-C", repo.root, "merge-base", "--is-ancestor", entry.syncCommit, "HEAD"], {
+        encoding: "utf8",
+      });
+      if (ancestor.status !== 0) {
+        const isShallow =
+          (spawnSync("git", ["-C", repo.root, "rev-parse", "--is-shallow-repository"], { encoding: "utf8" }).stdout ?? "")
+            .trim() === "true";
+        findings.push({
+          id: `FS:unknown-commit:${entry.id}`,
+          rule: "formal-sync-unknown-commit",
+          category: "oracle-lock",
+          rung: "R5",
+          severity: "error",
+          file: parsed.planRel,
+          line: 1,
+          message: isShallow
+            ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history — failing closed.`
+            : `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' is not an ancestor of HEAD.`,
+          fix: "Re-verify the formal model against HEAD and advance syncCommit to a commit on the current branch.",
+        });
+        continue;
+      }
+    }
+
     if (entry.contentHash) {
       const actualHash = computeFormalContentHash(repo.root, entry.specFile, entry.coveredPaths);
       if (actualHash !== entry.contentHash) {
@@ -184,31 +223,6 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
           fix: `Re-run the formal/contract verifier and update contentHash to '${actualHash}'.`,
         });
       }
-      continue;
-    }
-
-    const revCheck = spawnSync("git", ["-C", repo.root, "cat-file", "-e", `${entry.syncCommit}^{commit}`], {
-      encoding: "utf8",
-    });
-    if (revCheck.status !== 0) {
-      const isShallow =
-        (spawnSync("git", ["-C", repo.root, "rev-parse", "--is-shallow-repository"], { encoding: "utf8" }).stdout ?? "")
-          .trim() === "true";
-      findings.push({
-        id: `FS:unknown-commit:${entry.id}`,
-        rule: "formal-sync-unknown-commit",
-        category: "oracle-lock",
-        rung: "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: isShallow
-          ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history — failing closed.`
-          : `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' not found in local git history (rebased or pruned).`,
-        fix: isShallow
-          ? "Fetch deeper history in CI, add contentHash, or advance syncCommit after re-verifying covered code."
-          : "Re-verify the formal model against HEAD and update syncCommit.",
-      });
       continue;
     }
 

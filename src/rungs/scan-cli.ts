@@ -11,6 +11,7 @@ import {
   writeRatchetBaseline,
 } from "../ratchet.ts";
 import type { RungId } from "../types.ts";
+import { auditManifestDowngrade } from "../zero-defect/anti-evasion.ts";
 import { runPlantedFaultCanary } from "./mutation-probe.ts";
 import { runAllDeclaredRungs } from "./receipts.ts";
 import { evaluateCrapForCoverageFile } from "./reports.ts";
@@ -166,8 +167,29 @@ export function handleScanCli(
 export function handleRungToolsCli(cmd: string, rest: readonly string[], target: string, asJson: boolean): number | null {
   if (cmd === "verify") {
     const asMd = rest.includes("--md");
-    const ephemeralKey = crypto.randomBytes(32).toString("hex");
+    const explicitBase = parseFlagValue(rest, "--base");
     const repo = discoverRepo(target);
+    if (process.env.VSTACK_ALLOW_MANIFEST_CHANGE !== "1") {
+      let baseToCheck = explicitBase;
+      if (!baseToCheck) {
+        for (const candidate of ["origin/main", "origin/master"]) {
+          const baseSha = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", `${candidate}^{commit}`], { encoding: "utf8" });
+          const headSha = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", "HEAD^{commit}"], { encoding: "utf8" });
+          if (baseSha.status === 0 && headSha.status === 0 && baseSha.stdout.trim() !== headSha.stdout.trim()) {
+            baseToCheck = candidate;
+            break;
+          }
+        }
+      }
+      if (baseToCheck) {
+        const downgrades = auditManifestDowngrade(repo.root, baseToCheck);
+        if (downgrades.length > 0) {
+          for (const d of downgrades) console.error(`verify control-plane lock [${d.rule}]: ${d.message}`);
+          return 1;
+        }
+      }
+    }
+    const ephemeralKey = crypto.randomBytes(32).toString("hex");
     const runResult = runAllDeclaredRungs(repo, "all", ephemeralKey);
     if (!asJson && !asMd) {
       for (const r of runResult.receipts) {

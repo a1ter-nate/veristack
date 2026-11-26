@@ -163,9 +163,11 @@ function scanGoTitansA(file: ScannedFile, raw: string, prodCode: string, prodRaw
   for (const m of prodCode.matchAll(GO_FOR_SELECT)) {
     const idx = m.index ?? 0;
     const block = extractBalancedBlock(prodCode, idx + m[0].length - 1);
+    const hasCancelExit = /case\s+<-\s*(?:[A-Za-z_][A-Za-z0-9_]*\.Done\(\)|quit|stop|done|cancel)\s*:[\s\S]{0,120}\b(?:return|break)\b/i.test(block);
     for (const cm of block.matchAll(GO_CASE_RECV_ONE)) {
       const ch = cm[1] ?? "";
       if (!ch || /(?:\.C|Done|After|Tick|ctx|stop|quit|cancel)$/i.test(ch)) continue;
+      if (hasCancelExit && !prodCode.includes(`close(${ch})`)) continue;
       const bodyStart = (cm.index ?? 0) + cm[0].length;
       const nextCase = block.slice(bodyStart).search(/\b(?:case|default)\b/);
       const body = nextCase >= 0 ? block.slice(bodyStart, bodyStart + nextCase) : block.slice(bodyStart);
@@ -219,10 +221,8 @@ export function analyzeWave6TitansAGuards(file: ScannedFile): Finding[] {
     break;
   }
 
-  const code = maskCode(raw, file.language);
-  const cfgTestIdx = file.language === "rust" ? raw.search(/#\[cfg\(test\)\]/) : -1;
-  const prodCode = cfgTestIdx >= 0 ? code.slice(0, cfgTestIdx) : code;
-  const prodRaw = cfgTestIdx >= 0 ? raw.slice(0, cfgTestIdx) : raw;
+  const prodCode = maskCode(raw, file.language, true);
+  const prodRaw = raw;
 
   for (const m of prodCode.matchAll(NAN_DIRECT_CMP)) {
     push(

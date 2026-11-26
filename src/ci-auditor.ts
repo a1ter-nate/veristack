@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { type DiscoveredRepo, isTestFilePath } from "./discover.ts";
+import { detectLanguage, type DiscoveredRepo, isTestFilePath } from "./discover.ts";
 import { auditDiffInvariantLoss } from "./ast/invariant-loss.ts";
-import { maskStrings } from "./test-lexical.ts";
+import { maskCode } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
 import {
   auditDiffAntiEvasion,
@@ -13,6 +13,12 @@ import {
   scanUntrackedConfigCheats,
 } from "./zero-defect/anti-evasion.ts";
 import { auditExtendedCiRules, auditMaestroFlow } from "./zero-defect/ci-workflow-rules.ts";
+
+const RUNNER_TEST_BASENAME = /(?:\.(?:test|spec|e2e|cy)\.[cm]?[jt]sx?$|_test\.go$|_tests?\.rs$|(?:^|\/)test_[^/]+\.py$|_test\.py$|tests?\.cs$)/i;
+
+function isRunnerDiscoveredTest(rel: string): boolean {
+  return RUNNER_TEST_BASENAME.test(rel);
+}
 
 const CHECK_TOOL =
   /\b(?:pnpm|npm|yarn|npx|bun|pytest|vitest|jest|tsc|tsgo|eslint|oxlint|prettier|ruff|mypy|cargo|go|make|gradle|mvn|dotnet|unittest|vstack)\b/i;
@@ -175,7 +181,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
       const fullPath = path.resolve(repoPath, rel);
       try {
         const rawText = fs.readFileSync(fullPath, "utf8");
-        lines = maskStrings(rawText).split(/\r?\n/);
+        lines = maskCode(rawText, detectLanguage(rel)).split(/\r?\n/);
       } catch {
         lines = null;
       }
@@ -203,7 +209,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
       if (jsStem && renameTo === `${jsStem[1]}.${jsStem[2]}ts${jsStem[3]}`) {
         renamedJsToTsFiles.add(renameTo);
       }
-      if (renameFrom && isTestFilePath(renameFrom) && !isTestFilePath(renameTo)) {
+      if (renameFrom && ((isTestFilePath(renameFrom) && !isTestFilePath(renameTo)) || (isRunnerDiscoveredTest(renameFrom) && !isRunnerDiscoveredTest(renameTo)))) {
         findings.push({
           id: `DIFF:test-renamed-out:${renameFrom}`,
           rule: "diff-test-file-deleted",

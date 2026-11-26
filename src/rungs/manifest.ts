@@ -142,13 +142,13 @@ export function inferArchetypeFromFiles(files: readonly ScannedFile[], relPaths:
   const prodSourceFiles = hostFiles.filter((f) => f.language && !f.isTest);
 
   const hasReactOrUi =
-    /(?:["'](?:react|next|vue|svelte|@angular\/core|solid-js)["']|\b(?:react-dom|next\.config)\b)/i.test(manifestText) ||
-    hostPaths.some((p) => p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".vue") || p.endsWith(".svelte"));
+    /(?:["'](?:react|next|vue|svelte|astro|@angular\/core|solid-js)["']|\b(?:react-dom|next\.config|astro\.config)\b)/i.test(manifestText) ||
+    hostPaths.some((p) => p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".vue") || p.endsWith(".svelte") || p.endsWith(".astro"));
   const hasBackendService =
-    /\b(?:express|fastify|hono|@hono\/node-server|elysia|nestjs|koa|fastapi|django|flask|actix-web|axum|gin-gonic|microsoft\.aspnetcore|microsoft\.net\.sdk\.web)\b/i.test(
+    /\b(?:express|fastify|hono|@hono\/node-server|elysia|nestjs|koa|fastapi|django|flask|actix-web|axum|gin-gonic|labstack\/echo|go-chi\/chi|gofiber\/fiber|google\.golang\.org\/grpc|microsoft\.aspnetcore|microsoft\.net\.sdk\.web)\b/i.test(
       manifestText,
     ) ||
-    prodSourceFiles.some((f) => HTTP_LISTENER_SIGNAL.test(stripLiteralsAndComments(f.content))) ||
+    prodSourceFiles.some((f) => HTTP_LISTENER_SIGNAL.test(stripLiteralsAndComments(f.content)) || /\b(?:http\.Serve|e\.Start)\s*\(/.test(stripLiteralsAndComments(f.content))) ||
     hostPaths.some((p) => p.includes("dockerfile") || p.includes("controllers/") || p.includes("routes/"));
 
   if (hasReactOrUi && hasBackendService) return "fullstack";
@@ -185,8 +185,12 @@ export function auditDeclaredArchetype(
   if (repo && manifest.workspaces) {
     for (const ws of manifest.workspaces) {
       const prefix = `${ws.path}/`;
-      const subFiles = repo.files.filter((f) => f.rel.startsWith(prefix));
-      const subPaths = repo.allRelPaths.filter((p) => p.startsWith(prefix));
+      const childPrefixes = manifest.workspaces
+        .filter((other) => other.path !== ws.path && other.path.startsWith(prefix))
+        .map((other) => `${other.path}/`);
+      const inWs = (p: string): boolean => p.startsWith(prefix) && !childPrefixes.some((cp) => p.startsWith(cp));
+      const subFiles = repo.files.filter((f) => inWs(f.rel));
+      const subPaths = repo.allRelPaths.filter((p) => inWs(p));
       const obs = inferArchetypeFromFiles(subFiles, subPaths);
       if (isDowngrade(ws.archetype, obs)) {
         findings.push({
@@ -236,11 +240,25 @@ export function discoverWorkspaces(
     if (dir === "." || dir === "" || seen.has(dir)) continue;
     if (/(?:^|\/)(?:node_modules|fixtures|testdata|__fixtures__|test|tests|lint)(?:\/|$)/i.test(dir)) continue;
     if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests|specs?)$/i.test(dir)) continue;
+    if (base === "Cargo.toml" && /^\s*\[workspace\]/m.test(file.content) && !/^\s*\[package\]/m.test(file.content)) continue;
+    if (base.endsWith(".csproj") && (/<IsTestProject>\s*true\s*<\/IsTestProject>/i.test(file.content) || /Microsoft\.NET\.Test\.Sdk|PackageReference\s+Include="(?:xunit|NUnit|MSTest\.TestFramework)"/i.test(file.content))) continue;
     seen.add(dir);
-    const subFiles = repo.files.filter((f) => f.rel.startsWith(`${dir}/`));
-    const subPaths = repo.allRelPaths.filter((p) => p.startsWith(`${dir}/`));
-    const arch = inferArchetypeFromFiles(subFiles, subPaths);
-    discovered.push({ name: dir, path: dir, archetype: arch });
+    discovered.push({ name: dir, path: dir, archetype: "library" });
   }
-  return discovered.sort((a, b) => a.path.localeCompare(b.path));
+  const filtered: Array<{ name: string; path: string; archetype: RepoArchetype }> = [];
+  for (const ws of discovered) {
+    const isExplicit = Boolean(manifest?.workspaces?.some((m) => m.path === ws.path));
+    const prefix = `${ws.path}/`;
+    const childPrefixes = discovered
+      .filter((other) => other.path !== ws.path && other.path.startsWith(prefix))
+      .map((other) => `${other.path}/`);
+    const inWs = (p: string): boolean => p.startsWith(prefix) && !childPrefixes.some((cp) => p.startsWith(cp));
+    const subFiles = repo.files.filter((f) => inWs(f.rel));
+    const subPaths = repo.allRelPaths.filter((p) => inWs(p));
+    const hasProd = subFiles.some((f) => f.language && !f.isTest);
+    if (!isExplicit && !hasProd) continue;
+    const arch = isExplicit ? ws.archetype : inferArchetypeFromFiles(subFiles, subPaths);
+    filtered.push({ name: ws.name, path: ws.path, archetype: arch });
+  }
+  return filtered.sort((a, b) => a.path.localeCompare(b.path));
 }

@@ -22,6 +22,7 @@
         "targets": [
           "src/ratchet.ts",
           "src/no-comments.ts",
+          "src/rungs/command-audit.ts",
           "src/rungs/reports.ts",
           "src/rungs/workflow-audit.ts",
           "src/rungs/receipts.ts",

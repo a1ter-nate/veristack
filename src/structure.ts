@@ -253,9 +253,8 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
     }
 
     if (file.language === "rust" && !file.isTest && !isGenerated) {
-      const cfgTestIdx = file.content.search(/#\[cfg\(test\)\]/);
-      const prodContent = cfgTestIdx >= 0 ? file.content.slice(0, cfgTestIdx) : file.content;
-      const maskedProd = maskCode(prodContent, "rust");
+      const maskedProd = maskCode(file.content, "rust", true);
+      const prodContent = file.content;
       const prodLines = prodContent.split(/\r?\n/);
 
       for (const match of maskedProd.matchAll(RUST_TEST_ONLY_EXPORT)) {
@@ -446,6 +445,8 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
       prefixCounts.set(prefix, list);
     }
     for (const [prefix, list] of prefixCounts.entries()) {
+      const dirBase = path.posix.basename(dir).toLowerCase();
+      if (dirBase === prefix.toLowerCase() || dirBase === `${prefix.toLowerCase()}s` || `${dirBase}s` === prefix.toLowerCase()) continue;
       if (list.length >= 3) {
         findings.push({
           id: `ST:prefix-cluster:${dir}:${prefix}`,

@@ -1,5 +1,5 @@
 import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
-import { lineOf, maskStrings } from "../test-lexical.ts";
+import { lineOf, maskCode, maskStrings } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated|min|bundle)\.[cm]?[jt]sx?$/i;
@@ -229,14 +229,8 @@ export function analyzePerfHygiene(repo: DiscoveredRepo): Finding[] {
     }
 
     if (file.isTest) continue;
-    if (file.language === "rust") {
-      const cfgTestIdx = raw.search(/#\[cfg\(test\)\]/);
-      const prodRaw = cfgTestIdx >= 0 ? raw.slice(0, cfgTestIdx) : raw;
-      const prodMasked = cfgTestIdx >= 0 ? masked.slice(0, cfgTestIdx) : masked;
-      findings.push(...checkLoopRules(file, prodRaw, prodMasked));
-    } else {
-      findings.push(...checkLoopRules(file, raw, masked));
-    }
+    const prodMasked = file.language === "rust" ? maskCode(raw, "rust", true) : masked;
+    findings.push(...checkLoopRules(file, raw, prodMasked));
   }
   return findings;
 }

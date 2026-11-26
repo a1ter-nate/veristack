@@ -135,8 +135,23 @@ export function buildWorkspaceLadders(
     const belongsToWs = (rel: string): boolean =>
       rel.startsWith(prefix) && !childPrefixes.some((cp) => rel.startsWith(cp));
 
+    const wsStem = ws.path.split("/").pop()?.toLowerCase() ?? "";
+    const externalTestPrefixes = new Set<string>();
+    for (const f of repo.files) {
+      if (f.rel.endsWith(".csproj") && !belongsToWs(f.rel) && f.content.includes(`${ws.path.split("/").pop()}.csproj`)) {
+        externalTestPrefixes.add(`${f.rel.slice(0, f.rel.lastIndexOf("/") + 1)}`);
+      }
+    }
+    const matchesWsTest = (rel: string): boolean => {
+      if (belongsToWs(rel)) return true;
+      for (const ep of externalTestPrefixes) if (rel.startsWith(ep)) return true;
+      const lowerRel = rel.toLowerCase();
+      if (wsStem && (lowerRel.startsWith(`tests/${wsStem}/`) || lowerRel.includes(`/tests/${wsStem}/`) || lowerRel.startsWith(`test/${wsStem}/`) || lowerRel.includes(`/test/${wsStem}/`))) return true;
+      return false;
+    };
+
     const subProd = repo.files.filter((f) => f.language && !f.isTest && belongsToWs(f.rel));
-    const subInv = inventory.filter((t) => belongsToWs(t.file));
+    const subInv = inventory.filter((t) => matchesWsTest(t.file));
     const subErrors = findings.filter((f) => f.severity === "error" && belongsToWs(f.file)).length;
     const highRiskFiles = subProd.filter((f) => HIGH_RISK_PATH.test(f.rel)).length;
     const subR2 = subInv.filter((t) => t.rung === "R2").length;

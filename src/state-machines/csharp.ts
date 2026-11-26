@@ -252,7 +252,10 @@ function checkCsharpTypes(file: ScannedFile, masked: string): Finding[] {
       });
     }
 
-    if (discriminantName && nullableSiblings.size >= 2) {
+    const isStringWireDto =
+      /(?:Dto|Response|Request|Row|Payload|ViewModel|Contract|Message|Event|Params|Options|Config|Settings|Spec)$/i.test(name) &&
+      props.some((p) => p.name === discriminantName && /^string$/i.test(p.type.trim()));
+    if (discriminantName && nullableSiblings.size >= 2 && !isStringWireDto) {
       const optList = [...nullableSiblings].slice(0, 5).join(", ");
       findings.push({
         id: `SM:cs-optional-bag:${file.rel}:${line}`,

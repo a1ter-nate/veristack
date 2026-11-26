@@ -414,6 +414,9 @@ async function run(): Promise<number> {
     const current = inferDynamicInvariants(samples);
     const baselinePath = parseFlagValue(rest, "--baseline");
     const update = rest.includes("--update");
+    if (update && rest.includes("--fail")) {
+      throw new Error("vstack invariants forbids combining --update with --fail (prevents self-passing rebaseline in CI).");
+    }
     let diff: ReturnType<typeof compareInvariantSnapshots> | undefined;
 
     if (baselinePath) {

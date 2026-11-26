@@ -106,7 +106,7 @@ export function scanUntrackedConfigCheats(repoPath: string): Finding[] {
 
 export function auditDiffAntiEvasion(
   events: readonly DiffLineEvent[],
-  options: { migratedJsToTsFiles?: ReadonlySet<string> } = {},
+  _options: { migratedJsToTsFiles?: ReadonlySet<string> } = {},
 ): Finding[] {
   const findings: Finding[] = [];
   const testAddedAsserts = new Map<string, number>();
@@ -232,7 +232,6 @@ export function auditDiffAntiEvasion(
   }
 
   for (const [file, delInfo] of testDeletedAsserts.entries()) {
-    if (options.migratedJsToTsFiles?.has(file)) continue;
     const addedCount = testAddedAsserts.get(file) ?? 0;
     const weakAdded = testAddedWeakAsserts.get(file) ?? 0;
     if (

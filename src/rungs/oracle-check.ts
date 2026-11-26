@@ -15,7 +15,7 @@ export interface TwoSidedOracleResult {
 }
 
 const ORACLE_CONFIG_SURFACE =
-  /(?:^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|pyproject\.toml|pytest\.ini|(?:vitest|vite|jest|playwright)\.config\.[cm]?[jt]s|jest\.config\.json|conftest\.py|\.verification\/rungs\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
+  /(?:^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config\.toml|pyproject\.toml|pytest\.ini|setup\.cfg|tox\.ini|(?:vitest|vite|jest|playwright)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|conftest\.py|Directory\.Build\.props|[^/]+\.csproj|\.verification\/rungs\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
 
 const TEST_DIR_SURFACE =
   /(?:^|\/)(?:tests|test|__tests__|spec|specs|testdata|fixtures|__fixtures__|golden|goldens|[^/]+\.(?:Tests|UnitTests|IntegrationTests))\//i;
@@ -54,20 +54,53 @@ function loadBaseApprovedBehaviorChanges(repoRoot: string, baseRef: string): Set
   return approved;
 }
 
-function copyWorkingTreeToSandbox(repoRoot: string): string {
-  const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oracle-"));
-  const skipTop = new Set([".git", "node_modules", ".venv", "venv", "target"]);
-  for (const entry of fs.readdirSync(repoRoot, { withFileTypes: true })) {
-    if (entry.name === ".git") continue;
-    const src = path.join(repoRoot, entry.name);
-    const dst = path.join(sandboxDir, entry.name);
-    if (skipTop.has(entry.name)) {
-      if (entry.name === "node_modules" || entry.name === ".venv" || entry.name === "venv") {
+function linkNodeModulesWorkspaceAware(absRoot: string, sandboxDir: string): void {
+  const srcNm = path.join(absRoot, "node_modules");
+  const dstNm = path.join(sandboxDir, "node_modules");
+  if (!fs.existsSync(srcNm)) return;
+  const linkDir = (srcDir: string, dstDir: string): void => {
+    fs.mkdirSync(dstDir, { recursive: true });
+    for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+      const sPath = path.join(srcDir, entry.name);
+      const dPath = path.join(dstDir, entry.name);
+      if (entry.name.startsWith("@") && entry.isDirectory() && !entry.isSymbolicLink()) {
+        linkDir(sPath, dPath);
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
         try {
-          fs.symlinkSync(src, dst);
+          const target = fs.realpathSync(sPath);
+          if (target === absRoot || target.startsWith(`${absRoot}${path.sep}`)) {
+            const rel = path.relative(absRoot, target);
+            fs.symlinkSync(path.join(sandboxDir, rel), dPath);
+            continue;
+          }
         } catch {
           continue;
         }
+      }
+      try {
+        fs.symlinkSync(sPath, dPath);
+      } catch {
+        continue;
+      }
+    }
+  };
+  linkDir(srcNm, dstNm);
+}
+
+function copyWorkingTreeToSandbox(repoRoot: string): string {
+  const absRoot = fs.realpathSync(path.resolve(repoRoot));
+  const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oracle-"));
+  const skipTop = new Set([".git", "node_modules", ".venv", "venv", "target"]);
+  for (const entry of fs.readdirSync(absRoot, { withFileTypes: true })) {
+    if (entry.name === ".git") continue;
+    const src = path.join(absRoot, entry.name);
+    const dst = path.join(sandboxDir, entry.name);
+    if (skipTop.has(entry.name)) {
+      if (entry.name === "node_modules") linkNodeModulesWorkspaceAware(absRoot, sandboxDir);
+      else if (entry.name === ".venv" || entry.name === "venv") {
+        try { fs.symlinkSync(src, dst); } catch { continue; }
       }
       continue;
     }
@@ -143,10 +176,19 @@ export function runTwoSidedOracleCheck(
     };
   }
 
-  const changedOracleFiles = (diffFiles.stdout ?? "")
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter((s) => s && isOracleSurface(s));
+  const diffSet = new Set<string>(
+    (diffFiles.stdout ?? "")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s && isOracleSurface(s)),
+  );
+  const untracked = spawnSync("git", ["-C", root, "ls-files", "--others", "--exclude-standard"], { encoding: "utf8" });
+  if (untracked.status === 0) {
+    for (const rel of (untracked.stdout ?? "").split(/\r?\n/).map((s) => s.trim())) {
+      if (rel && isOracleSurface(rel)) diffSet.add(rel);
+    }
+  }
+  const changedOracleFiles = [...diffSet].sort();
 
   if (changedOracleFiles.length === 0) {
     return {
@@ -166,11 +208,11 @@ export function runTwoSidedOracleCheck(
   try {
     let restoredAnyBaseOracle = false;
     for (const rel of changedOracleFiles) {
-      const baseContent = spawnSync("git", ["-C", root, "show", `${baseRef}:${rel}`], { encoding: "utf8" });
+      const baseContent = spawnSync("git", ["-C", root, "show", `${baseRef}:${rel}`], { maxBuffer: 32 * 1024 * 1024 });
       const dest = path.resolve(sandboxDir, rel);
       if (baseContent.status === 0) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.writeFileSync(dest, baseContent.stdout, "utf8");
+        fs.writeFileSync(dest, baseContent.stdout);
         restoredAnyBaseOracle = true;
       } else if (fs.existsSync(dest)) {
         fs.rmSync(dest, { force: true });
@@ -188,7 +230,18 @@ export function runTwoSidedOracleCheck(
       };
     }
 
-    const baseOnHead = runArgvChain(parsedCmd.steps, sandboxDir, childEnv, 120_000);
+    const baseParsedCmd = parseAndValidateCommandArgv("canary", testCmd, sandboxDir);
+    if (baseParsedCmd.error) {
+      return {
+        passed: false,
+        baseRef,
+        baseTestsOnHeadCodeExit: -1,
+        headTestsOnHeadCodeExit: headExit,
+        declaredBehaviorChange: false,
+        reason: `Rejected base-ref oracle --test-cmd: ${baseParsedCmd.error}`,
+      };
+    }
+    const baseOnHead = runArgvChain(baseParsedCmd.steps, sandboxDir, childEnv, 120_000);
     const baseExit = baseOnHead.status;
     const passed = baseExit === 0 || allApproved;
     return {

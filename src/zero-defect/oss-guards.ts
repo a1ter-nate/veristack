@@ -152,9 +152,8 @@ function scanPythonOss(file: ScannedFile, raw: string, masked: string, findings:
   }
 }
 
-function scanRustOss(file: ScannedFile, raw: string, masked: string, findings: Finding[]): void {
-  const cfgTestIdx = raw.search(/#\[cfg\(test\)\]/);
-  const prodMasked = cfgTestIdx >= 0 ? masked.slice(0, cfgTestIdx) : masked;
+function scanRustOss(file: ScannedFile, raw: string, _masked: string, findings: Finding[]): void {
+  const prodMasked = maskCode(raw, "rust", true);
 
   const rustTypeDecl = /\b(?:struct|enum)\s+[A-Za-z_][A-Za-z0-9_]*\b/g;
   for (const m of prodMasked.matchAll(rustTypeDecl)) {
@@ -253,7 +252,10 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
     if (CS_EF_CONTEXT.test(masked)) {
       for (const m of masked.matchAll(CS_UNORDERED_SKIP)) {
         const idx = m.index ?? 0;
-        if (/\.\s*OrderBy(?:Descending)?\s*\(/.test(masked.slice(Math.max(0, idx - 220), idx))) continue;
+        const winBefore = masked.slice(Math.max(0, idx - 220), idx);
+        const winAfter = masked.slice(idx, idx + 120);
+        if (/\.\s*OrderBy(?:Descending)?\s*\(/.test(winBefore)) continue;
+        if (!/(?:_db|db|ctx|context|Set\s*<|AsNoTracking|IQueryable|Where\s*\(|Include\s*\(|ToListAsync|FirstOrDefaultAsync)/i.test(`${winBefore}${winAfter}`)) continue;
         push(
           findings, file.rel, lineOf(raw, idx), "efcore-unordered-skip-or-assert", "R1", "warn",
           ".Skip() called without a preceding .OrderBy() produces non-deterministic query pagination across DB engines.",

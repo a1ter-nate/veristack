@@ -130,17 +130,17 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
     return;
   }
 
-  if (file.rel.endsWith(".vue") && hasTsRepo) {
-    const vueRaw = (file.rawContent ?? raw).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
-    for (const m of vueRaw.matchAll(VUE_SCRIPT_NO_TS)) {
+  if ((file.rel.endsWith(".vue") || file.rel.endsWith(".svelte")) && hasTsRepo) {
+    const sfcRaw = (file.rawContent ?? raw).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+    for (const m of sfcRaw.matchAll(VUE_SCRIPT_NO_TS)) {
       push(
         findings,
         file.rel,
-        lineOf(vueRaw, m.index ?? 0),
+        lineOf(sfcRaw, m.index ?? 0),
         "vue-require-script-lang-ts",
         "R1",
         "warn",
-        'Vue SFC <script> omits lang="ts" in a TypeScript repository, silently disabling vue-tsc template checks.',
+        'SFC <script> omits lang="ts" in a TypeScript repository, silently disabling template type checks.',
         'Add lang="ts" to <script> / <script setup> blocks.',
       );
     }
@@ -149,11 +149,10 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
 
   if (!file.language || file.isTest) return;
 
-  const masked = maskCode(raw, file.language);
+  const masked = maskCode(raw, file.language, true);
 
   if (file.language === "rust") {
-    const cfgTestIdx = raw.search(/#\[cfg\(test\)\]/);
-    const prodMasked = cfgTestIdx >= 0 ? masked.slice(0, cfgTestIdx) : masked;
+    const prodMasked = masked;
     for (const m of prodMasked.matchAll(RUST_ONCE_MUTEX_MAP)) {
       push(
         findings,

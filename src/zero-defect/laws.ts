@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
+import { parseAndValidateCommandArgv } from "../rungs/command-audit.ts";
+import { globMatchesPath } from "../rungs/workflow-audit.ts";
 import { lineOf } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
@@ -45,13 +47,6 @@ function findPrimaryCodeowners(repo: DiscoveredRepo): ScannedFile | undefined {
   return rootMatch ?? docsMatch;
 }
 
-function hasForbiddenLawArg(args: readonly string[], forbidden: ReadonlySet<string>): boolean {
-  for (const a of args) {
-    if (forbidden.has(a)) return true;
-  }
-  return false;
-}
-
 function hasCodeownersCoverage(repo: DiscoveredRepo, lawRel: string): boolean {
   const co = findPrimaryCodeowners(repo);
   if (!co) return false;
@@ -64,14 +59,7 @@ function hasCodeownersCoverage(repo: DiscoveredRepo, lawRel: string): boolean {
     const parts = line.split(/\s+/);
     const pattern = parts[0] ?? "";
     const owners = parts.slice(1).filter((o) => /^@[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?$|^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o));
-    const norm = pattern.replace(/^\/+/, "");
-    const matched =
-      norm === "*" ||
-      norm === lawRel ||
-      (norm.endsWith("/") && lawRel.startsWith(norm)) ||
-      (norm.endsWith("*.bend") && lawRel.endsWith(".bend")) ||
-      (norm.includes("LAWS.bend") && lawRel.endsWith("LAWS.bend"));
-    if (matched) lastOwners = owners;
+    if (globMatchesPath(pattern, lawRel)) lastOwners = owners;
   }
   return Boolean(lastOwners && lastOwners.length > 0);
 }
@@ -211,15 +199,23 @@ function auditJsonLawFile(
           runBendVerdict(repo.root, ref, findings, verifiedBackends);
           continue;
         }
-        const ALLOWED_LAW_RUNNERS = new Set(["bun", "node", "uv", "pytest", "cargo", "dotnet", "go", "bend", "quint", "dafny", "vitest", "jest"]);
-        const FORBIDDEN_LAW_ARGS = new Set(["-e", "--eval", "-p", "--print", "-c", "--version", "-V", "--help", "-h", "--list", "--list-tests", "--passWithNoTests", "--co", "--collect-only", "--no-run"]);
         let cmdArgs: [string, string[], string] | null = null;
         if (Array.isArray(law.verifyArgs) && law.verifyArgs.length > 0 && typeof law.verifyArgs[0] === "string") {
-          const rawBin = law.verifyArgs[0];
-          const bin = rawBin.toLowerCase();
-          const restArgs = law.verifyArgs.slice(1);
-          const badFlag = hasForbiddenLawArg(restArgs, FORBIDDEN_LAW_ARGS);
-          if (rawBin.includes("/") || rawBin.includes("\\") || !ALLOWED_LAW_RUNNERS.has(bin) || badFlag) {
+          const rawCmd = law.verifyArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
+          const validated = parseAndValidateCommandArgv("canary", rawCmd, repo.root);
+          const refBase = path.posix.basename(ref);
+          const refDir = path.posix.dirname(ref);
+          const mentionsWitness = law.verifyArgs.some((a) => {
+            const normA = a.replace(/\\/g, "/").replace(/\/+$/, "");
+            if (!normA || normA.startsWith("-")) return false;
+            if (normA.includes(ref) || normA.includes(refBase)) return true;
+            if (refDir !== "." && normA.includes(refDir)) return true;
+            const aDir = path.posix.dirname(normA);
+            if (normA !== "." && ref.startsWith(`${normA}/`)) return true;
+            if (aDir !== "." && ref.startsWith(`${aDir}/`)) return true;
+            return false;
+          });
+          if (validated.error || validated.steps.length !== 1 || !mentionsWitness) {
             findings.push({
               id: `LAW:invalid-runner:${file.rel}:${id}`,
               rule: "laws-invalid-verifier",
@@ -228,18 +224,18 @@ function auditJsonLawFile(
               severity: "error",
               file: file.rel,
               line: 1,
-              message: `Executable law '${id}' declares disallowed verifyArgs ('${law.verifyArgs.join(" ")}').`,
-              fix: "Use a bare allowlisted test/formal verifier (bun, node, pytest, cargo, dotnet, go, bend, quint, dafny) without eval/version/skip flags.",
+              message: `Executable law '${id}' declares disallowed verifyArgs ('${law.verifyArgs.join(" ")}'): ${validated.error ?? `must reference witness '${ref}'`}.`,
+              fix: "Use a bare allowlisted test/formal verifier referencing the witness path with safe flags only.",
             });
             continue;
           }
-          cmdArgs = [rawBin, restArgs, repo.root];
+          cmdArgs = [law.verifyArgs[0], law.verifyArgs.slice(1), repo.root];
         } else if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(ref)) {
           cmdArgs = ["bun", ["test", path.join(repo.root, ref)], repo.root];
         } else if (/(?:^|\/)test_[^/]+\.py$|_test\.py$/.test(ref)) {
           cmdArgs = ["pytest", [path.join(repo.root, ref)], repo.root];
         } else if (ref.endsWith("_test.go")) {
-          cmdArgs = ["go", ["test", "."], path.dirname(path.join(repo.root, ref))];
+          cmdArgs = ["go", ["test", "-count=1", "-v", "."], path.dirname(path.join(repo.root, ref))];
         }
         if (!cmdArgs) {
           verifiedBackends.push({ file: ref, backend: "none", status: "failed", detail: "no executable witness runner" });
@@ -258,9 +254,17 @@ function auditJsonLawFile(
         }
         const run = spawnSync(cmdArgs[0], cmdArgs[1], { cwd: cmdArgs[2], shell: false, encoding: "utf8", timeout: 45_000 });
         const out = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
+        const cargoPassedSum = [...out.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/gi)].reduce((acc, m) => acc + Number(m[1] ?? 0), 0);
+        const dotnetPassedSum = [...out.matchAll(/\bPassed:\s*(\d+)/gi)].reduce((acc, m) => acc + Number(m[1] ?? 0), 0);
+        const hasPositivePass =
+          cargoPassedSum > 0 ||
+          dotnetPassedSum > 0 ||
+          /^\s*[1-9]\d*\s+pass\b|\b[1-9]\d*\s+passed\b|^---\s+PASS:|^\s*(?:ℹ|#)\s*pass\s+[1-9]\d*/im.test(out);
         const zeroTests =
-          /(?:\b0\s+pass\b|\b0\s+passed\b|\bcollected\s+0\s+items\b|\[no\s+tests\s+to\s+run\]|\bno\s+tests\s+found\b|\b0\s+tests?\s+ran\b)/i.test(out) ||
-          (/^\s*$/.test(out) && (cmdArgs[0] === "bun" || cmdArgs[0] === "pytest" || cmdArgs[0] === "vitest" || cmdArgs[0] === "jest"));
+          !hasPositivePass &&
+          (/(?:\b0\s+pass\b|\b0\s+passed\b|\bcollected\s+0\s+items\b|\[no\s+tests\s+to\s+run\]|\bno\s+tests\s+found\b|\b0\s+tests?\s+ran\b)/i.test(out) ||
+            /^\s*$/.test(out) ||
+            /^(?:bun|node|pytest|vitest|jest|cargo|dotnet|go)$/i.test(cmdArgs[0]));
         if (run.error) {
           verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "failed", detail: `${cmdArgs[0]} not on PATH` });
           findings.push({

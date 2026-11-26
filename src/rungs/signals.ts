@@ -45,24 +45,26 @@ function stripCodeStringsAndComments(content: string): string {
     .replace(/`(?:\\.|[^`\\])*`/g, "``");
 }
 
-function parsePackageScripts(files: readonly ScannedFile[]): Map<string, string> {
-  const scripts = new Map<string, string>();
+function parsePackageScriptsByDir(files: readonly ScannedFile[]): Map<string, Map<string, string>> {
+  const byDir = new Map<string, Map<string, string>>();
   for (const file of files) {
     if (!isHostRepoFile(file.rel)) continue;
     if (path.posix.basename(file.rel).toLowerCase() !== "package.json") continue;
+    const rawDir = path.posix.dirname(file.rel);
+    const dir = rawDir === "." ? "" : rawDir;
     try {
       const parsed = JSON.parse(file.content) as { scripts?: Record<string, unknown> };
       if (!parsed.scripts || typeof parsed.scripts !== "object") continue;
+      const map = byDir.get(dir) ?? new Map<string, string>();
       for (const [name, cmd] of Object.entries(parsed.scripts)) {
-        if (typeof cmd === "string" && cmd.trim().length > 0 && !scripts.has(name)) {
-          scripts.set(name, cmd);
-        }
+        if (typeof cmd === "string" && cmd.trim().length > 0 && !map.has(name)) map.set(name, cmd);
       }
+      byDir.set(dir, map);
     } catch {
       continue;
     }
   }
-  return scripts;
+  return byDir;
 }
 
 function collectReferencedScriptNames(text: string): string[] {
@@ -89,6 +91,7 @@ function buildActivePrCiText(files: readonly ScannedFile[]): {
 
   const activeWorkflowFiles: string[] = [];
   const chunks: string[] = [];
+  const scopedChunks: Array<{ cwd: string; text: string }> = [];
 
   for (const wf of workflows) {
     if (wf.rel.startsWith(".github/workflows/")) {
@@ -96,11 +99,15 @@ function buildActivePrCiText(files: readonly ScannedFile[]): {
       if (!info.isPrBlocking || info.activeCommands.length === 0) continue;
       activeWorkflowFiles.push(wf.rel);
       chunks.push(...info.activeCommands);
+      for (const sc of info.scopedCommands ?? info.activeCommands.map((c) => ({ cwd: "", command: c }))) {
+        scopedChunks.push({ cwd: sc.cwd, text: sc.command });
+      }
     } else {
       const lines = sanitizeShellBlock(wf.content);
       if (lines.length > 0) {
         activeWorkflowFiles.push(wf.rel);
         chunks.push(...lines);
+        for (const l of lines) scopedChunks.push({ cwd: "", text: l });
       }
     }
   }
@@ -109,26 +116,31 @@ function buildActivePrCiText(files: readonly ScannedFile[]): {
     return { hasCiWorkflows: false, workflowFiles: [], effectiveCiText: "" };
   }
 
-  const pkgScripts = parsePackageScripts(files);
+  const pkgByDir = parsePackageScriptsByDir(files);
   const visitedScripts = new Set<string>();
-  let frontier = chunks.join("\n");
+  let frontier = scopedChunks;
 
   for (let depth = 0; depth < 4; depth++) {
-    const nextChunks: string[] = [];
-    for (const name of collectReferencedScriptNames(frontier)) {
-      if (visitedScripts.has(name)) continue;
-      visitedScripts.add(name);
-      const rawBody = pkgScripts.get(name);
-      if (!rawBody) continue;
-      const bodyLines = sanitizeShellBlock(rawBody);
-      if (bodyLines.length > 0) {
-        const joined = bodyLines.join("\n");
-        chunks.push(joined);
-        nextChunks.push(joined);
+    const nextFrontier: Array<{ cwd: string; text: string }> = [];
+    for (const item of frontier) {
+      const dirScripts = pkgByDir.get(item.cwd) ?? pkgByDir.get("");
+      if (!dirScripts) continue;
+      for (const name of collectReferencedScriptNames(item.text)) {
+        const key = `${item.cwd}::${name}`;
+        if (visitedScripts.has(key)) continue;
+        visitedScripts.add(key);
+        const rawBody = dirScripts.get(name);
+        if (!rawBody) continue;
+        const bodyLines = sanitizeShellBlock(rawBody);
+        if (bodyLines.length > 0) {
+          const joined = bodyLines.join("\n");
+          chunks.push(joined);
+          nextFrontier.push({ cwd: item.cwd, text: joined });
+        }
       }
     }
-    if (nextChunks.length === 0) break;
-    frontier = nextChunks.join("\n");
+    if (nextFrontier.length === 0) break;
+    frontier = nextFrontier;
   }
 
   return {
@@ -189,16 +201,21 @@ function hasStrictTypesForLanguages(
   configText: string,
   manifestAndConfig: string,
   effectiveCiText: string,
+  hostFiles: readonly ScannedFile[],
 ): boolean {
-  const needsTs = languages.includes("typescript");
-  const needsCs = languages.includes("csharp");
-  const needsPy = languages.includes("python");
-  const needsRust = languages.includes("rust");
-  const needsGo = languages.includes("go");
-  if (needsTs && !/"strict"\s*:\s*true/.test(configText)) return false;
+  const needsTs = languages.includes("typescript"); const needsCs = languages.includes("csharp");
+  const needsPy = languages.includes("python"); const needsRust = languages.includes("rust"); const needsGo = languages.includes("go");
+  if (needsTs) {
+    const tsconfigs = hostFiles.filter((f) => /^tsconfig(?:\.[^/]+)?\.json$/i.test(path.posix.basename(f.rel)));
+    if (tsconfigs.length === 0 || !tsconfigs.some((f) => /"strict"\s*:\s*true/.test(f.content))) return false;
+    if (tsconfigs.some((f) => /"(?:strict|strictNullChecks|noImplicitAny)"\s*:\s*false/.test(f.content))) return false;
+  }
   if (needsCs) {
+    const csFiles = hostFiles.filter((f) => /\.(?:csproj|props)$/i.test(f.rel));
     if (!/<Nullable>enable<\/Nullable>/i.test(manifestAndConfig)) return false;
-    if (/<TreatWarningsAsErrors>false<\/TreatWarningsAsErrors>/i.test(manifestAndConfig)) return false;
+    if (csFiles.some((f) => /<Nullable>\s*disable\s*<\/Nullable>|<TreatWarningsAsErrors>\s*false\s*<\/TreatWarningsAsErrors>/i.test(f.content))) {
+      return false;
+    }
   }
   if (needsPy) {
     const pyText = `${configText}\n${effectiveCiText}`;
@@ -290,7 +307,7 @@ export function extractSignals(
   const hasDeslopPlease = hasHostPath(/\.deslop-please\.allow/) || /\bdeslop-please\b/i.test(configAndCi);
   const hasDesloppify = /\bdesloppify\b/i.test(configAndCi);
 
-  const hasStrictTypes = hasStrictTypesForLanguages(languages, configText, manifestAndConfig, effectiveCiText);
+  const hasStrictTypes = hasStrictTypesForLanguages(languages, configText, manifestAndConfig, effectiveCiText, hostFiles);
   const hasTsgo = /\btsgo\b|@typescript\/native-preview/i.test(configAndCi);
 
   const hasKnipOrDeadCode =

@@ -87,10 +87,8 @@ export function analyzeWave5AiFirstGuards(file: ScannedFile): Finding[] {
   }
 
   if (!file.language || file.isTest) return findings;
-  const code = maskCode(raw, file.language);
-  const cfgTestIdx = file.language === "rust" ? raw.search(/#\[cfg\(test\)\]/) : -1;
-  const prodCode = cfgTestIdx >= 0 ? code.slice(0, cfgTestIdx) : code;
-  const prodRaw = cfgTestIdx >= 0 ? raw.slice(0, cfgTestIdx) : raw;
+  const prodCode = maskCode(raw, file.language, true);
+  const prodRaw = raw;
 
   for (const m of prodRaw.matchAll(FILE_URI_STRIP)) {
     const idx = m.index ?? 0;

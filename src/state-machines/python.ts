@@ -86,7 +86,7 @@ export function lintPythonStateMachines(file: ScannedFile): Finding[] {
       });
     }
 
-    if (discriminant && optionalSiblings.length >= 2) {
+    if (discriminant && optionalSiblings.length >= 2 && !/(?:Dto|Response|Request|Row|Payload|Schema|Contract|Message|Event|Params|Options|Config|Settings|Spec)$/i.test(cls.name)) {
       findings.push({
         id: `SM:py-bag:${file.rel}:${cls.line}`,
         rule: "implicit-sm-optional-bag",

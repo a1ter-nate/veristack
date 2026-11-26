@@ -15,7 +15,6 @@ export interface HooksAdminResult {
 }
 
 const ALL_HARNESSES: readonly HookHarness[] = ["claude", "codex", "cursor", "copilot", "grok"];
-const VSTACK_MARKER = "vstack hook ";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -36,11 +35,19 @@ function writeJsonObj(filePath: string, data: object): void {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
+function isRealVstackHookCommand(cmd: unknown): boolean {
+  if (typeof cmd !== "string") return false;
+  const trimmed = cmd.trim();
+  const withoutComments = trimmed.split("#")[0]?.trim() ?? "";
+  return /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+(?:pre-edit|post-edit|stop)\b/.test(withoutComments) ||
+    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+(?:pre-edit|post-edit|stop)\b/.test(withoutComments);
+}
+
 function containsVstackCommand(entry: unknown): boolean {
   if (!isRecord(entry)) return false;
-  if (typeof entry.command === "string" && entry.command.includes(VSTACK_MARKER)) return true;
+  if (isRealVstackHookCommand(entry.command)) return true;
   if (Array.isArray(entry.hooks)) {
-    return entry.hooks.some((h) => isRecord(h) && typeof h.command === "string" && h.command.includes(VSTACK_MARKER));
+    return entry.hooks.some((h) => isRecord(h) && isRealVstackHookCommand(h.command));
   }
   return false;
 }
@@ -95,6 +102,10 @@ function installHarnessManifest(repoRoot: string, harness: HookHarness, cmdPrefi
   }
 
   const matcher = harness === "codex" ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit";
+  hooks.PreToolUse = mergeHookBucket(hooks.PreToolUse, {
+    matcher,
+    hooks: [{ type: "command", command: `${cmdPrefix} hook pre-edit --harness ${harness}`, timeout: 15 }],
+  });
   hooks.PostToolUse = mergeHookBucket(hooks.PostToolUse, {
     matcher,
     hooks: [{ type: "command", command: `${cmdPrefix} hook post-edit --harness ${harness}`, timeout: 15 }],
@@ -156,12 +167,28 @@ export function manageHooks(
   const cmdPrefix = options.commandPrefix ?? "npx --no-install vstack";
 
   if (action === "status") {
+    const claudeGlobalDisabled = (() => {
+      const p = path.join(repoRoot, ".claude", "settings.json");
+      if (!fs.existsSync(p)) return false;
+      try {
+        const d = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+        return d.disableAllHooks === true;
+      } catch {
+        return false;
+      }
+    })();
     const installed = ALL_HARNESSES.filter((h) => {
+      if (h === "claude" && claudeGlobalDisabled) return false;
       const p = manifestPathFor(repoRoot, h);
       if (!fs.existsSync(p)) return false;
       try {
         const parsed: unknown = JSON.parse(fs.readFileSync(p, "utf8"));
         if (!isRecord(parsed) || parsed.disableAllHooks === true || !isRecord(parsed.hooks)) return false;
+        if (h === "claude" || h === "codex") {
+          const hasPost = Array.isArray(parsed.hooks.PostToolUse) && parsed.hooks.PostToolUse.some((e) => containsVstackCommand(e));
+          const hasStop = Array.isArray(parsed.hooks.Stop) && parsed.hooks.Stop.some((e) => containsVstackCommand(e));
+          return hasPost && hasStop;
+        }
         return Object.values(parsed.hooks).some(
           (bucket) => Array.isArray(bucket) && bucket.some((entry) => containsVstackCommand(entry)),
         );

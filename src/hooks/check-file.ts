@@ -3,14 +3,18 @@ import path from "node:path";
 import { analyzeUniversalAntiSlopProd, analyzeUniversalLandminesTest } from "../anti-slop/oxc-antislop-landmines.ts";
 import { analyzeUniversalBendLaws } from "../anti-slop/universal-laws.ts";
 import { analyzeBlackHoleReplayGuards } from "../ast/blackhole-replay-guards.ts";
+import { analyzeImmuneSystemGates } from "../ast/immune-gates.ts";
 import { analyzeT3ProdGuards } from "../ast/t3-immune-rules.ts";
 import { analyzeTsAstGuards, parseTsAst } from "../ast/ts-ast.ts";
 import { analyzeWave5AiFirstGuards } from "../ast/wave5-ai-first.ts";
 import { analyzeWave6TitansAGuards } from "../ast/wave6-titans-a.ts";
 import { analyzeWave7TitansBGuards } from "../ast/wave7-titans-b.ts";
-import { detectLanguage, type DiscoveredRepo, isTestFilePath, type ScannedFile } from "../discover.ts";
+import { auditCiWorkflows } from "../ci-auditor.ts";
+import { detectLanguage, type DiscoveredRepo, extractSfcScript, isTestFilePath, type ScannedFile } from "../discover.ts";
 import { lintNoComments } from "../no-comments.ts";
+import { analyzeProdZeroDefectRules } from "../prod-guards.ts";
 import { lintImplicitStateMachinesInFile } from "../state-machines/index.ts";
+import { analyzeStructure } from "../structure.ts";
 import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 import { analyzeCveAndPostmortemGuards } from "../zero-defect/cve-and-agent-guards.ts";
@@ -175,7 +179,14 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
 
   const isSql = /\.sql$/i.test(rel);
   const isShell = /\.(?:sh|bash)$/i.test(rel);
-  if (!language && !isSql && !isShell) {
+  const isWorkflow =
+    (rel.toLowerCase().startsWith(".github/workflows/") && /\.ya?ml$/i.test(rel)) ||
+    /^(?:\.gitlab-ci\.yml|azure-pipelines\.yml|\.circleci\/config\.yml|bitbucket-pipelines\.yml)$/i.test(rel);
+  const sfc = extractSfcScript(rel, content);
+  const effectiveLang = language ?? sfc?.language;
+  const effectiveContent = sfc ? sfc.content : content;
+
+  if (!effectiveLang && !isSql && !isShell && !isWorkflow) {
     return { file: rel, tier, language: null, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: [] };
   }
 
@@ -183,15 +194,20 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
   const file: ScannedFile = {
     rel,
     abs,
-    language,
+    language: effectiveLang,
     isTest: isTestFilePath(rel),
-    isWorkflow: false,
-    content,
+    isWorkflow,
+    content: effectiveContent,
+    ...(sfc ? { rawContent: content } : {}),
     lines,
   };
 
   const rawFindings: Finding[] = [];
-  if (isSql) {
+  if (isWorkflow) {
+    const singleRepo = makeSingleFileRepo(repoRoot, file);
+    rawFindings.push(...auditCiWorkflows(singleRepo));
+    rawFindings.push(...analyzeImmuneSystemGates(singleRepo));
+  } else if (isSql) {
     if (/(?:^|\/)migrations?\//i.test(file.rel)) rawFindings.push(...analyzeCveAndPostmortemGuards(file));
     rawFindings.push(...analyzeWave6TitansAGuards(file));
     rawFindings.push(...analyzeWave7TitansBGuards(file));
@@ -200,8 +216,8 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
     rawFindings.push(...analyzeWave7TitansBGuards(file));
     rawFindings.push(...analyzeBlackHoleReplayGuards(file));
     rawFindings.push(...analyzeT3ProdGuards(file));
-  } else if (language) {
-    rawFindings.push(...lintNoComments(file.rel, file.content, language));
+  } else if (effectiveLang) {
+    rawFindings.push(...lintNoComments(file.rel, file.content, effectiveLang));
 
     if (!file.isTest && file.lines > maxLines) {
       rawFindings.push({
@@ -217,9 +233,7 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
       });
     }
 
-    const maskedAll = maskCode(file.content, language);
-    const cfgTestIdx = language === "rust" ? file.content.search(/#\[cfg\(test\)\]/) : -1;
-    const code = cfgTestIdx >= 0 ? maskedAll.slice(0, cfgTestIdx) : maskedAll;
+    const code = maskCode(file.content, effectiveLang, !file.isTest);
     const ast = parseTsAst(file);
 
     if (file.isTest) {
@@ -232,10 +246,13 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
       rawFindings.push(...analyzeUniversalAntiSlopProd(file, ast));
       rawFindings.push(...analyzeTsAstGuards(file, ast));
       if (tier === "all") {
+        const singleRepo = makeSingleFileRepo(repoRoot, file);
+        rawFindings.push(...analyzeStructure(singleRepo));
+        rawFindings.push(...analyzeProdZeroDefectRules(singleRepo));
         rawFindings.push(...analyzeRuntimeGuards(file));
         rawFindings.push(...analyzeOssGuards(file));
         rawFindings.push(...analyzeCveAndPostmortemGuards(file));
-        rawFindings.push(...analyzePerfHygiene(makeSingleFileRepo(repoRoot, file)));
+        rawFindings.push(...analyzePerfHygiene(singleRepo));
       }
     }
   }

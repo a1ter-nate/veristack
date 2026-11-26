@@ -105,11 +105,8 @@ export function analyzeUniversalBendLaws(file: ScannedFile): Finding[] {
   if (!file.language || file.isTest) return [];
   const findings: Finding[] = [];
   const raw = file.content;
-  const maskedAll = maskCode(raw, file.language);
-  const cfgTestIdx = file.language === "rust" ? raw.search(/#\[cfg\(test\)\]/) : -1;
-  const code = cfgTestIdx >= 0 ? maskedAll.slice(0, cfgTestIdx) : maskedAll;
-  const uncommentedAll = stripLineAndBlockComments(raw, file.language);
-  const uncommented = cfgTestIdx >= 0 ? uncommentedAll.slice(0, cfgTestIdx) : uncommentedAll;
+  const code = maskCode(raw, file.language, true);
+  const uncommented = stripLineAndBlockComments(raw, file.language);
 
   const resurrectRe = file.language === "rust" ? RUST_MATCH_TERMINAL_RESURRECT : TERMINAL_CASE_RESURRECT;
   for (const m of uncommented.matchAll(resurrectRe)) {

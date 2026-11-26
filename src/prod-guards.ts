@@ -37,8 +37,9 @@ const CDC_WALL_CLOCK_RS = /\bSystemTime::now\s*\(\s*\)\s*\.duration_since\b|\b(?
 const CDC_WALL_CLOCK_PY = /\b(?:datetime\.(?:utc)?now\s*\([^)]*\)|time\.time\s*\(\s*\))\s*-\s*[A-Za-z_][A-Za-z0-9_.]*/g;
 
 const UNBOUNDED_LOOP = /\bwhile\s*\(\s*true\s*\)|\bwhile\s+True\s*:|\bloop\s*\{/g;
-const SILENT_CATCH_RETURN = /\bcatch\s*(?:\([^)]*\))?\s*\{\s*return\s*(?:true|\{[^}]{0,120}\b(?:accepted|ok|success)\s*:\s*true\b[^}]*\})\s*;?\s*\}/g;
-const CATCHALL_SUCCESS_STUB = /\bdefault\s*:\s*return\s*(?:Response\.json\s*\(|res\.(?:status\s*\(\s*200\s*\)\.)?json\s*\()?\{[^}]{0,120}\b(?:accepted|ok|success)\s*:\s*true\b/g;
+const SILENT_CATCH_RETURN = /\bcatch\s*(?:\([^)]*\))?\s*\{[^{}]{0,220}\breturn\s*(?:true|Ok\s*\(\s*new\s*\{[^}]{0,120}\b(?:accepted|ok|success)\s*=\s*true\b[^}]*\}\s*\)|\{[^}]{0,120}\b(?:accepted|ok|success)\s*:\s*true\b[^}]*\})\s*;?\s*\}/g;
+const CATCHALL_SUCCESS_STUB = /\bdefault\s*:\s*\{?\s*return\s*(?:Ok\s*\(\s*new\s*|Response\.json\s*\(|res\.(?:status\s*\(\s*200\s*\)\.)?json\s*\()?\{[^}]{0,120}\b(?:accepted|ok|success)\s*[:=]\s*true\b/g;
+const PY_SHAM_EXCEPT_OR_CASE = /(?:^\s*except\b[^\n:]*:\s*\r?\n[ \t]+return\s+(?:True|\{[^\n}]*["'](?:accepted|ok|success)["']\s*:\s*True[^\n}]*\})|^\s*case\s+_\s*:\s*\r?\n[ \t]+return\s+(?:True|\{[^\n}]*["'](?:accepted|ok|success)["']\s*:\s*True[^\n}]*\}))/gm;
 
 export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
   const findings: Finding[] = [];
@@ -61,9 +62,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
     }
     if (!file.language || file.isTest || (GENERATED_PATH.test(file.rel) && GENERATED_HEADER.test(file.content.slice(0, 600)))) continue;
     const raw = file.content;
-    const maskedAll = maskCode(raw, file.language);
-    const cfgTestIdx = file.language === "rust" ? raw.search(/#\[cfg\(test\)\]/) : -1;
-    const masked = cfgTestIdx >= 0 ? maskedAll.slice(0, cfgTestIdx) : maskedAll;
+    const masked = maskCode(raw, file.language, true);
 
     if (file.language === "python") {
       for (const match of masked.matchAll(PY_TEST_ONLY_EXPORT)) {
@@ -81,8 +80,11 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
         });
       }
 
+      const seenPyAnyLines = new Set<number>();
       for (const match of masked.matchAll(PY_ANY_ESCAPE)) {
         const line = lineOf(raw, match.index ?? 0);
+        if (seenPyAnyLines.has(line)) continue;
+        seenPyAnyLines.add(line);
         findings.push({
           id: `AS:py-any:${file.rel}:${line}`,
           rule: "no-chained-or-any-cast",
@@ -93,6 +95,26 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
           line,
           message: `Python Any type escape hatch (${match[0].trim()}) disables static type safety.`,
           fix: "Use object, Protocol, TypeVar, or a validated dataclass/Pydantic model at the boundary.",
+        });
+      }
+
+      for (const match of raw.matchAll(PY_SHAM_EXCEPT_OR_CASE)) {
+        const idx = match.index ?? 0;
+        if (masked[idx] === " ") continue;
+        const line = lineOf(raw, idx);
+        const isCase = /^\s*case\s+_/.test(match[0]);
+        findings.push({
+          id: `SHAM:py-${isCase ? "catchall" : "except"}:${file.rel}:${line}`,
+          rule: isCase ? "no-catchall-success-stub" : "no-silent-catch-return",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: file.rel,
+          line,
+          message: isCase
+            ? "Python wildcard 'case _:' returns fabricated success (True / {'accepted': True})."
+            : "Python except block swallows an exception and returns fabricated success.",
+          fix: "Rethrow or return an explicit typed error instead of synthetic success.",
         });
       }
 
@@ -208,9 +230,8 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
       const idx = match.index ?? 0;
       const window = masked.slice(Math.max(0, idx - 220), idx + 450);
       if (
-        /\b(?:maxIter|max_iter|maxAttempts|max_attempts|maxRetries|max_retries|maxPages|max_pages|deadline|timeout|limit|fuel|budget|countdown)\b/i.test(
-          window,
-        )
+        /\b(?:maxIter|max_iter|maxAttempts|max_attempts|maxRetries|max_retries|maxPages|max_pages|deadline|timeout|limit|fuel|budget|countdown)\b/i.test(window) ||
+        /\b(?:if\s*\([^)]*(?:done|eof|empty|null|err)|if\s+not\s+\w+|Err\s*\([^)]*\)\s*=>|None\s*=>)[\s\S]{0,60}\b(?:break|return)\b/i.test(window)
       ) {
         continue;
       }

@@ -303,6 +303,7 @@ test("workflow-audit and manifest workspace discovery enforce CODEOWNERS precede
     fs.mkdirSync(path.join(dir, "App"), { recursive: true });
     fs.mkdirSync(path.join(dir, "App.Tests"), { recursive: true });
     fs.writeFileSync(path.join(dir, "App", "App.csproj"), '<Project Sdk="Microsoft.NET.Sdk"></Project>\n', "utf8");
+    fs.writeFileSync(path.join(dir, "App", "Program.cs"), "public class Program {}\n", "utf8");
     fs.writeFileSync(path.join(dir, "App.Tests", "App.Tests.csproj"), '<Project Sdk="Microsoft.NET.Sdk"></Project>\n', "utf8");
     fs.writeFileSync(path.join(dir, "CODEOWNERS"), "* @root-owner\n", "utf8");
     fs.writeFileSync(path.join(dir, ".github", "CODEOWNERS"), ".verification/rungs.json\n", "utf8");

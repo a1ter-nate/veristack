@@ -99,10 +99,18 @@ export function fitEmpiricalBigO(
   }
 
   const ordered = [...samples].sort((a, b) => a.n - b.n);
+  const minN = ordered[0]?.n ?? 1;
+  const maxN = ordered[ordered.length - 1]?.n ?? 1;
+  if (maxN / minN < 2) {
+    return fail("degenerate_samples", [`Input size span max(n)/min(n) = ${(maxN / minN).toFixed(2)} is < 2x (need at least 2x scaling range).`]);
+  }
   const ns = ordered.map((s) => s.n);
   const times = ordered.map((s) => s.timeMs);
   const timeFit = fitLogLogSlope(ns, times);
   const timeClass = classifyExponent(timeFit.slope);
+  const minT = Math.min(...times);
+  const maxT = Math.max(...times);
+  const trulyFlatConstant = maxT / Math.max(minT, 1e-9) <= 1.25;
 
   const memPairs = ordered.filter((s) => typeof s.memoryBytes === "number" && Number.isFinite(s.memoryBytes) && s.memoryBytes > 0);
   const spaceFit =
@@ -115,7 +123,7 @@ export function fitEmpiricalBigO(
   const spaceClass = spaceFit ? classifyExponent(spaceFit.slope) : null;
 
   const reasons: string[] = [];
-  if (timeFit.slope >= 0.2 && timeFit.r2 < 0.5) {
+  if (!trulyFlatConstant && timeFit.r2 < 0.5) {
     reasons.push(`Log-log fit R2=${timeFit.r2} is below 0.5 reliability floor (noisy or non-monotonic timings).`);
   }
   if (timeFit.slope > thresholds.maxTimeExponent) {

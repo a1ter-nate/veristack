@@ -176,6 +176,8 @@ function checkTsFunctionObligations(fnNode: AstNode, file: ScannedFile, findings
       if (isAstNode(stmt.block)) markUsage(stmt.block, false, -1);
       if (isAstNode(stmt.handler)) markUsage(stmt.handler, false, -1);
       if (isAstNode(stmt.finalizer)) markUsage(stmt.finalizer, true, -1);
+    } else if (stmt.type === "IfStatement") {
+      markUsage(stmt, false, -1);
     } else {
       markUsage(stmt, false, idx);
     }

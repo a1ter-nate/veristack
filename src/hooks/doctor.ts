@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { auditAgentDocs } from "../anti-slop/agent-docs.ts";
 import { discoverRepo } from "../discover.ts";
+import { globMatchesPath } from "../rungs/workflow-audit.ts";
 import { auditFormalSync } from "../zero-defect/formal-sync.ts";
 import { auditZeroDefectArtifacts } from "../zero-defect/index.ts";
 import { loadRepoConfig } from "../zero-defect/repo-config.ts";
@@ -27,6 +28,7 @@ export interface DoctorReport {
 }
 
 const HOOK_MANIFESTS = [
+  ".claude/settings.json",
   ".claude/settings.local.json",
   ".codex/hooks.json",
   ".cursor/hooks.json",
@@ -36,9 +38,54 @@ const HOOK_MANIFESTS = [
 ];
 
 export function runDoctor(repoPath: string): DoctorReport {
+  const absTarget = path.resolve(repoPath);
+  if (!fs.existsSync(absTarget) || !fs.statSync(absTarget).isDirectory()) {
+    throw new Error(`Directory not found: ${repoPath}`);
+  }
   const repo = discoverRepo(repoPath);
   const findings: DoctorFinding[] = [];
   const hookStatus = manageHooks(repo.root, "status");
+
+  if (process.env.VSTACK_HOOK_DISABLED === "1") {
+    findings.push({
+      id: "DOC:hooks-env-disabled",
+      level: "mention",
+      artifact: "env",
+      summary: "VSTACK_HOOK_DISABLED=1 disables Veristack agent hooks globally.",
+      fix: "Unset VSTACK_HOOK_DISABLED so agent hooks run.",
+    });
+  }
+  const hookCfgAbs = path.join(repo.root, ".verification", "hooks.json");
+  if (fs.existsSync(hookCfgAbs)) {
+    try {
+      const hc = JSON.parse(fs.readFileSync(hookCfgAbs, "utf8")) as Record<string, unknown>;
+      if (hc.enabled === false) {
+        findings.push({
+          id: "DOC:hooks-paused:.verification/hooks.json",
+          level: "mention",
+          artifact: ".verification/hooks.json",
+          summary: ".verification/hooks.json sets enabled: false, pausing Veristack agent hooks.",
+          fix: "Run 'vstack hooks on' or set enabled: true.",
+        });
+      }
+    } catch {
+      void 0;
+    }
+  }
+  const allowPatterns = repo.manifest?.allowExcluded ?? [];
+  const unallowlistedExclusions = repo.scopeExclusions.filter((ex) => {
+    const norm = ex.path.replace(/\\/g, "/");
+    return !allowPatterns.some((pat) => globMatchesPath(pat, norm) || globMatchesPath(pat, `${norm}/`));
+  });
+  if (unallowlistedExclusions.length > 0) {
+    findings.push({
+      id: "DOC:scope-exclusions:.vstackignore",
+      level: "mention",
+      artifact: ".vstackignore",
+      summary: `${unallowlistedExclusions.length} unallowlisted path(s) excluded from scan scope via .vstackignore or ignore rules.`,
+      fix: "Remove broad .vstackignore exclusions so all production and test files stay verified.",
+    });
+  }
 
   for (const rel of HOOK_MANIFESTS) {
     const abs = path.join(repo.root, rel);
@@ -68,7 +115,7 @@ export function runDoctor(repoPath: string): DoctorReport {
   const cfg = loadRepoConfig(repo.root);
   if (cfg.configPath) {
     const weakened = Object.entries(cfg.rules)
-      .filter(([, sev]) => sev === "off" || sev === "info")
+      .filter(([, sev]) => sev === "off" || sev === "info" || sev === "warn")
       .map(([rule, sev]) => `${rule}=${sev}`);
     if (weakened.length > 0) {
       findings.push({
