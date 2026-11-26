@@ -31,13 +31,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isUnconditionalIf(cond: unknown): boolean {
+function isUnconditionalIf(cond: unknown, falsyInputs?: ReadonlySet<string>): boolean {
   if (cond === undefined || cond === null) return true;
   if (typeof cond === "boolean") return cond === true;
   if (typeof cond !== "string") return false;
   let norm = cond.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
   if (norm === "true" || norm === "success()" || norm === "always()") return true;
   if (/\b(?:false|failure\s*\(|cancelled\s*\(|workflow_dispatch|skip)\b/.test(norm)) return false;
+  if (falsyInputs && falsyInputs.size > 0) {
+    const parts = norm.split(/\s*&&\s*/).filter((p) => {
+      const m = /^!inputs\.([a-z0-9_-]+)$/.exec(p.trim());
+      return !(m?.[1] && falsyInputs.has(m[1]));
+    });
+    if (parts.length === 0) return true;
+    norm = parts.join(" && ");
+  }
   if (norm === "!github.event.pull_request.draft" || norm === "github.event.pull_request.draft == false") return true;
   norm = norm.replace(/^!github\.event\.pull_request\.draft\s*&&\s*/, "").replace(/\s*&&\s*!github\.event\.pull_request\.draft$/, "").trim();
   if (/^matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]*['"](?:\s*&&\s*matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]*['"])*$/.test(norm)) return true;
@@ -70,11 +78,11 @@ function isAllowedShell(shellVal: unknown): boolean {
 const SAFE_DOCS_IGNORE =
   /^(?:\*\*\/)?(?:docs\/.+|README(?:\.[^/]+)?|CHANGELOG(?:\.[^/]+)?|LICENSE(?:\.[^/]+)?|\*\.md|\*\*\/\*\.md|\*\.txt|\*\.png|\*\.svg|\.vscode\/.+|\.gitignore|\.gitattributes|\.editorconfig)$/i;
 
-function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
+function isBlockingTriggerConfig(name: string, cfg: unknown, defaultBranch?: string): boolean {
   if (name === "merge_group") return true;
   if (name !== "pull_request" && name !== "push") return false;
   if (!isRecord(cfg)) return true;
-  const defaultBranches = new Set(["main", "master", "trunk", "**", "*"]);
+  const defaultBranches = new Set(["main", "master", "trunk", "**", "*", ...(defaultBranch ? [defaultBranch] : [])]);
   if (name === "push" && Array.isArray(cfg.tags) && cfg.tags.length > 0 && (!Array.isArray(cfg.branches) || cfg.branches.length === 0)) {
     return false;
   }
@@ -96,22 +104,25 @@ function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
   return true;
 }
 
-function extractTriggers(onField: unknown): {
-  triggers: string[];
-  isPrBlocking: boolean;
-  ignoredPaths: string[];
-  matchedPaths: string[];
-  hasPrOrPushTrigger: boolean;
+function extractTriggers(onField: unknown, defaultBranch?: string): {
+  triggers: string[]; isPrBlocking: boolean; ignoredPaths: string[]; matchedPaths: string[]; hasPrOrPushTrigger: boolean; falsyInputs: Set<string>;
 } {
   const triggers: string[] = [];
   const ignoredPaths: string[] = [];
   const matchedPaths: string[] = [];
+  const falsyInputs = new Set<string>();
   let isPrBlocking = false;
   let hasPrOrPushTrigger = false;
   const collectPaths = (name: string, cfg: unknown): void => {
+    if ((name === "workflow_dispatch" || name === "workflow_call") && isRecord(cfg) && isRecord(cfg.inputs)) {
+      for (const [k, v] of Object.entries(cfg.inputs)) {
+        if (isRecord(v) && (v.default === false || v.default === "false" || v.default === undefined)) falsyInputs.add(k.toLowerCase());
+      }
+      return;
+    }
     if (name !== "pull_request" && name !== "push") return;
     if (!isRecord(cfg)) { hasPrOrPushTrigger = true; return; }
-    const defaultBranches = new Set(["main", "master", "trunk", "**", "*"]);
+    const defaultBranches = new Set(["main", "master", "trunk", "**", "*", ...(defaultBranch ? [defaultBranch] : [])]);
     const badBranches =
       (Array.isArray(cfg["branches-ignore"]) && cfg["branches-ignore"].some((b) => typeof b === "string" && defaultBranches.has(b.trim()))) ||
       (Array.isArray(cfg.branches) && cfg.branches.length > 0 && !cfg.branches.some((b) => typeof b === "string" && defaultBranches.has(b.trim()))) ||
@@ -126,34 +137,20 @@ function extractTriggers(onField: unknown): {
     }
   };
   if (typeof onField === "string") {
-    triggers.push(onField);
-    isPrBlocking = isBlockingTriggerConfig(onField, undefined);
-    collectPaths(onField, undefined);
+    triggers.push(onField); isPrBlocking = isBlockingTriggerConfig(onField, undefined, defaultBranch); collectPaths(onField, undefined);
   } else if (Array.isArray(onField)) {
     for (const item of onField) {
-      if (typeof item === "string") {
-        triggers.push(item);
-        if (isBlockingTriggerConfig(item, undefined)) isPrBlocking = true;
-        collectPaths(item, undefined);
-      }
+      if (typeof item === "string") { triggers.push(item); if (isBlockingTriggerConfig(item, undefined, defaultBranch)) isPrBlocking = true; collectPaths(item, undefined); }
     }
   } else if (isRecord(onField)) {
     for (const [key, val] of Object.entries(onField)) {
-      triggers.push(key);
-      if (isBlockingTriggerConfig(key, val)) isPrBlocking = true;
-      collectPaths(key, val);
+      triggers.push(key); if (isBlockingTriggerConfig(key, val, defaultBranch)) isPrBlocking = true; collectPaths(key, val);
     }
   }
-  return {
-    triggers: [...new Set(triggers)],
-    isPrBlocking,
-    ignoredPaths: [...new Set(ignoredPaths)],
-    matchedPaths: [...new Set(matchedPaths)],
-    hasPrOrPushTrigger,
-  };
+  return { triggers: [...new Set(triggers)], isPrBlocking, ignoredPaths: [...new Set(ignoredPaths)], matchedPaths: [...new Set(matchedPaths)], hasPrOrPushTrigger, falsyInputs };
 }
 
-export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly ScannedFile[]): ActiveWorkflowInfo {
+export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly ScannedFile[], defaultBranch?: string): ActiveWorkflowInfo {
   let doc: unknown;
   try {
     doc = YAML.parse(file.content);
@@ -165,7 +162,7 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
   }
 
   const onField = doc.on ?? doc.true;
-  const { triggers, isPrBlocking, ignoredPaths, matchedPaths, hasPrOrPushTrigger } = extractTriggers(onField);
+  const { triggers, isPrBlocking, ignoredPaths, matchedPaths, hasPrOrPushTrigger, falsyInputs } = extractTriggers(onField, defaultBranch);
   const rawJobs = isRecord(doc.jobs) ? doc.jobs : {};
 
   const deadJobSet = new Set<string>();
@@ -177,7 +174,7 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
       deadJobSet.add(jobId);
       continue;
     }
-    if (!isUnconditionalIf(jobVal.if) || isContinueOnError(jobVal["continue-on-error"])) {
+    if (!isUnconditionalIf(jobVal.if, falsyInputs) || isContinueOnError(jobVal["continue-on-error"])) {
       deadJobSet.add(jobId);
     }
   }

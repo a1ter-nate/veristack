@@ -284,3 +284,65 @@ test("AI-first CI patterns: draft guard, parallel steps, benign git token rewrit
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("workflow audit honors repo default branch, default-false workflow inputs, and bun turbo task recursion", () => {
+  const wf = parseGitHubWorkflow(
+    {
+      abs: "/tmp/check.yml",
+      rel: ".github/workflows/check.yml",
+      isTest: false,
+      isWorkflow: true,
+      lines: 18,
+      content: [
+        "on:",
+        "  pull_request:",
+        "    branches: [dev, beta]",
+        "  workflow_dispatch:",
+        "    inputs:",
+        "      quarantine:",
+        "        type: boolean",
+        "        default: false",
+        "jobs:",
+        "  unit:",
+        "    if: ${{ !inputs.quarantine && !github.event.pull_request.draft }}",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: bun turbo test --affected",
+      ].join("\n"),
+    },
+    undefined,
+    "dev",
+  );
+  assert.equal(wf.isPrBlocking, true);
+  assert.ok(wf.activeCommands.some((c) => c.includes("bun turbo test")));
+
+  const fakeBranchWf = parseGitHubWorkflow(
+    {
+      abs: "/tmp/check.yml",
+      rel: ".github/workflows/check.yml",
+      isTest: false,
+      isWorkflow: true,
+      lines: 8,
+      content: "on:\n  pull_request:\n    branches: [dev]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun test\n",
+    },
+    undefined,
+    "main",
+  );
+  assert.equal(fakeBranchWf.isPrBlocking, false);
+
+  const turboRepo = makeTempRepo({
+    "package.json": JSON.stringify({ name: "root", scripts: { typecheck: "bun turbo typecheck" } }),
+    "packages/core/package.json": JSON.stringify({ name: "@r/core", scripts: { test: "bun test", typecheck: "tsc --noEmit" } }),
+    "packages/core/tsconfig.json": JSON.stringify({ compilerOptions: { strict: true } }),
+    "packages/core/src/a.ts": "export const x = 1;\n",
+    "packages/core/src/a.test.ts": "import { test } from 'bun:test'; import { x } from './a'; test('x', () => { if (x !== 1) throw new Error(); });\n",
+    ".github/workflows/ci.yml": "on: [pull_request]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun run typecheck\n      - run: bun turbo test --affected\n",
+  });
+  try {
+    const repo = discoverRepo(turboRepo);
+    assert.equal(repo.ci.runsTypeOrStructureCheck, true);
+    assert.equal(repo.ci.runsUnitTests, true);
+  } finally {
+    fs.rmSync(turboRepo, { recursive: true, force: true });
+  }
+});

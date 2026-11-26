@@ -342,6 +342,14 @@ function shouldSkipDirectory(rel: string, name: string, trackedDirs: ReadonlySet
   return true;
 }
 
+function detectDefaultBranch(root: string): string | undefined {
+  const sym = runGitClean(root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (sym.status === 0 && sym.stdout.trim()) return sym.stdout.trim().replace(/^origin\//, "");
+  const head = runGitClean(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (head.status === 0 && head.stdout.trim() && head.stdout.trim() !== "HEAD") return head.stdout.trim();
+  return undefined;
+}
+
 export function discoverRepo(repoPath: string): DiscoveredRepo {
   const root = path.resolve(repoPath);
   const trackedDirs = loadGitTrackedDirs(root);
@@ -415,22 +423,14 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
       allRelPaths.push(rel);
       if (!shouldReadText(rel)) continue;
       let stat: fs.Stats;
-      try {
-        stat = fs.lstatSync(abs);
-      } catch {
-        continue;
-      }
+      try { stat = fs.lstatSync(abs); } catch { continue; }
       if (!stat.isFile() || stat.isSymbolicLink()) continue;
       if (stat.size > MAX_FILE_BYTES) {
         scopeExclusions.push({ path: rel, reason: "oversized", detail: `${stat.size} bytes > ${MAX_FILE_BYTES}` });
         continue;
       }
       let content: string;
-      try {
-        content = fs.readFileSync(abs, "utf8");
-      } catch {
-        continue;
-      }
+      try { content = fs.readFileSync(abs, "utf8"); } catch { continue; }
       const lines = content.length === 0 ? 0 : content.split(/\r?\n/).length;
       if (isMinifiedJs(rel, content, lines)) {
         scopeExclusions.push({ path: rel, reason: "minified", detail: "exceeds single-line or density threshold" });
@@ -438,15 +438,10 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
       }
       const sfc = extractSfcScript(rel, content);
       const language = sfc ? sfc.language : detectLanguage(rel);
-      const effectiveContent = sfc ? sfc.content : content;
       files.push({
-        rel,
-        abs,
-        language,
-        isTest: isTestFilePath(rel),
-        isWorkflow: isWorkflowPath(rel),
+        rel, abs, language, isTest: isTestFilePath(rel), isWorkflow: isWorkflowPath(rel),
         ...(isDeclarationStub(rel) ? { isStub: true } : {}),
-        content: effectiveContent,
+        content: sfc ? sfc.content : content,
         ...(sfc ? { rawContent: content } : {}),
         lines,
       });
@@ -491,6 +486,6 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
   const observedArchetype = inferArchetypeFromFiles(files, allRelPaths);
   const loadedManifest = loadRungManifest(root);
   const archetype = loadedManifest.manifest?.archetype ?? observedArchetype;
-  const { signals, ci } = extractSignals(files, allRelPaths, languages);
+  const { signals, ci } = extractSignals(files, allRelPaths, languages, detectDefaultBranch(root));
   return { root, files, allRelPaths, languages, archetype, observedArchetype, manifest: loadedManifest.manifest, manifestError: loadedManifest.error, scopeExclusions, signals, ci };
 }

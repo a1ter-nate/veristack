@@ -70,21 +70,18 @@ function parsePackageScriptsByDir(files: readonly ScannedFile[]): Map<string, Ma
 
 function collectReferencedScriptNames(text: string): Array<{ name: string; recursive: boolean }> {
   const names: Array<{ name: string; recursive: boolean }> = [];
-  const runRe = /\b(?:npm|pnpm|yarn|bun|turbo)\s+(?:(-r|--recursive)\s+)?(?:run\s+)?([a-zA-Z0-9:_-]+)/g;
-  for (const match of text.matchAll(runRe)) {
-    const candidate = match[2];
-    if (candidate && candidate !== "install" && candidate !== "ci" && candidate !== "exec" && candidate !== "dlx" && candidate !== "x") {
-      names.push({ name: candidate, recursive: Boolean(match[1]) });
-    }
+  for (const m of text.matchAll(/\b(?:(?:bun|pnpm|npx|yarn)\s+(?:x\s+)?)?turbo\s+(?:run\s+)?([a-zA-Z0-9:_-]+)/g)) {
+    if (m[1] && m[1] !== "ls" && m[1] !== "prune") names.push({ name: m[1], recursive: true });
+  }
+  for (const m of text.matchAll(/\b(?:npm|pnpm|yarn|bun)\s+(?:(-r|--recursive)\s+)?(?:run\s+)?([a-zA-Z0-9:_-]+)/g)) {
+    const c = m[2];
+    if (c && c !== "install" && c !== "ci" && c !== "exec" && c !== "dlx" && c !== "x" && c !== "turbo") names.push({ name: c, recursive: Boolean(m[1]) });
   }
   return names;
 }
 
-function buildActivePrCiText(files: readonly ScannedFile[]): {
-  hasCiWorkflows: boolean;
-  workflowFiles: string[];
-  effectiveCiText: string;
-  scheduledOrDeployText: string;
+function buildActivePrCiText(files: readonly ScannedFile[], defaultBranch?: string): {
+  hasCiWorkflows: boolean; workflowFiles: string[]; effectiveCiText: string; scheduledOrDeployText: string;
 } {
   const workflows = files.filter((f) => f.isWorkflow);
   if (workflows.length === 0) return { hasCiWorkflows: false, workflowFiles: [], effectiveCiText: "", scheduledOrDeployText: "" };
@@ -95,7 +92,7 @@ function buildActivePrCiText(files: readonly ScannedFile[]): {
 
   const parsedGha = workflows
     .filter((wf) => wf.rel.startsWith(".github/workflows/"))
-    .map((wf) => ({ wf, info: parseGitHubWorkflow(wf, files) }));
+    .map((wf) => ({ wf, info: parseGitHubWorkflow(wf, files, defaultBranch) }));
   const matchedPathPool = new Set<string>();
   for (const { info } of parsedGha) {
     if (info.hasPrOrPushTrigger && info.activeCommands.length > 0 && info.matchedPaths) {
@@ -267,6 +264,7 @@ export function extractSignals(
   files: readonly ScannedFile[],
   allRelPaths: readonly string[],
   languages: readonly Language[],
+  defaultBranch?: string,
 ): { signals: ToolSignals; ci: CiExecutionSignals } {
   const hostFiles = files.filter((f) => isHostRepoFile(f.rel));
   const hostPaths = allRelPaths.filter((p) => isHostRepoFile(p)).map((p) => p.toLowerCase());
@@ -299,7 +297,7 @@ export function extractSignals(
     .filter((line) => /^\s*(?:import|from|use|using)\b/.test(line))
     .join("\n");
 
-  const { hasCiWorkflows, workflowFiles, effectiveCiText, scheduledOrDeployText } = buildActivePrCiText(files);
+  const { hasCiWorkflows, workflowFiles, effectiveCiText, scheduledOrDeployText } = buildActivePrCiText(files, defaultBranch);
   const configAndCi = `${configText}\n${effectiveCiText}`;
   const manifestAndConfig = `${manifestText}\n${configText}`;
   const testImportAndManifest = `${manifestText}\n${testImportLines}`;
