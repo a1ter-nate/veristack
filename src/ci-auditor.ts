@@ -11,55 +11,13 @@ import { auditExtendedCiRules, auditMaestroFlow } from "./zero-defect/ci-workflo
 const CHECK_TOOL =
   /\b(?:pnpm|npm|yarn|npx|bun|pytest|vitest|jest|tsc|tsgo|eslint|oxlint|prettier|ruff|mypy|cargo|go|make|gradle|mvn|dotnet|unittest|vstack)\b/i;
 
-const WORKFLOW_CHEATS: ReadonlyArray<{
-  rule: string;
-  regex: RegExp;
-  severity: Finding["severity"];
-  message: string;
-  fix: string;
-}> = [
-  {
-    rule: "ci-continue-on-error",
-    regex: /continue-on-error:\s*true/i,
-    severity: "error",
-    message: "Workflow sets continue-on-error: true, silently hiding failures.",
-    fix: "Remove continue-on-error: true so failing checks block merges.",
-  },
-  {
-    rule: "ci-pull-request-target",
-    regex: /\bpull_request_target\b/,
-    severity: "error",
-    message: "pull_request_target exposes repository secrets/write access to untrusted PRs.",
-    fix: "Use pull_request trigger with minimal read-only permissions.",
-  },
-  {
-    rule: "ci-wide-permissions",
-    regex: /permissions:\s*write-all|\bcontents:\s*write\b/,
-    severity: "error",
-    message: "Workflow grants overly wide write permissions.",
-    fix: "Restrict permissions to contents: read and grant narrow scopes only to release jobs.",
-  },
-  {
-    rule: "ci-retry-action",
-    regex: /\bnick-fields\/retry\b|\b--reruns\b|\bretry-attempts\b/i,
-    severity: "error",
-    message: "CI step retries failed commands, masking flaky tests.",
-    fix: "Remove CI retries and fix the underlying flake deterministically.",
-  },
-  {
-    rule: "ci-excessive-timeout",
-    regex: /timeout-minutes:\s*\d{3,}/,
-    severity: "warn",
-    message: "Workflow timeout >= 100 minutes hides hangs and burns runner budget.",
-    fix: "Lower timeout-minutes to match the actual critical path (typically 5–20m).",
-  },
-  {
-    rule: "ci-pipe-tail-head",
-    regex: /\|\s*(?:tail|head)\b/,
-    severity: "error",
-    message: "Piping a check command into tail/head masks non-zero exit codes without pipefail.",
-    fix: "Write command output to a log file and read the file instead of piping.",
-  },
+const WORKFLOW_CHEATS: ReadonlyArray<{ rule: string; regex: RegExp; severity: Finding["severity"]; message: string; fix: string }> = [
+  { rule: "ci-continue-on-error", regex: /continue-on-error:\s*true/i, severity: "error", message: "Workflow sets continue-on-error: true, silently hiding failures.", fix: "Remove continue-on-error: true so failing checks block merges." },
+  { rule: "ci-pull-request-target", regex: /\bpull_request_target\b/, severity: "error", message: "pull_request_target exposes repository secrets/write access to untrusted PRs.", fix: "Use pull_request trigger with minimal read-only permissions." },
+  { rule: "ci-wide-permissions", regex: /permissions:\s*write-all|\bcontents:\s*write\b/, severity: "error", message: "Workflow grants overly wide write permissions.", fix: "Restrict permissions to contents: read and grant narrow scopes only to release jobs." },
+  { rule: "ci-retry-action", regex: /\bnick-fields\/retry\b|\b--reruns\b|\bretry-attempts\b/i, severity: "error", message: "CI step retries failed commands, masking flaky tests.", fix: "Remove CI retries and fix the underlying flake deterministically." },
+  { rule: "ci-excessive-timeout", regex: /timeout-minutes:\s*\d{3,}/, severity: "warn", message: "Workflow timeout >= 100 minutes hides hangs and burns runner budget.", fix: "Lower timeout-minutes to match the actual critical path (typically 5–20m)." },
+  { rule: "ci-pipe-tail-head", regex: /\|\s*(?:tail|head)\b/, severity: "error", message: "Piping a check command into tail/head masks non-zero exit codes without pipefail.", fix: "Write command output to a log file and read the file instead of piping." },
 ];
 
 export function auditCiWorkflows(repo: DiscoveredRepo): Finding[] {
@@ -179,10 +137,25 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   const diff = spawnSync("git", ["-C", repoPath, "diff", baseRef, "--unified=0", "--no-color"], {
     encoding: "utf8",
   });
-  if (diff.status !== 0) return [];
+  if (diff.status !== 0) {
+    return [
+      {
+        id: `DIFF:git-diff-failed:${baseRef}`,
+        rule: "diff-command-failed",
+        category: "cheat",
+        rung: "R0",
+        severity: "error",
+        file: ".git",
+        line: 1,
+        message: `git diff ${baseRef} failed (exit ${diff.status ?? 1}): ${(diff.stderr ?? "").trim() || "unknown git error"} — failing closed.`,
+        fix: `Ensure git ref '${baseRef}' exists in this checkout (fetch base ref in CI) before running diff-cheats.`,
+      },
+    ];
+  }
 
   const findings: Finding[] = [];
   const diffEvents: DiffLineEvent[] = [];
+  let prevOldFile = "";
   let currentFile = "<diff>";
   let currentLine = 1;
 
@@ -204,6 +177,27 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   };
 
   for (const raw of diff.stdout.split(/\r?\n/)) {
+    if (raw.startsWith("--- a/")) {
+      prevOldFile = raw.slice(6);
+      continue;
+    }
+    if (raw === "+++ /dev/null") {
+      if (prevOldFile && /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.go$|_tests?\.rs$|(?:^|\/)test_[^/]+\.py$|tests?\.cs$)/i.test(prevOldFile)) {
+        findings.push({
+          id: `DIFF:test-file-deleted:${prevOldFile}`,
+          rule: "diff-test-file-deleted",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: prevOldFile,
+          line: 1,
+          message: `Entire test file '${prevOldFile}' was deleted in diff.`,
+          fix: "Restore or replace deleted test coverage instead of deleting test files to silence failures.",
+        });
+      }
+      currentFile = prevOldFile || "<diff>";
+      continue;
+    }
     if (raw.startsWith("+++ b/")) {
       currentFile = raw.slice(6);
       continue;

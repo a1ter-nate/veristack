@@ -285,6 +285,11 @@ export function computeRolledThroughputYield(firstPassRates: readonly number[]):
   };
 }
 
+const INVALID_RED_ERROR =
+  /\b(?:SyntaxError|ReferenceError|Cannot\s+find\s+module|TS\d{4}:|error\[E\d{4}\]|IndentationError|ImportError)\b/;
+
+export { runTwoSidedOracleCheck, type TwoSidedOracleResult } from "../rungs/oracle-check.ts";
+
 export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: string): RedBeforeFixResult {
   if (!baseRef || baseRef.startsWith("-")) {
     throw new Error(`Invalid git baseRef "${baseRef}".`);
@@ -346,7 +351,9 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
     const headRun = spawnSync(testCmd, [], { cwd: root, shell: true, encoding: "utf8", timeout: 120_000 });
     const baseCode = baseRun.status ?? 1;
     const headCode = headRun.status ?? 1;
-    const passed = baseCode !== 0 && headCode === 0;
+    const baseOut = `${baseRun.stdout ?? ""}\n${baseRun.stderr ?? ""}`;
+    const baseInvalidRed = Boolean(baseRun.signal === "SIGTERM" || baseRun.error || INVALID_RED_ERROR.test(baseOut));
+    const passed = baseCode !== 0 && !baseInvalidRed && headCode === 0;
 
     return {
       passed,
@@ -355,10 +362,12 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
       baseExitCode: baseCode,
       headExitCode: headCode,
       reason: passed
-        ? `Verified Red-Before-Fix: tests failed on ${baseRef} (exit ${baseCode}) and passed on working tree (exit 0).`
-        : baseCode === 0
-          ? `THEATER TEST DETECTED: test command already passed on unfixed ${baseRef} (exit 0)!`
-          : `Test command still fails on working tree (exit ${headCode}).`,
+        ? `Verified Red-Before-Fix: tests failed behaviorally on ${baseRef} (exit ${baseCode}) and passed on working tree (exit 0).`
+        : baseInvalidRed
+          ? `INVALID RED: base run on ${baseRef} failed due to timeout or compile/import error rather than a behavioral assertion failure.`
+          : baseCode === 0
+            ? `THEATER TEST DETECTED: test command already passed on unfixed ${baseRef} (exit 0)!`
+            : `Test command still fails on working tree (exit ${headCode}).`,
     };
   } finally {
     spawnSync("git", ["worktree", "remove", "--force", worktreeDir], { cwd: root, encoding: "utf8" });

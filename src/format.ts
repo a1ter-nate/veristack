@@ -1,3 +1,4 @@
+import { recommendPackagesForRung } from "./rungs/packages.ts";
 import type { Finding, ScanReport, System1ClassificationReport } from "./types.ts";
 
 export function formatTerminalReport(report: ScanReport): string {
@@ -6,10 +7,10 @@ export function formatTerminalReport(report: ScanReport): string {
 
   out.push(`Verification Stack Scan: ${report.repo}`);
   out.push(
-    `Archetype: ${report.archetype} | Languages: ${report.languages.join(", ") || "none"} | Prod: ${s.sourceFiles} files (${s.prodLines} L) | Tests: ${s.testFiles} files (${s.testLines} L, ratio ${s.testToProdRatio}x)`,
+    `Archetype: ${report.archetype}${report.declaredArchetype ? " (declared)" : " (inferred)"} | Languages: ${report.languages.join(", ") || "none"} | Prod: ${s.sourceFiles} files (${s.prodLines} L) | Tests: ${s.testFiles} files (${s.testLines} L, ratio ${s.testToProdRatio}x)`,
   );
   out.push(
-    `Summary: ${s.holeCount} not-covered/over-budget | ${s.poorlyCoveredCount} poorly-covered | ${s.unexecutedRungCount} not running in CI | Ladder: ${s.overallCoverageScore}/100 (${s.wellCoveredCount}/${s.applicableRungCount} well-covered) | ${s.pushDownCount} push-down opportunities | ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} no-comments) | ${s.warnCount} warnings`,
+    `Summary: ${s.holeCount} not-covered/over-budget | ${s.poorlyCoveredCount} poorly-covered | ${s.unexecutedRungCount} not running in CI | Receipts: ${s.receiptVerifiedCount}/${s.applicableRungCount} | Excluded: ${s.excludedCount} | Ladder: ${s.overallCoverageScore}/100 (${s.wellCoveredCount}/${s.applicableRungCount} well-covered) | ${s.pushDownCount} push-down opportunities | ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} no-comments) | ${s.warnCount} warnings`,
   );
   if (report.config && (report.config.disabledRules.length > 0 || report.config.suppressedCount > 0)) {
     const src = report.config.path ?? "CLI";
@@ -21,7 +22,14 @@ export function formatTerminalReport(report: ScanReport): string {
   for (const r of report.rungs) {
     const tag = r.coverageGrade.toUpperCase().padEnd(14);
     const score = r.coverageGrade === "not-applicable" ? " -- " : `${String(r.coverageScore).padStart(3)}%`;
-    const ciTag = r.coverageGrade === "not-applicable" ? "CI:N/A" : r.executedInCi ? "CI:YES" : "CI:NO ";
+    const ciTag =
+      r.coverageGrade === "not-applicable"
+        ? "CI:N/A "
+        : r.receiptVerified
+          ? "CI:RCPT"
+          : r.executedInCi
+            ? "CI:YES "
+            : "CI:NO  ";
     const ev = r.evidence.length > 0 ? r.evidence.join(", ") : "none";
     out.push(`  ${r.rung} [${tag} ${score} ${ciTag}] ${r.name} (${r.speedBudget} | budget: ${r.targetBudget}) -> ${ev}`);
     if (r.coverageGrade !== "not-applicable") {
@@ -30,6 +38,30 @@ export function formatTerminalReport(report: ScanReport): string {
     }
     for (const gap of r.gaps) {
       out.push(`       GAP: ${gap}`);
+    }
+    if (r.coverageGrade !== "well-covered" && r.coverageGrade !== "not-applicable") {
+      const pkgs = recommendPackagesForRung(report.languages, r.rung);
+      if (pkgs.length > 0) {
+        out.push(`       Packages: ${pkgs.join(" | ")}`);
+      }
+    }
+  }
+
+  if (report.scopeExclusions.length > 0) {
+    out.push("");
+    out.push(`UNALLOWLISTED SCOPE EXCLUSIONS (${report.scopeExclusions.length})`);
+    for (const ex of report.scopeExclusions.slice(0, 20)) {
+      out.push(`  - [${ex.reason}] ${ex.path}${ex.detail ? ` (${ex.detail})` : ""}`);
+    }
+  }
+
+  if (report.workspaces && report.workspaces.length > 0) {
+    out.push("");
+    out.push(`WORKSPACE LADDERS (${report.workspaces.length})`);
+    for (const ws of report.workspaces) {
+      out.push(
+        `  - ${ws.name} (${ws.archetype}) -> ${ws.score}/100 (${ws.wellCoveredCount}/${ws.applicableRungCount} core rungs, ${ws.highRiskFiles} high-risk files)`,
+      );
     }
   }
 

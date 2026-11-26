@@ -80,3 +80,17 @@ Note on Rust tests: return `Result<(), String>` and use `assert_eq!` in integrat
 | **R6** | Benchmarks & Load | `criterion` / `divan`, `k6` | `cargo bench` |
 | **R7** | Thin Golden-Path E2E (5–15 journeys max) | Real compiled binary + real external edges | E2E harness |
 | **R8** | Production Verification | `tracing` + OpenTelemetry, canary rollouts, synthetics | Continuous |
+
+## Recommended Packages per Rung (R0–R8)
+
+| Rung | Recommended Packages / Tools |
+| :---: | :--- |
+| **R0** | `rustfmt`, `clippy` (`-D warnings`, `unwrap_used`/`expect_used = "deny"`), `lefthook` |
+| **R1** | `unsafe_code = "forbid"`, `cargo-udeps` / `cargo-machete` |
+| **R2** | `rstest` (table-driven), `proptest` (PBT) |
+| **R3** | `proptest-state-machine` / `stateright` (MBT), `tower::ServiceExt` / `axum::Router::oneshot` |
+| **R4** | `testcontainers-modules`, `sqlx::test` + real migration checks |
+| **R5** | `cargo-mutants`, `kani` / `stateright` / `loom` / `Bend 2` |
+| **R6** | `criterion`, `divan`, `k6` |
+| **R7** | Thin black-box CLI/service smoke harness (`1–3` tasks) |
+| **R8** | `tracing-opentelemetry`, synthetic probes & canary checks |

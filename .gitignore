@@ -14,3 +14,4 @@ coverage/
 **/.hypothesis/
 **/.ruff_cache/
 .DS_Store
+.verification/receipts/

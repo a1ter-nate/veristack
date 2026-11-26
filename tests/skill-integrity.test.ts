@@ -63,7 +63,7 @@ test("all relative markdown pointers under skill/ resolve to existing files and 
   assert.ok(repo.allRelPaths.includes("skill/SKILL.md"));
 
   const skillMarkdownFiles = collectMarkdownFiles(skillRoot);
-  assert.equal(skillMarkdownFiles.length, 12);
+  assert.equal(skillMarkdownFiles.length, 13);
 
   const linkRegex = /\[[^\]]+\]\(([^)]+)\)/g;
   for (const abs of skillMarkdownFiles) {

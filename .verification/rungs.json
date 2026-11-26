@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "archetype": "library",
+  "allowExcluded": [
+    "examples/*/caught/"
+  ],
+  "rungs": {
+    "R0": {
+      "command": "bun run lint:no-comments && bun run lint:state-machines",
+      "required": true
+    },
+    "R1": {
+      "command": "bun run check:max-lines && bun run build",
+      "required": true
+    },
+    "R2": {
+      "command": "bun test ./tests/ ./examples/typescript/clean/",
+      "required": true,
+      "canary": {
+        "enabled": true,
+        "testCommand": "bun test ./tests/no-comments.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/rung-coverage.test.ts",
+        "targets": [
+          "src/ratchet.ts",
+          "src/rungs/workflow-audit.ts"
+        ],
+        "maxMutants": 6,
+        "minKillRate": 0.8
+      }
+    },
+    "R3": {
+      "command": "bun test ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts",
+      "required": true
+    },
+    "R5": {
+      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test ./tests/no-comments.test.ts ./tests/rungs/property-and-mbt.test.ts\" --targets src/ratchet.ts --max-mutants 4 --min-kill-rate 0.75 --fail",
+      "required": true
+    },
+    "R6": {
+      "command": "bun run perf:check",
+      "required": true
+    }
+  }
+}

@@ -75,3 +75,17 @@ def state_name(state: OrderState) -> str:
 | **R6** | Benchmarks, SPC & Load | `pytest-benchmark`, `locust`/`k6`, `vstack spc` | `uv run pytest --benchmark-only` |
 | **R7** | Thin Golden-Path E2E (5–15 journeys max) | `playwright-python` | `uv run pytest -m e2e` |
 | **R8** | Production Verification & Boot BIST | OpenTelemetry, fail-closed `run_boot_bist()` / `/readyz` | Continuous |
+
+## Recommended Packages per Rung (R0–R8)
+
+| Rung | Recommended Packages / Tools |
+| :---: | :--- |
+| **R0** | `ruff` (`check` + `format`, `S101` prod assert ban), `pre-commit` / `lefthook` |
+| **R1** | `mypy --strict` / `pyright`, `vulture`, `import-linter` |
+| **R2** | `pytest` (`@pytest.mark.parametrize`), `hypothesis` (PBT) |
+| **R3** | `hypothesis.stateful.RuleBasedStateMachine` (MBT), FastAPI `TestClient`, `schemathesis` |
+| **R4** | `testcontainers-python`, `alembic` upgrade/downgrade tests |
+| **R5** | `mutmut`, `crosshair` / `z3-solver` / `Bend 2` |
+| **R6** | `pytest-benchmark`, `locust` / `k6` |
+| **R7** | `playwright-python` (thin golden journeys, zero network mocks) |
+| **R8** | `opentelemetry-sdk`, synthetic probes & canary workflows |

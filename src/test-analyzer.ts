@@ -16,12 +16,12 @@ const TEST_CASE_DECL =
   /\b(?:test|it)(?:\.(?:only|skip|concurrent|each))?\s*\(|\[(?:Fact|Theory|Test|TestCase|TestMethod|Property)\b|\bdef\s+test_[a-zA-Z0-9_]+\s*\(|\bfunc\s+Test[A-Z][a-zA-Z0-9_]*\s*\(|#\[(?:test|tokio::test|rstest)\]/g;
 const TABLE_TEST =
   /\b(?:test|it)\.each\s*\(|\[Theory\]|\[InlineData\(|\[MemberData\(|#\[rstest\]|#\[case\(|@pytest\.mark\.parametrize\b|\.csv["']|\.ya?ml["']|fixtures\/.*\.json/i;
-const PBT_SIGNAL = /\b(?:fc\.property|fc\.asyncProperty|fast-check|@given\(|hypothesis|proptest!|\[Property(?:\(|\])|FsCheck)\b/i;
+const PBT_SIGNAL = /\b(?:fc\.property|fc\.asyncProperty|fast-check|@given\(|hypothesis|proptest!|\[Property(?:\(|\])|FsCheck|runSeededProperty\s*\()\b/i;
 const MBT_SIGNAL =
-  /\b(?:fc\.commands|fc\.modelRun|fc\.asyncModelRun|RuleBasedStateMachine|PropEr|stateright|FsCheck\.Experimental|StateMachine<|Machine<|proptest_state_machine|ReferenceStateMachine|state_machine_test!)\b/i;
+  /\bfc\.commands\s*\(\s*\[(?!\s*\])|\b(?:fc\.modelRun|fc\.asyncModelRun|RuleBasedStateMachine|PropEr|stateright|FsCheck\.Experimental|StateMachine<|Machine<|proptest_state_machine|ReferenceStateMachine|state_machine_test!|runStatefulModelCheck\s*\()\b/i;
 const E2E_SIGNAL = /\b(?:@playwright\/test|page\.goto\(|cy\.visit\(|webdriver|selenium|puppeteer)\b/i;
 const COMPONENT_SIGNAL = /\b(?:@testing-library|render\(|screen\.getBy|mount\(|playwright\/experimental-ct)\b/i;
-const HOST_SIGNAL = /\b(?:WebApplicationFactory|TestServer|supertest\(|app\.request\(|TestClient\(|oneshot\(|actix_web::test)\b/i;
+const HOST_SIGNAL = /\b(?:WebApplicationFactory|TestServer|supertest\(|app\.request\(|TestClient\(|oneshot\(|actix_web::test|spawnSync\s*\(\s*process\.execPath)\b/i;
 const CONTRACT_SIGNAL = /\b(?:@pact-foundation|PactBuilder|VerifyProvider|schemathesis|OpenApiValidator|openapi-response-contract)\b/i;
 const REAL_DB_SIGNAL =
   /\b(?:Testcontainers|PostgreSqlContainer|MsSqlContainer|UseNpgsql|UseSqlServer|SqlConnection|pg\.Pool|PgPool::connect|sqlx::test|PGlite|MigrateAsync|FIRESTORE_EMULATOR_HOST|FIREBASE_AUTH_EMULATOR_HOST|firebase-emulator|initializeTestEnvironment)\b/i;

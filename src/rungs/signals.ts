@@ -1,6 +1,8 @@
 import path from "node:path";
 import type { ScannedFile } from "../discover.ts";
 import type { CiExecutionSignals, Language, ToolSignals } from "../types.ts";
+import { isHostRepoFile } from "./manifest.ts";
+import { auditCodeownersPerimeter, parseGitHubWorkflow } from "./workflow-audit.ts";
 
 const MANIFEST_BASENAMES = new Set([
   "package.json",
@@ -44,6 +46,7 @@ function stripCodeStringsAndComments(content: string): string {
 function parsePackageScripts(files: readonly ScannedFile[]): Map<string, string> {
   const scripts = new Map<string, string>();
   for (const file of files) {
+    if (!isHostRepoFile(file.rel)) continue;
     if (path.posix.basename(file.rel).toLowerCase() !== "package.json") continue;
     try {
       const parsed = JSON.parse(file.content) as { scripts?: Record<string, unknown> };
@@ -60,6 +63,13 @@ function parsePackageScripts(files: readonly ScannedFile[]): Map<string, string>
   return scripts;
 }
 
+function sanitizePackageScript(cmd: string): string {
+  const trimmed = cmd.trim();
+  if (/^(?:echo|printf|true|:)\b/.test(trimmed)) return "";
+  if (/\|\|\s*(?:true|:)\s*$/.test(trimmed)) return "";
+  return trimmed;
+}
+
 function collectReferencedScriptNames(text: string): string[] {
   const names: string[] = [];
   const runRe = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([a-zA-Z0-9:_-]+)/g;
@@ -72,7 +82,7 @@ function collectReferencedScriptNames(text: string): string[] {
   return names;
 }
 
-function buildEffectiveCiText(files: readonly ScannedFile[]): {
+function buildActivePrCiText(files: readonly ScannedFile[]): {
   hasCiWorkflows: boolean;
   workflowFiles: string[];
   effectiveCiText: string;
@@ -82,8 +92,32 @@ function buildEffectiveCiText(files: readonly ScannedFile[]): {
     return { hasCiWorkflows: false, workflowFiles: [], effectiveCiText: "" };
   }
 
+  const activeWorkflowFiles: string[] = [];
+  const chunks: string[] = [];
+
+  for (const wf of workflows) {
+    if (wf.rel.startsWith(".github/workflows/")) {
+      const info = parseGitHubWorkflow(wf);
+      if (!info.isPrBlocking || info.activeCommands.length === 0) continue;
+      activeWorkflowFiles.push(wf.rel);
+      chunks.push(...info.activeCommands);
+    } else {
+      const nonCommentLines = wf.content
+        .split(/\r?\n/)
+        .map((l) => l.replace(/^\s*#.*$/, "").trim())
+        .filter((l) => l && !/^(?:echo|printf|true|:)\b/.test(l));
+      if (nonCommentLines.length > 0) {
+        activeWorkflowFiles.push(wf.rel);
+        chunks.push(...nonCommentLines);
+      }
+    }
+  }
+
+  if (chunks.length === 0) {
+    return { hasCiWorkflows: false, workflowFiles: [], effectiveCiText: "" };
+  }
+
   const pkgScripts = parsePackageScripts(files);
-  const chunks: string[] = workflows.map((w) => w.content);
   const visitedScripts = new Set<string>();
   let frontier = chunks.join("\n");
 
@@ -92,7 +126,9 @@ function buildEffectiveCiText(files: readonly ScannedFile[]): {
     for (const name of collectReferencedScriptNames(frontier)) {
       if (visitedScripts.has(name)) continue;
       visitedScripts.add(name);
-      const body = pkgScripts.get(name);
+      const rawBody = pkgScripts.get(name);
+      if (!rawBody) continue;
+      const body = sanitizePackageScript(rawBody);
       if (body) {
         chunks.push(body);
         nextChunks.push(body);
@@ -102,25 +138,66 @@ function buildEffectiveCiText(files: readonly ScannedFile[]): {
     frontier = nextChunks.join("\n");
   }
 
-  const combinedSoFar = chunks.join("\n");
-  const scriptFileRe = /\b(?:node|bun|tsx|bash|sh|python3?)\s+([a-zA-Z0-9._/-]+\.(?:[cm]?[jt]s|sh|py))\b/g;
-  const fileByRel = new Map(files.map((f) => [f.rel.replace(/\\/g, "/"), f]));
-  const seenScriptFiles = new Set<string>();
-
-  for (const match of combinedSoFar.matchAll(scriptFileRe)) {
-    const rel = (match[1] ?? "").replace(/^\.\//, "");
-    if (!rel || seenScriptFiles.has(rel)) continue;
-    if (!/^(?:scripts|tools|\.github)\//.test(rel)) continue;
-    seenScriptFiles.add(rel);
-    const hit = fileByRel.get(rel);
-    if (hit) chunks.push(hit.content);
-  }
-
   return {
     hasCiWorkflows: true,
-    workflowFiles: workflows.map((w) => w.rel).sort(),
+    workflowFiles: activeWorkflowFiles.sort(),
     effectiveCiText: chunks.join("\n"),
   };
+}
+
+function hasNonEmptyLefthook(files: readonly ScannedFile[]): boolean {
+  const lh = files.find((f) => path.posix.basename(f.rel).toLowerCase() === "lefthook.yml");
+  if (!lh) return false;
+  const cleaned = lh.content
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^\s*#.*$/, ""))
+    .join("\n");
+  return /\bpre-commit\s*:/.test(cleaned) && /\brun\s*:\s*\S+/.test(cleaned);
+}
+
+function hasValidStrykerConfig(files: readonly ScannedFile[]): boolean {
+  const cfg = files.find((f) => /(?:^|\/)stryker-config\.json$/i.test(f.rel));
+  if (!cfg) return false;
+  try {
+    const parsed = JSON.parse(cfg.content) as Record<string, unknown>;
+    return typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function hasNonEmptyFormalSpec(files: readonly ScannedFile[]): boolean {
+  for (const f of files) {
+    if (!/\.(?:tla|qnt|als|dfy|lean|bend)$/.test(f.rel)) continue;
+    const body = f.content
+      .split(/\r?\n/)
+      .map((l) => l.replace(/^\s*(?:--|\/\/|#).*$/, "").trim())
+      .filter(Boolean)
+      .join("\n");
+    if (
+      body.length >= 20 &&
+      /\b(?:module|theorem|law|def|action|val|invariant|lemma|method|predicate|sig|fact|MODULE)\b/.test(body)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasStrictTypesForLanguages(
+  languages: readonly Language[],
+  configText: string,
+  manifestAndConfig: string,
+  effectiveCiText: string,
+): boolean {
+  const needsTs = languages.includes("typescript");
+  const needsCs = languages.includes("csharp");
+  const needsPy = languages.includes("python");
+  if (needsTs && !/"strict"\s*:\s*true/.test(configText)) return false;
+  if (needsCs && !/<Nullable>enable<\/Nullable>/i.test(manifestAndConfig)) return false;
+  if (needsPy && !/\b(?:mypy|pyright)\b/i.test(`${configText}\n${effectiveCiText}`)) return false;
+  if (needsTs || needsCs || needsPy) return true;
+  return languages.includes("rust") || languages.includes("go");
 }
 
 export function extractSignals(
@@ -128,114 +205,112 @@ export function extractSignals(
   allRelPaths: readonly string[],
   languages: readonly Language[],
 ): { signals: ToolSignals; ci: CiExecutionSignals } {
-  const lowerPaths = allRelPaths.map((p) => p.toLowerCase());
-  const hasPath = (re: RegExp): boolean => lowerPaths.some((p) => re.test(p));
+  const hostFiles = files.filter((f) => isHostRepoFile(f.rel));
+  const hostPaths = allRelPaths.filter((p) => isHostRepoFile(p)).map((p) => p.toLowerCase());
+  const allLowerPaths = allRelPaths.map((p) => p.toLowerCase());
+  const hasHostPath = (re: RegExp): boolean => hostPaths.some((p) => re.test(p));
+  const hasAnyPath = (re: RegExp): boolean => allLowerPaths.some((p) => re.test(p));
 
-  const manifestText = files
+  const manifestText = hostFiles
     .filter((f) => isManifestFile(f.rel))
     .map((f) => f.content)
     .join("\n");
 
-  const configText = files
-    .filter((f) => isConfigFile(f))
+  const configText = hostFiles
+    .filter((f) => isConfigFile(f) && !f.isWorkflow)
     .map((f) => f.content)
     .join("\n");
 
-  const testFiles = files.filter((f) => f.isTest);
-  const rawTestText = testFiles.map((f) => f.content).join("\n");
-  const codeTestText = testFiles.map((f) => stripCodeStringsAndComments(f.content)).join("\n");
+  const hostTestFiles = hostFiles.filter((f) => f.isTest);
+  const rawTestText = hostTestFiles.map((f) => f.content).join("\n");
+  const codeTestText = hostTestFiles.map((f) => stripCodeStringsAndComments(f.content)).join("\n");
 
-  const testImportLines = testFiles
+  const testImportLines = hostTestFiles
     .flatMap((f) => f.content.split(/\r?\n/))
     .filter((line) => /^\s*(?:import|from|use|using|require\s*\(|const\s+\w+\s*=\s*require\()/.test(line))
     .join("\n");
 
-  const prodImportLines = files
+  const prodImportLines = hostFiles
     .filter((f) => f.language && !f.isTest && !f.rel.startsWith("src/rungs/"))
     .flatMap((f) => f.content.split(/\r?\n/))
     .filter((line) => /^\s*(?:import|from|use|using)\b/.test(line))
     .join("\n");
 
-  const { hasCiWorkflows, workflowFiles, effectiveCiText } = buildEffectiveCiText(files);
+  const { hasCiWorkflows, workflowFiles, effectiveCiText } = buildActivePrCiText(files);
   const configAndCi = `${configText}\n${effectiveCiText}`;
   const manifestAndConfig = `${manifestText}\n${configText}`;
   const testImportAndManifest = `${manifestText}\n${testImportLines}`;
-  const testCodeAndManifest = `${manifestText}\n${codeTestText}`;
+  const codeownersAudit = auditCodeownersPerimeter(hostFiles, allRelPaths);
 
   const hasFormatter =
-    hasPath(/(?:^|\/)(?:\.?prettier|oxfmt|\.editorconfig|rustfmt\.toml|\.rustfmt\.toml|biome\.jsonc?|ruff\.toml|\.ruff\.toml)/) ||
+    hasHostPath(/(?:^|\/)(?:\.?prettier|oxfmt|\.editorconfig|rustfmt\.toml|\.rustfmt\.toml|biome\.jsonc?|ruff\.toml|\.ruff\.toml)/) ||
     /\b(?:prettier|oxfmt|biome|ruff\s+format|\[tool\.ruff\]|dotnet\s+format|gofmt|rustfmt|cargo\s+fmt)\b/i.test(configAndCi);
 
-  const hasOxlint = hasPath(/(?:^|\/)(?:\.oxlintrc\.jsonc?|oxlint\.config\.[cm]?[jt]s)$/) || /\boxlint\b/i.test(configAndCi);
+  const hasOxlint = hasHostPath(/(?:^|\/)(?:\.oxlintrc\.jsonc?|oxlint\.config\.[cm]?[jt]s)$/) || /\boxlint\b/i.test(configAndCi);
 
   const hasLinter =
     hasOxlint ||
-    hasPath(/(?:^|\/)(?:\.?eslint|biome\.jsonc?|ruff\.toml|\.ruff\.toml|clippy\.toml|\.clippy\.toml|\.golangci\.ya?ml|directory\.build\.props)/) ||
-    /\b(?:eslint|oxlint|biome|ruff\s+check|clippy|golangci-lint|roslyn|AnalysisLevel|VStack\.Analyzers|veristack|vstack(?:\.mjs)?\s+(?:scan|no-comments))\b/i.test(
-      configAndCi,
-    );
-
-  const hasVeristackGate =
-    /\b(?:veristack|vstack(?:\.mjs)?\s+scan|cli\.ts\s+scan|lint\/index\.mjs)\b/i.test(configAndCi) ||
-    hasPath(/(?:^|\/)lint\/index\.mjs$/);
+    hasHostPath(/(?:^|\/)(?:\.?eslint|biome\.jsonc?|ruff\.toml|\.ruff\.toml|clippy\.toml|\.clippy\.toml|\.golangci\.ya?ml|directory\.build\.props)/) ||
+    /\b(?:eslint|oxlint|biome|ruff\s+check|clippy|golangci-lint|roslyn|AnalysisLevel|VStack\.Analyzers)\b/i.test(configAndCi);
 
   const hasAntiSlop =
-    /\b(?:anti-slop|dmmulroy\/anti-slop|VStack\.Analyzers)\b/i.test(configAndCi) || hasVeristackGate;
+    /\b(?:anti-slop|dmmulroy\/anti-slop|VStack\.Analyzers)\b/i.test(configText) ||
+    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines)\b/i.test(effectiveCiText) ||
+    hasHostPath(/(?:^|\/)lint\/index\.mjs$/);
 
   const hasLandmines =
-    /@interfere\/landmines|landmines-testing|\blandmines\//i.test(configAndCi) || hasVeristackGate;
+    /@interfere\/landmines|landmines-testing|\blandmines\//i.test(configText) ||
+    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+scan\b/i.test(effectiveCiText) ||
+    hasHostPath(/(?:^|\/)lint\/index\.mjs$/);
 
   const hasGoInternal =
-    /\boxlint-plugin-go-internal\b/i.test(configAndCi) ||
-    hasPath(/(?:^|\/)lint\/index\.mjs$/);
+    /\boxlint-plugin-go-internal\b/i.test(configText) || hasHostPath(/(?:^|\/)lint\/index\.mjs$/);
 
-  const hasDeslopPlease = hasPath(/\.deslop-please\.allow/) || /\bdeslop-please\b/i.test(configAndCi);
+  const hasDeslopPlease = hasHostPath(/\.deslop-please\.allow/) || /\bdeslop-please\b/i.test(configAndCi);
   const hasDesloppify = /\bdesloppify\b/i.test(configAndCi);
 
-  const hasStrictTypes =
-    /"strict"\s*:\s*true/.test(configText) ||
-    /<Nullable>enable<\/Nullable>/i.test(manifestAndConfig) ||
-    languages.includes("rust") ||
-    languages.includes("go") ||
-    /\b(?:mypy|pyright)\b/i.test(configAndCi);
-
+  const hasStrictTypes = hasStrictTypesForLanguages(languages, configText, manifestAndConfig, effectiveCiText);
   const hasTsgo = /\btsgo\b|@typescript\/native-preview/i.test(configAndCi);
 
   const hasKnipOrDeadCode =
-    hasPath(/(?:^|\/)knip\.jsonc?$/) ||
+    hasHostPath(/(?:^|\/)knip\.jsonc?$/) ||
     /\bknip\b|"noUnusedLocals"\s*:\s*true|CS0162|IDE0051|dead_code|\bclippy\b|\bruff\s+check\b|\bgo\s+vet\b/i.test(
       configAndCi,
     );
 
-  const hasJscpd = hasPath(/jscpd/) || /\bjscpd\b/i.test(configAndCi);
+  const hasJscpd = hasHostPath(/jscpd/) || /\bjscpd\b/i.test(configAndCi);
 
   const hasArchFitness =
     /\b(?:dependency-cruiser|archunit|netarchtest|import-linter|deptrac|packwerk|turbo\s+boundaries|check-max-lines)\b/i.test(
       `${configAndCi}\n${testImportLines}`,
-    ) ||
-    hasPath(/(?:check-boundaries|arch-fitness|architecture.*test|check-max-lines)/) ||
-    hasVeristackGate;
+    ) || hasHostPath(/(?:check-boundaries|arch-fitness|architecture.*test|check-max-lines)/);
 
   const hasPreCommitHook =
-    hasPath(/(?:^|\/)(?:lefthook\.ya?ml|\.husky\/|\.pre-commit-config\.ya?ml|git-hooks\/pre-commit)/) ||
-    /core\.hooksPath/.test(configAndCi);
+    hasNonEmptyLefthook(hostFiles) ||
+    hasHostPath(/(?:^|\/)(?:\.husky\/pre-commit|\.pre-commit-config\.ya?ml|git-hooks\/pre-commit)/) ||
+    /core\.hooksPath/.test(configText);
 
-  const hasCodeowners = hasPath(/(?:^|\/)codeowners$/);
-  const hasReviewMd = hasPath(/(?:^|\/)review\.md$/);
-  const hasAgentsMd = hasPath(/(?:^|\/)(?:agents|claude)\.md$/);
+  const hasCodeowners = codeownersAudit.passed;
+  const hasReviewMd = hasHostPath(/(?:^|\/)review\.md$/);
+  const hasAgentsMd = hasHostPath(/(?:^|\/)(?:agents|claude)\.md$/);
 
-  const hasPbt =
-    /\b(?:fast-check|hypothesis|FsCheck|proptest|quickcheck)\b/i.test(testImportAndManifest) ||
-    /\b(?:fc\.property|fc\.assert|proptest!|@given\s*\(|\[Property\b)/m.test(codeTestText);
-
-  const hasMbt =
-    /\b(?:RuleBasedStateMachine|FsCheck\.Experimental|proptest_state_machine|ReferenceStateMachine|state_machine_test!|fc\.commands)\b/.test(
+  const hasRealPbtCall =
+    /\b(?:fc\.property\s*\(|fc\.asyncProperty\s*\(|proptest!\s*\{|@given\s*\(|\[Property\b|runSeededProperty\s*\()/m.test(
       codeTestText,
-    ) || /\bstateright\b/i.test(testImportAndManifest);
+    );
+  const hasPbt = hasRealPbtCall;
+
+  const hasNonEmptyFcCommands = /\bfc\.commands\s*\(\s*\[(?!\s*\])/.test(codeTestText);
+  const hasMbt =
+    hasNonEmptyFcCommands ||
+    /\b(?:RuleBasedStateMachine|FsCheck\.Experimental|proptest_state_machine|ReferenceStateMachine|state_machine_test!|runStatefulModelCheck\s*\()\b/.test(
+      codeTestText,
+    ) ||
+    /\bstateright\b/i.test(testImportLines);
 
   const hasContractTool =
     /\b(?:@pact-foundation|pactnet|schemathesis|openapi|asyncapi)\b/i.test(`${manifestAndConfig}\n${testImportLines}`) ||
-    hasPath(/(?:^|\/)(?:buf\.yaml|openapi\.(?:ya?ml|json)|asyncapi\.(?:ya?ml|json)|.*\.contract\.[cm]?[jt]sx?)$/);
+    hasHostPath(/(?:^|\/)(?:buf\.yaml|openapi\.(?:ya?ml|json)|asyncapi\.(?:ya?ml|json)|.*\.contract\.[cm]?[jt]sx?)$/);
 
   const hasComponentUiTool =
     /@testing-library|playwright\/experimental-ct|\bstorybook\b/i.test(testImportAndManifest);
@@ -262,16 +337,18 @@ export function extractSignals(
   const hasDryRun = /--dry-run|terraform\s+plan|ansible[^\n]*--check/i.test(configAndCi);
 
   const hasMutationTool =
-    hasPath(/(?:^|\/)(?:mutants\.toml|stryker-config\.json|stryker\.conf\.[cm]?[jt]s)$/) ||
-    /\b(?:@stryker-mutator|stryker|mutmut|cargo-mutants|pitest)\b/i.test(configAndCi) ||
-    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+bench\b/i.test(effectiveCiText);
+    hasValidStrykerConfig(hostFiles) ||
+    hasHostPath(/(?:^|\/)(?:mutants\.toml|stryker\.conf\.[cm]?[jt]s)$/) ||
+    /\b(?:@stryker-mutator|stryker\s+run|mutmut\s+run|cargo\s+mutants|pitest|(?:vstack(?:\.mjs)?|cli\.ts)\s+canary)\b/i.test(
+      configAndCi,
+    );
 
   const hasFormalTool =
-    hasPath(/\.(?:tla|qnt|als|dfy|lean|bend)$|formal_model_check/) ||
-    /\b(?:everystate|z3-solver|Microsoft\.Z3|stateright|kani|verus|loom|shuttle|quint|dafny|crosshair)\b/i.test(
-      `${manifestText}\n${testImportLines}\n${effectiveCiText}`,
+    hasNonEmptyFormalSpec(files) ||
+    /\b(?:everystate|z3-solver|Microsoft\.Z3|stateright|kani|verus|loom|shuttle|quint\s+(?:verify|run)|dafny\s+verify|crosshair)\b/i.test(
+      `${testImportLines}\n${effectiveCiText}`,
     ) ||
-    (hasPath(/(?:^|\/)\.verification\/control-plan\.json$/) && hasPath(/(?:^|\/)\.verification\/laws\/.+\.laws\.json$/));
+    (hasAnyPath(/(?:^|\/)\.verification\/control-plan\.json$/) && hasAnyPath(/(?:^|\/)\.verification\/laws\/.+\.laws\.json$/));
 
   const hasFuzzTool =
     /\b(?:cargo-fuzz|libFuzzer|jazzer|atheris)\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`) ||
@@ -284,15 +361,14 @@ export function extractSignals(
     /\btoHaveScreenshot\s*\(/.test(codeTestText);
 
   const hasPerfOrLoadTool =
-    hasPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js))$/) ||
-    /\b(?:k6|BenchmarkDotNet|criterion|pytest-benchmark|web-vitals|lighthouse|@lhci\/cli)\b/i.test(
+    hasHostPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js))$/) ||
+    /\b(?:k6\s+run|BenchmarkDotNet|criterion|pytest-benchmark|web-vitals|lighthouse|@lhci\/cli|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(
       `${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`,
-    ) ||
-    /\b(?:check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(configAndCi);
+    );
 
   const hasE2eTool =
     /@playwright\/test|\b(?:playwright|cypress|selenium|puppeteer)\b/i.test(testImportAndManifest) ||
-    hasPath(/(?:^|\/)(?:playwright\.config\.[cm]?[jt]s|cypress\.config\.[cm]?[jt]s|maestro\/)/);
+    hasHostPath(/(?:^|\/)(?:playwright\.config\.[cm]?[jt]s|cypress\.config\.[cm]?[jt]s|maestro\/)/);
 
   const hasProdTelemetryOrCanary =
     /\b(?:@opentelemetry|opentelemetry|launchdarkly|dd-trace|@sentry|sentry-sdk|prometheus|goreplay|chaos-mesh)\b/i.test(
@@ -313,40 +389,42 @@ export function extractSignals(
     workflowFiles,
     runsFormatterOrLint:
       hasCiWorkflows &&
-      /\b(?:oxlint|oxfmt|eslint|prettier|biome|ruff\s+(?:check|format)|cargo\s+(?:fmt|clippy)|dotnet\s+(?:format|build\b[^\n]*warnaserror)|gofmt|golangci-lint|go\s+vet|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines))\b/i.test(
+      /\b(?:oxlint|oxfmt|eslint|prettier|biome|ruff\s+(?:check|format)|cargo\s+(?:fmt|clippy)|dotnet\s+(?:format|build\b[^\n]*warnaserror)|gofmt|golangci-lint|go\s+vet|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines|run-rung))\b/i.test(
         effectiveCiText,
       ),
     runsTypeOrStructureCheck:
       hasCiWorkflows &&
-      /\b(?:tsc\b|tsgo\b|bun\s+(?:run\s+)?build|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|go\s+(?:vet|build)|knip\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+scan)\b/i.test(
+      /\b(?:tsc\b|tsgo\b|bun\s+(?:run\s+)?build|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|go\s+(?:vet|build)|knip\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(
         effectiveCiText,
       ),
     runsUnitTests,
     runsBoundaryOrMbtTests:
       hasCiWorkflows &&
-      (runsUnitTests || /\b(?:pact|storybook|test:contract|test:component|test:mbt)\b/i.test(effectiveCiText)),
+      /\b(?:pact|storybook|test:contract|test:component|test:mbt|property-and-mbt|run-rung\s+(?:R3|all))\b/i.test(
+        effectiveCiText,
+      ),
     runsIntegrationOrDbTests:
       hasCiWorkflows &&
-      /\b(?:testcontainers|integration|postgres|firestore|emulator|migrate|prisma\s+migrate|alembic|flyway|test:int|docker\s+compose)\b/i.test(
+      /\b(?:testcontainers|test:int|test:integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|run-rung\s+(?:R4|all))\b/i.test(
         effectiveCiText,
       ),
     runsMutationOrFormal:
       hasCiWorkflows &&
-      (/\b(?:stryker|mutmut|cargo-mutants|pitest|quint|tlc|dafny|kani|formal-sync|chromatic|percy|argos|bombadil)\b/i.test(
+      (/\b(?:stryker\s+run|mutmut\s+run|cargo\s+mutants|pitest|quint\s+(?:verify|run)|dafny\s+verify|kani\b|formal-sync|chromatic|percy|argos|bombadil|run-rung\s+(?:R5|all))\b/i.test(
         effectiveCiText,
       ) ||
         /\bbend\b[^\n]*--check-only/i.test(effectiveCiText) ||
-        /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|bench|formal-sync)\b/i.test(effectiveCiText)),
+        /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText)),
     runsPerfOrBench:
       hasCiWorkflows &&
-      /\b(?:k6\b|BenchmarkDotNet|cargo\s+bench|pytest-benchmark|lighthouse|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|load-test)\b/i.test(
+      /\b(?:k6\s+run|BenchmarkDotNet|cargo\s+bench|pytest-benchmark|lighthouse|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(
         effectiveCiText,
       ),
     runsE2eTests:
-      hasCiWorkflows && /\b(?:playwright|cypress|maestro|test:e2e|e2e)\b/i.test(effectiveCiText),
+      hasCiWorkflows && /\b(?:playwright\s+test|cypress\s+run|maestro\s+test|test:e2e|run-rung\s+(?:R7|all))\b/i.test(effectiveCiText),
     runsProdVerification:
       hasCiWorkflows &&
-      /\b(?:synthetic|canary|rollback|smoke-prod|post-deploy|healthcheck)\b/i.test(effectiveCiText),
+      /\b(?:synthetic|canary|rollback|smoke-prod|post-deploy|healthcheck|run-rung\s+(?:R8|all))\b/i.test(effectiveCiText),
   };
 
   const signals: ToolSignals = {

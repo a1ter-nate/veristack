@@ -5,7 +5,7 @@ import { discoverRepo } from "./discover.ts";
 import { formatFindingsList, formatSystem1Report } from "./format.ts";
 import { handleHooksAndDoctorCli } from "./hooks/index.ts";
 import { lintNoComments } from "./no-comments.ts";
-import { handleScanCli } from "./rungs/scan-cli.ts";
+import { handleRungToolsCli, handleScanCli } from "./rungs/scan-cli.ts";
 import { analyzeStateMachines } from "./state-machines/index.ts";
 import { buildSystem1Packet, corroborateSystem1Batch } from "./system1-classifier.ts";
 import { runSystem1Provider } from "./system1-providers.ts";
@@ -21,7 +21,7 @@ import {
   writeInvariantSnapshot,
 } from "./zero-defect/daikon-invariants.ts";
 import { auditFormalSync, formatFormalSyncReport } from "./zero-defect/formal-sync.ts";
-import { evaluateSpcSeries, generateMcdcVectors, runRedBeforeFix } from "./zero-defect/index.ts";
+import { evaluateSpcSeries, generateMcdcVectors, runRedBeforeFix, runTwoSidedOracleCheck } from "./zero-defect/index.ts";
 import { auditLaws, formatLawsReport } from "./zero-defect/laws.ts";
 import {
   buildReviewBrief,
@@ -42,7 +42,11 @@ function usage(): string {
     "vstack — Deterministic Verification Stack, Push-Down Analyzer, Formal Checks & JEV-Style System 1 Circuits",
     "",
     "Commands:",
-    "  vstack scan [dir] [--json | --md] [--config <file>] [--disable <rules>] [--ratchet <file>] [--update-ratchet] [--strict] [--allow-missing-rungs] [--fail-on-poor-coverage] [--fail-on-cheats] [--fail-on-errors]",
+    "  vstack scan [dir] [--json | --md] [--config <file>] [--disable <rules>] [--ratchet <file>] [--ratchet-base <ref>] [--update-ratchet] [--strict] [--allow-missing-rungs] [--fail-on-poor-coverage] [--fail-on-cheats] [--fail-on-errors]",
+    "  vstack run-rung <R0..R8|all> [dir] [--json]",
+    "  vstack canary [dir] --test-cmd <cmd> [--targets <files>] [--base <ref>] [--max-mutants <n>] [--min-kill-rate <0..1>] [--json] [--fail]",
+    "  vstack perimeter [dir] [--check-github] [--json] [--fail]",
+    "  vstack oracle-check [dir] --base <ref> --test-cmd <cmd> [--json]",
     "  vstack no-comments [dir] [--json] [--fail]",
     "  vstack state-machines [dir] [--json] [--fail]",
     "  vstack diff-cheats [dir] [--base <ref>] [--json] [--fail]",
@@ -89,6 +93,7 @@ function firstPositional(args: readonly string[]): string {
     "--max-time-exp",
     "--max-space-exp",
     "--ratchet",
+    "--ratchet-base",
     "--config",
     "--disable",
     "--corpus",
@@ -96,6 +101,9 @@ function firstPositional(args: readonly string[]): string {
     "--baseline",
     "--tier",
     "--harness",
+    "--targets",
+    "--max-mutants",
+    "--min-kill-rate",
   ]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -143,8 +151,23 @@ async function run(): Promise<number> {
   const hookOrDoctorCode = handleHooksAndDoctorCli(cmd, rest, target, asJson);
   if (hookOrDoctorCode !== null) return hookOrDoctorCode;
 
+  const rungToolCode = handleRungToolsCli(cmd, rest, target, asJson);
+  if (rungToolCode !== null) return rungToolCode;
+
   if (cmd === "scan") {
     return handleScanCli(rest, target, asJson, asMd);
+  }
+
+  if (cmd === "oracle-check") {
+    const baseRef = parseFlagValue(rest, "--base") ?? "HEAD";
+    const testCmd = parseFlagValue(rest, "--test-cmd");
+    if (!testCmd) {
+      throw new Error("vstack oracle-check requires --test-cmd <command>.");
+    }
+    const result = runTwoSidedOracleCheck(target, baseRef, testCmd);
+    if (asJson) console.log(JSON.stringify(result, null, 2));
+    else console.log(`${result.passed ? "PASS" : "FAIL"}: ${result.reason}`);
+    return result.passed ? 0 : 1;
   }
 
   if (cmd === "formal-sync") {

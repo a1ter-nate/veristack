@@ -69,6 +69,88 @@ export interface CiExecutionSignals {
   runsProdVerification: boolean;
 }
 
+export type ScopeExclusionReason =
+  | "vstackignore"
+  | "config-ignore"
+  | "oversized"
+  | "minified"
+  | "truncated";
+
+export interface ScopeExclusion {
+  path: string;
+  reason: ScopeExclusionReason;
+  detail?: string;
+}
+
+export interface PlantedFaultSurvivor {
+  file: string;
+  line: number;
+  operator: string;
+  original: string;
+  mutated: string;
+}
+
+export interface PlantedFaultReport {
+  totalMutants: number;
+  killedMutants: number;
+  survivedMutants: number;
+  invalidKills: number;
+  killRate: number;
+  minKillRate: number;
+  passed: boolean;
+  survivors: PlantedFaultSurvivor[];
+}
+
+export interface RungReceipt {
+  schemaVersion: 1;
+  rung: RungId;
+  command: string;
+  commitSha: string;
+  treeHash: string;
+  exitCode: number;
+  durationMs: number;
+  ciRunId?: string;
+  metrics?: {
+    testsPassed?: number;
+    testsFailed?: number;
+    mutationScore?: number;
+    perfPassed?: boolean;
+  };
+  canary?: PlantedFaultReport;
+  timestamp: string;
+  digest: string;
+}
+
+export interface RungManifestEntry {
+  command: string;
+  required?: boolean;
+  canary?: {
+    enabled: boolean;
+    testCommand?: string;
+    targets?: string[];
+    maxMutants?: number;
+    minKillRate?: number;
+  };
+}
+
+export interface RungManifest {
+  schemaVersion: 1;
+  archetype: RepoArchetype;
+  allowExcluded?: string[];
+  rungs: Partial<Record<RungId, RungManifestEntry>>;
+  workspaces?: Array<{ name: string; path: string; archetype: RepoArchetype }>;
+}
+
+export interface WorkspaceLadderSummary {
+  name: string;
+  path: string;
+  archetype: RepoArchetype;
+  score: number;
+  wellCoveredCount: number;
+  applicableRungCount: number;
+  highRiskFiles: number;
+}
+
 export interface RungStatus {
   rung: RungId;
   name: string;
@@ -78,6 +160,8 @@ export interface RungStatus {
   coverageGrade: RungCoverageGrade;
   coverageScore: number;
   executedInCi: boolean;
+  receiptVerified: boolean;
+  adequacyKillRate?: number;
   idealCoverage: string;
   observedCoverage: string;
   checks: RungCheck[];
@@ -160,6 +244,8 @@ export interface ScanSummary {
   wellCoveredCount: number;
   applicableRungCount: number;
   unexecutedRungCount: number;
+  receiptVerifiedCount: number;
+  excludedCount: number;
   overallCoverageScore: number;
 }
 
@@ -173,10 +259,13 @@ export interface ScanReport {
   schemaVersion: 1;
   repo: string;
   archetype: RepoArchetype;
+  declaredArchetype?: RepoArchetype;
   languages: Language[];
   config?: ScanConfigMeta;
   summary: ScanSummary;
   rungs: RungStatus[];
+  workspaces?: WorkspaceLadderSummary[];
+  scopeExclusions: ScopeExclusion[];
   pushDownOpportunities: PushDownOpportunity[];
   findings: Finding[];
   missingLinters: Array<{ tool: string; priority: "P1" | "P2" | "P3"; why: string }>;

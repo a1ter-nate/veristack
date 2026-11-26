@@ -117,7 +117,18 @@ function runBendVerdict(
     timeout: 30_000,
   });
   if (probe.error) {
-    verifiedBackends.push({ file: relPath, backend: "bend2", status: "skipped", detail: "bend CLI not installed on PATH" });
+    verifiedBackends.push({ file: relPath, backend: "bend2", status: "failed", detail: "bend CLI not installed on PATH (fail-closed under --verify)" });
+    findings.push({
+      id: `LAW:bend-missing:${relPath}`,
+      rule: "laws-verifier-missing",
+      category: "oracle-lock",
+      rung: "R5",
+      severity: "error",
+      file: relPath,
+      line: 1,
+      message: `Bend 2 CLI ('bend') is not installed; cannot mechanically verify ${relPath} under --verify.`,
+      fix: "Install the Bend 2 CLI so 'vstack laws --verify' proves every law instead of skipping.",
+    });
     return;
   }
   const combined = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`;

@@ -11,6 +11,8 @@ export interface DiffLineEvent {
 const STRICT_CONFIG_PATH = /(?:^|\/)(?:tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|\.vstackignore|\.eslintignore|(?:\.verification\/)?\.?vstack\.json|\.verification\/invariants\.json)$/i;
 const TEST_FILE_PATH = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.go$|_tests?\.rs$|(?:^|\/)test_[^/]+\.py$|tests?\.cs$)/i;
 const ASSERT_CALL = /\b(?:assert|expect|Assert\.|assert_eq!|assert_ne!|assert!|require\.|should\.)/;
+const STRICT_ASSERT = /\.(?:toEqual|toStrictEqual|toBe|toMatchObject|toContainEqual)\s*\(|\bassert\.(?:equal|strictEqual|deepEqual|deepStrictEqual)\s*\(|\bassert_eq!\s*\(/;
+const WEAK_ASSERT = /\.(?:toBeDefined|toBeTruthy|toBeFalsy)\s*\(\s*\)|\bAssert\.(?:NotNull|IsNotNull)\s*\(/;
 const GATE_TOOL_LINE = /\b(?:vstack|fail-on-cheats|fail-on-errors|clippy|mypy|pyright|tsgo|oxlint|ruff|TreatWarningsAsErrors|red-before-fix)\b/;
 
 function pushDiff(
@@ -37,7 +39,8 @@ function pushDiff(
 export function auditDiffAntiEvasion(events: readonly DiffLineEvent[]): Finding[] {
   const findings: Finding[] = [];
   const testAddedAsserts = new Map<string, number>();
-  const testDeletedAsserts = new Map<string, { count: number; firstLine: number }>();
+  const testAddedWeakAsserts = new Map<string, number>();
+  const testDeletedAsserts = new Map<string, { count: number; strictCount: number; firstLine: number }>();
 
   for (const ev of events) {
     const lower = ev.file.toLowerCase();
@@ -99,11 +102,15 @@ export function auditDiffAntiEvasion(events: readonly DiffLineEvent[]): Finding[
 
       if (TEST_FILE_PATH.test(ev.file) && ASSERT_CALL.test(ev.code)) {
         testAddedAsserts.set(ev.file, (testAddedAsserts.get(ev.file) ?? 0) + 1);
+        if (WEAK_ASSERT.test(ev.code)) {
+          testAddedWeakAsserts.set(ev.file, (testAddedWeakAsserts.get(ev.file) ?? 0) + 1);
+        }
       }
     } else {
       if (TEST_FILE_PATH.test(ev.file) && ASSERT_CALL.test(ev.raw)) {
-        const cur = testDeletedAsserts.get(ev.file) ?? { count: 0, firstLine: ev.line };
+        const cur = testDeletedAsserts.get(ev.file) ?? { count: 0, strictCount: 0, firstLine: ev.line };
         cur.count += 1;
+        if (STRICT_ASSERT.test(ev.raw)) cur.strictCount += 1;
         testDeletedAsserts.set(ev.file, cur);
       }
 
@@ -132,11 +139,14 @@ export function auditDiffAntiEvasion(events: readonly DiffLineEvent[]): Finding[
 
   for (const [file, delInfo] of testDeletedAsserts.entries()) {
     const addedCount = testAddedAsserts.get(file) ?? 0;
-    if (delInfo.count >= 2 && addedCount === 0) {
+    const weakAdded = testAddedWeakAsserts.get(file) ?? 0;
+    if ((delInfo.count >= 2 && addedCount < delInfo.count) || (delInfo.strictCount > 0 && weakAdded > 0 && addedCount <= delInfo.strictCount)) {
       pushDiff(
         findings, file, delInfo.firstLine, "diff-assertion-deleted",
-        `Deleted ${delInfo.count} test assertion(s) in ${file} without adding any replacement assertions.`,
-        "Preserve or strengthen test assertions; never delete assertions to make a failing test pass.",
+        weakAdded > 0 && delInfo.strictCount > 0
+          ? `Weakened ${delInfo.strictCount} strict assertion(s) into existence-only assertion(s) in ${file}.`
+          : `Net loss of test assertions in ${file} (deleted ${delInfo.count}, added ${addedCount}).`,
+        "Preserve or strengthen exact behavioral assertions; never delete or dilute assertions to make a failing test pass.",
       );
     }
   }

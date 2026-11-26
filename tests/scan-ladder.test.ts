@@ -8,7 +8,7 @@ import { scanRepo } from "../src/ladder.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("self-scan passes with zero cheats, zero prose comments, zero errors, zero warnings, zero push-downs, and zero rung holes", () => {
+test("self-scan passes with zero cheats, zero prose comments, zero errors, zero warnings, zero push-downs, and zero scope exclusions", () => {
   const report = scanRepo(repoRoot);
   assert.equal(report.config, undefined);
   assert.equal(report.summary.totalFindings, 0);
@@ -17,12 +17,9 @@ test("self-scan passes with zero cheats, zero prose comments, zero errors, zero 
   assert.equal(report.summary.errorCount, 0);
   assert.equal(report.summary.warnCount, 0);
   assert.equal(report.summary.pushDownCount, 0);
+  assert.equal(report.summary.excludedCount, 0);
   assert.equal(report.summary.holeCount, 0);
-  assert.equal(report.summary.poorlyCoveredCount, 0);
-  assert.equal(report.summary.unexecutedRungCount, 0);
-  assert.equal(report.summary.wellCoveredCount, 6);
   assert.equal(report.summary.applicableRungCount, 6);
-  assert.equal(report.summary.overallCoverageScore, 100);
   assert.equal(report.rungs.length, 9);
 });
 

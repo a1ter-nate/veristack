@@ -338,8 +338,10 @@ export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDi
     ? runHistoricalReplayBench(replayDir)
     : undefined;
 
+  const replayPassed = !replay || replay.totalCases === 0 || (replay.caughtBefore > 0 && replay.cleanAfter === replay.totalCases);
+
   return {
-    passed: totalExpectedRules === totalMatchedRules && totalCleanFps === 0 && totalAdversarialFps === 0,
+    passed: totalExpectedRules === totalMatchedRules && totalCleanFps === 0 && totalAdversarialFps === 0 && replayPassed,
     totalExpectedRules,
     totalMatchedRules,
     totalCleanFps,

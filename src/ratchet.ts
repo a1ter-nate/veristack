@@ -28,6 +28,7 @@ export interface RatchetRungRegression {
 
 export interface RatchetEvaluation {
   passed: boolean;
+  hasRungBaseline: boolean;
   regressions: RatchetDelta[];
   tightenAvailable: RatchetDelta[];
   rungRegressions: RatchetRungRegression[];
@@ -39,7 +40,7 @@ const GRADE_RANK: Record<RungCoverageGrade, number> = {
   "over-budget": 1,
   "poorly-covered": 2,
   "well-covered": 3,
-  "not-applicable": 3,
+  "not-applicable": -1,
 };
 
 export function buildRatchetBaseline(
@@ -90,11 +91,21 @@ export function evaluateRatchet(
   }
 
   const rungRegressions: RatchetRungRegression[] = [];
+  const hasRungBaseline = Boolean(baseline.rungs && Object.keys(baseline.rungs).length > 0);
   if (baseline.rungs && rungs) {
     for (const r of rungs) {
       const base = baseline.rungs[r.rung];
       if (!base) continue;
-      if (GRADE_RANK[r.coverageGrade] < GRADE_RANK[base.grade]) {
+      if (base.grade !== "not-applicable" && r.coverageGrade === "not-applicable") {
+        rungRegressions.push({
+          rung: r.rung,
+          reason: `archetype downgrade excused rung ${base.grade} -> not-applicable`,
+        });
+      } else if (
+        base.grade !== "not-applicable" &&
+        r.coverageGrade !== "not-applicable" &&
+        GRADE_RANK[r.coverageGrade] < GRADE_RANK[base.grade]
+      ) {
         rungRegressions.push({
           rung: r.rung,
           reason: `grade regressed ${base.grade} -> ${r.coverageGrade} (${base.score}% -> ${r.coverageScore}%)`,
@@ -110,6 +121,7 @@ export function evaluateRatchet(
 
   return {
     passed: regressions.length === 0 && tightenAvailable.length === 0 && rungRegressions.length === 0,
+    hasRungBaseline,
     regressions,
     tightenAvailable,
     rungRegressions,

@@ -2,15 +2,44 @@ import { auditAgentDocs } from "./anti-slop/agent-docs.ts";
 import { auditCiWorkflows } from "./ci-auditor.ts";
 import { discoverRepo, type DiscoveredRepo } from "./discover.ts";
 import { lintNoComments } from "./no-comments.ts";
-import { buildRungStatuses } from "./rungs/coverage.ts";
+import { buildRungStatuses, buildWorkspaceLadders } from "./rungs/coverage.ts";
+import { auditDeclaredArchetype } from "./rungs/manifest.ts";
+import { loadValidReceipts } from "./rungs/receipts.ts";
 import { analyzeStructure } from "./structure.ts";
 import { analyzeTests } from "./test-analyzer.ts";
-import type { Finding, ScanReport } from "./types.ts";
+import type { Finding, ScanReport, ScopeExclusion } from "./types.ts";
 import { applyRepoConfig, isRuleDisabled, loadRepoConfig } from "./zero-defect/repo-config.ts";
 
 export interface ScanOptions {
   configPath?: string;
   disableRules?: readonly string[];
+  strict?: boolean;
+}
+
+function matchAllowPattern(pattern: string, target: string): boolean {
+  const normPat = pattern.trim().replace(/^\/+/, "");
+  const normTarget = target.replace(/^\/+/, "");
+  if (!normPat) return false;
+  if (normPat === normTarget) return true;
+  const isDir = normPat.endsWith("/");
+  const body = isDir ? normPat.slice(0, -1) : normPat;
+  const escaped = body
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "__DBL__")
+    .replace(/\*/g, "[^/]*")
+    .replace(/__DBL__/g, ".*");
+  return new RegExp(`^${escaped}${isDir ? "(?:/.*)?$" : "$"}`).test(normTarget);
+}
+
+function filterUnallowlistedExclusions(
+  exclusions: readonly ScopeExclusion[],
+  allowExcluded: readonly string[],
+): ScopeExclusion[] {
+  if (allowExcluded.length === 0) return [...exclusions];
+  return exclusions.filter((ex) => {
+    if (ex.reason === "truncated") return true;
+    return !allowExcluded.some((pat) => matchAllowPattern(pat, ex.path));
+  });
 }
 
 function recommendMissingLinters(repo: DiscoveredRepo): ScanReport["missingLinters"] {
@@ -36,6 +65,21 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
   const config = loadRepoConfig(repo.root, options.configPath);
   const rawFindings: Finding[] = [];
 
+  if (repo.manifestError) {
+    rawFindings.push({
+      id: "RUNG:manifest-invalid:.verification/rungs.json",
+      rule: "rung-manifest-invalid",
+      category: "oracle-lock",
+      rung: "R0",
+      severity: "error",
+      file: ".verification/rungs.json",
+      line: 1,
+      message: repo.manifestError,
+      fix: "Fix .verification/rungs.json schema so declared archetype and rung commands are valid.",
+    });
+  }
+  rawFindings.push(...auditDeclaredArchetype(repo.manifest, repo.observedArchetype));
+
   if (!isRuleDisabled("no-comments", config, options.disableRules)) {
     for (const file of repo.files) {
       if (file.language) {
@@ -53,8 +97,14 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
   const applied = applyRepoConfig(rawFindings, config, options.disableRules);
   const findings = applied.findings;
 
-  const rungs = buildRungStatuses(repo, testResult.inventory);
+  const receipts = loadValidReceipts(repo, repo.manifest);
+  const requireReceipts = Boolean(options.strict) || Boolean(repo.manifest);
+  const rungs = buildRungStatuses(repo, testResult.inventory, { receipts, requireReceipts });
+  const workspaces = buildWorkspaceLadders(repo, testResult.inventory);
   const missingLinters = recommendMissingLinters(repo);
+
+  const allowExcluded = repo.manifest?.allowExcluded ?? [];
+  const scopeExclusions = filterUnallowlistedExclusions(repo.scopeExclusions, allowExcluded);
 
   const sourceFiles = repo.files.filter((f) => f.language && !f.isTest);
   const testFiles = repo.files.filter((f) => f.language && f.isTest);
@@ -62,7 +112,8 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
   const testLines = testFiles.reduce((sum, f) => sum + f.lines, 0);
   const e2eFiles = testResult.inventory.filter((t) => t.rung === "R7");
   const e2eTestCases = e2eFiles.reduce((sum, t) => sum + Math.max(1, t.testCaseCount), 0);
-  const hasActiveConfig = Boolean(config.configPath) || applied.disabledRules.length > 0;
+  const hasActiveConfig =
+    Boolean(config.configPath) || applied.disabledRules.length > 0 || config.ignore.length > 0;
 
   const applicableRungs = rungs.filter((r) => r.coverageGrade !== "not-applicable");
   const wellCoveredCount = applicableRungs.filter((r) => r.coverageGrade === "well-covered").length;
@@ -71,15 +122,26 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
     (r) => r.coverageGrade === "not-covered" || r.coverageGrade === "over-budget",
   ).length;
   const unexecutedRungCount = applicableRungs.filter((r) => !r.executedInCi).length;
-  const overallCoverageScore =
+  const receiptVerifiedCount = applicableRungs.filter((r) => r.receiptVerified).length;
+
+  let overallCoverageScore =
     applicableRungs.length > 0
       ? Math.round(applicableRungs.reduce((sum, r) => sum + r.coverageScore, 0) / applicableRungs.length)
       : 100;
+
+  if (workspaces.length > 0) {
+    const highRiskWs = workspaces.filter((w) => w.highRiskFiles > 0);
+    if (highRiskWs.length > 0) {
+      const riskCeiling = Math.min(...highRiskWs.map((w) => w.score));
+      overallCoverageScore = Math.min(overallCoverageScore, riskCeiling);
+    }
+  }
 
   return {
     schemaVersion: 1,
     repo: repo.root,
     archetype: repo.archetype,
+    ...(repo.manifest ? { declaredArchetype: repo.manifest.archetype } : {}),
     languages: repo.languages,
     ...(hasActiveConfig
       ? {
@@ -109,9 +171,13 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
       wellCoveredCount,
       applicableRungCount: applicableRungs.length,
       unexecutedRungCount,
+      receiptVerifiedCount,
+      excludedCount: scopeExclusions.length,
       overallCoverageScore,
     },
     rungs,
+    ...(workspaces.length > 0 ? { workspaces } : {}),
+    scopeExclusions,
     pushDownOpportunities: testResult.pushDownOpportunities,
     findings,
     missingLinters,

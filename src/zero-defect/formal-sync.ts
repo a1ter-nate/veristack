@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
 import type { Finding } from "../types.ts";
 
@@ -7,8 +10,22 @@ export interface FormalCheckEntry {
   specFile: string;
   coveredPaths: string[];
   syncCommit: string;
+  contentHash?: string;
   bounds?: string;
   kind?: "formal" | "contract";
+}
+
+function computeFormalContentHash(repoRoot: string, specFile: string, coveredPaths: readonly string[]): string {
+  const hasher = crypto.createHash("sha256");
+  const all = [specFile, ...coveredPaths].sort();
+  for (const rel of all) {
+    const abs = path.join(repoRoot, rel);
+    hasher.update(rel);
+    hasher.update("\0");
+    if (fs.existsSync(abs)) hasher.update(fs.readFileSync(abs));
+    hasher.update("\0");
+  }
+  return hasher.digest("hex");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -28,7 +45,8 @@ function parseEntries(rawList: unknown, kind: "formal" | "contract"): FormalChec
       ? raw.coveredPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
       : [];
     const bounds = typeof raw.bounds === "string" ? raw.bounds : undefined;
-    entries.push({ id, specFile, coveredPaths, syncCommit, bounds, kind });
+    const contentHash = typeof raw.contentHash === "string" ? raw.contentHash.trim() : undefined;
+    entries.push({ id, specFile, coveredPaths, syncCommit, contentHash, bounds, kind });
   }
   return entries;
 }
@@ -91,6 +109,24 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
         message: `Formal check '${entry.id}' has invalid syncCommit '${entry.syncCommit}'.`,
         fix: "Record the exact 7-40 char git commit SHA where the formal model was last verified against covered code.",
       });
+      continue;
+    }
+
+    if (entry.contentHash) {
+      const actualHash = computeFormalContentHash(repo.root, entry.specFile, entry.coveredPaths);
+      if (actualHash !== entry.contentHash) {
+        findings.push({
+          id: `FS:hash-drift:${entry.id}`,
+          rule: isContract ? "contract-artifact-stale" : "formal-spec-stale",
+          category: "oracle-lock",
+          rung: isContract ? "R3" : "R5",
+          severity: "error",
+          file: entry.specFile,
+          line: 1,
+          message: `${label} '${entry.id}' contentHash mismatch (spec or covered code changed since last verified hash).`,
+          fix: `Re-run the formal/contract verifier and update contentHash to '${actualHash}'.`,
+        });
+      }
       continue;
     }
 

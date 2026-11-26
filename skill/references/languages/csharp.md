@@ -84,3 +84,17 @@ public abstract record OrderState
 | **R6** | Benchmarks & Load | `BenchmarkDotNet`, `NBomber` / `k6` | `dotnet run -c Release` |
 | **R7** | Thin Golden-Path E2E (5–15 journeys max) | `Microsoft.Playwright` | `dotnet test --filter Category=E2E` |
 | **R8** | Production Verification | OpenTelemetry, ASP.NET Core Health Checks, canary rollouts | Continuous |
+
+## Recommended Packages per Rung (R0–R8)
+
+| Rung | Recommended Packages / Tools |
+| :---: | :--- |
+| **R0** | `dotnet format`, `VStack.Analyzers`, Roslyn `AnalysisLevel=latest-all`, `lefthook` |
+| **R1** | `<Nullable>enable</Nullable>`, `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`, `NetArchTest.Rules` |
+| **R2** | `xUnit` (`[Theory]` / `[InlineData]`), `FsCheck.Xunit` (PBT) |
+| **R3** | `FsCheck.Experimental` (MBT), `Microsoft.AspNetCore.Mvc.Testing`, `PactNet` |
+| **R4** | `Testcontainers.PostgreSql` / `Testcontainers.MsSql`, `Respawn`, EF Core `MigrateAsync` |
+| **R5** | `Stryker.NET` (`dotnet-stryker`), `Dafny` / `Quint` / `Bend 2` |
+| **R6** | `BenchmarkDotNet`, `NBomber` / `k6` |
+| **R7** | `Microsoft.Playwright` (1–3 cross-service or 5–15 UI golden journeys) |
+| **R8** | `OpenTelemetry.Extensions.Hosting`, .NET Aspire / synthetic probes |

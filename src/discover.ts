@@ -1,7 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
+import { inferArchetypeFromFiles, isHostRepoFile, loadRungManifest } from "./rungs/manifest.ts";
 import { extractSignals } from "./rungs/signals.ts";
-import type { CiExecutionSignals, Language, RepoArchetype, ToolSignals } from "./types.ts";
+import type {
+  CiExecutionSignals,
+  Language,
+  RepoArchetype,
+  RungManifest,
+  ScopeExclusion,
+  ToolSignals,
+} from "./types.ts";
 import { loadRepoConfig } from "./zero-defect/repo-config.ts";
 
 export interface ScannedFile {
@@ -20,16 +28,17 @@ export interface DiscoveredRepo {
   allRelPaths: string[];
   languages: Language[];
   archetype: RepoArchetype;
+  observedArchetype: RepoArchetype;
+  manifest?: RungManifest;
+  manifestError?: string;
+  scopeExclusions: ScopeExclusion[];
   signals: ToolSignals;
   ci: CiExecutionSignals;
 }
 
-const SKIP_DIRS = new Set([
+const ALWAYS_SKIP_DIRS = new Set([
   ".git",
   "node_modules",
-  "dist",
-  "build",
-  "coverage",
   ".next",
   ".nuxt",
   ".output",
@@ -48,14 +57,13 @@ const SKIP_DIRS = new Set([
   ".mypy_cache",
   ".pytest_cache",
   ".ruff_cache",
-  "target",
-  "bin",
-  "obj",
   ".stryker-tmp",
   "StrykerOutput",
   "TestResults",
-  "vendor",
+  "coverage",
 ]);
+
+const ROOT_ONLY_SKIP_DIRS = new Set(["dist", "build", "target", "bin", "obj", "vendor"]);
 
 const MAX_FILE_BYTES = 512_000;
 const MAX_FILES = 12_000;
@@ -117,7 +125,9 @@ function shouldReadText(rel: string): boolean {
   if (lower.endsWith(".vue") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
   if (lower.endsWith(".sh") || lower.endsWith(".bash")) return true;
   if (lower.endsWith(".sql") && /(?:^|\/)(?:migrations?|supabase|policies|rls|schema)\//.test(lower)) return true;
-  if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json)/.test(lower)) return true;
+  if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) {
+    return true;
+  }
   if (base === ".golangci.yml" || base === ".golangci.yaml" || base === "biome.json" || base === "biome.jsonc") return true;
   if (/^\.env\.(?:example|sample|template|dist)$/i.test(base)) return true;
   if (base === "dockerfile" || base.startsWith("dockerfile.")) return true;
@@ -157,6 +167,8 @@ function shouldReadText(rel: string): boolean {
     base === "pytest.ini" ||
     base === "control-plan.json" ||
     base === "escapes.json" ||
+    base === "knip.json" ||
+    base === "knip.jsonc" ||
     base.endsWith(".csproj") ||
     base.endsWith(".tla") ||
     base.endsWith(".qnt") ||
@@ -164,21 +176,9 @@ function shouldReadText(rel: string): boolean {
     base.endsWith(".dfy") ||
     base.endsWith(".lean") ||
     base.endsWith(".feature") ||
-    base === "knip.json" ||
-    base === "knip.jsonc" ||
     /^(?:vitest|vite|playwright|cypress|k6)\.config\.[cm]?[jt]s$/.test(base) ||
     /^\.?lighthouserc\.(?:json|ya?ml|[cm]?js)$/.test(base)
   );
-}
-
-function readSafe(abs: string): string | undefined {
-  try {
-    const stat = fs.lstatSync(abs);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) return undefined;
-    return fs.readFileSync(abs, "utf8");
-  } catch {
-    return undefined;
-  }
 }
 
 const ARCHIVED_DOCS_PATH = /^docs\/.*\/(?:data|archive|snapshots|artifacts)\//i;
@@ -195,8 +195,14 @@ function compileGlobMatcher(pattern: string): RegExp {
   return new RegExp(`^${escaped}${isDir ? "(?:/.*)?$" : "$"}`);
 }
 
-function loadIgnoreMatchers(root: string): RegExp[] {
-  const matchers: RegExp[] = [];
+interface IgnoreRule {
+  pattern: string;
+  regex: RegExp;
+  source: "vstackignore" | "config-ignore";
+}
+
+function loadIgnoreRules(root: string): IgnoreRule[] {
+  const rules: IgnoreRule[] = [];
   const ignorePath = path.join(root, ".vstackignore");
   if (fs.existsSync(ignorePath)) {
     try {
@@ -204,21 +210,21 @@ function loadIgnoreMatchers(root: string): RegExp[] {
       for (const line of raw.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("#")) continue;
-        matchers.push(compileGlobMatcher(trimmed));
+        rules.push({ pattern: trimmed, regex: compileGlobMatcher(trimmed), source: "vstackignore" });
       }
     } catch {
-      return matchers;
+      return rules;
     }
   }
   try {
     const cfg = loadRepoConfig(root);
     for (const pat of cfg.ignore) {
-      matchers.push(compileGlobMatcher(pat));
+      rules.push({ pattern: pat, regex: compileGlobMatcher(pat), source: "config-ignore" });
     }
   } catch {
-    return matchers;
+    return rules;
   }
-  return matchers;
+  return rules;
 }
 
 function isMinifiedJs(rel: string, content: string, lines: number): boolean {
@@ -231,15 +237,31 @@ function isMinifiedJs(rel: string, content: string, lines: number): boolean {
   return false;
 }
 
+function isBuildOutputSkipDir(dirRel: string, entryName: string): boolean {
+  if (ALWAYS_SKIP_DIRS.has(entryName)) return true;
+  if (!ROOT_ONLY_SKIP_DIRS.has(entryName)) return false;
+  if (dirRel === entryName) return true;
+  if (/^(?:apps|packages|services|crates|libs|templates|lint)\/[^/]+(?:\/[^/]+)?\/(?:dist|build|target|bin|obj|vendor)$/.test(dirRel)) {
+    return true;
+  }
+  return false;
+}
+
 export function discoverRepo(repoPath: string): DiscoveredRepo {
   const root = path.resolve(repoPath);
-  const ignoreMatchers = loadIgnoreMatchers(root);
-  const isIgnored = (rel: string): boolean => ignoreMatchers.some((re) => re.test(rel));
+  const ignoreRules = loadIgnoreRules(root);
+  const matchIgnore = (rel: string): IgnoreRule | undefined => ignoreRules.find((r) => r.regex.test(rel));
   const files: ScannedFile[] = [];
   const allRelPaths: string[] = [];
+  const scopeExclusions: ScopeExclusion[] = [];
   const stack: string[] = [root];
+  let truncated = false;
 
-  while (stack.length > 0 && allRelPaths.length < MAX_FILES) {
+  while (stack.length > 0) {
+    if (allRelPaths.length >= MAX_FILES) {
+      truncated = true;
+      break;
+    }
     const dir = stack.pop() ?? "";
     let entries: fs.Dirent[];
     try {
@@ -250,27 +272,54 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
     entries.sort((a, b) => a.name.localeCompare(b.name));
     const subdirs: string[] = [];
     const prioritySubdirs: string[] = [];
+
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
+      const abs = path.join(dir, entry.name);
+      const rel = path.relative(root, abs).split(path.sep).join("/");
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue;
-        const dirRel = path.relative(root, path.join(dir, entry.name)).split(path.sep).join("/");
-        if (isIgnored(dirRel)) continue;
-        const fullDir = path.join(dir, entry.name);
-        if (PRIORITY_DIRS.has(entry.name)) prioritySubdirs.push(fullDir);
-        else subdirs.push(fullDir);
+        if (rel === ".verification/receipts") continue;
+        if (isBuildOutputSkipDir(rel, entry.name)) continue;
+        const ignored = matchIgnore(rel);
+        if (ignored) {
+          scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` });
+          continue;
+        }
+        if (PRIORITY_DIRS.has(entry.name)) prioritySubdirs.push(abs);
+        else subdirs.push(abs);
         continue;
       }
       if (!entry.isFile()) continue;
-      const abs = path.join(dir, entry.name);
-      const rel = path.relative(root, abs).split(path.sep).join("/");
-      if (ARCHIVED_DOCS_PATH.test(rel) || isIgnored(rel)) continue;
+      if (ARCHIVED_DOCS_PATH.test(rel)) continue;
+      const ignored = matchIgnore(rel);
+      if (ignored) {
+        scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` });
+        continue;
+      }
       allRelPaths.push(rel);
       if (!shouldReadText(rel)) continue;
-      const content = readSafe(abs);
-      if (content === undefined) continue;
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(abs);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      if (stat.size > MAX_FILE_BYTES) {
+        scopeExclusions.push({ path: rel, reason: "oversized", detail: `${stat.size} bytes > ${MAX_FILE_BYTES}` });
+        continue;
+      }
+      let content: string;
+      try {
+        content = fs.readFileSync(abs, "utf8");
+      } catch {
+        continue;
+      }
       const lines = content.length === 0 ? 0 : content.split(/\r?\n/).length;
-      if (isMinifiedJs(rel, content, lines)) continue;
+      if (isMinifiedJs(rel, content, lines)) {
+        scopeExclusions.push({ path: rel, reason: "minified", detail: "exceeds single-line or density threshold" });
+        continue;
+      }
       const language = detectLanguage(rel);
       files.push({
         rel,
@@ -282,6 +331,7 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
         lines,
       });
     }
+
     for (let i = subdirs.length - 1; i >= 0; i--) {
       const nextDir = subdirs[i];
       if (nextDir) stack.push(nextDir);
@@ -292,34 +342,37 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
     }
   }
 
+  if (truncated) {
+    scopeExclusions.push({ path: ".", reason: "truncated", detail: `exceeded ${MAX_FILES}-file scan ceiling` });
+  }
+
   const languageSet = new Set<Language>();
   for (const file of files) {
-    if (file.language) languageSet.add(file.language);
+    if (file.language && isHostRepoFile(file.rel)) languageSet.add(file.language);
+  }
+  if (languageSet.size === 0) {
+    for (const file of files) {
+      if (file.language) languageSet.add(file.language);
+    }
   }
   const languages = [...languageSet].sort();
 
-  const lowerPaths = allRelPaths.map((p) => p.toLowerCase());
-  const manifestText = files
-    .filter((f) => !f.isTest && !f.isWorkflow && !f.language && !f.rel.toLowerCase().endsWith(".md"))
-    .map((f) => f.content)
-    .join("\n");
-
-  const hasReactOrUi =
-    /(?:["'](?:react|next|vue|svelte|@angular\/core|solid-js)["']|\b(?:react-dom|next\.config)\b)/i.test(manifestText) ||
-    lowerPaths.some((p) => p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".vue") || p.endsWith(".svelte"));
-  const hasBackendService =
-    /\b(?:express|fastify|hono|nestjs|koa|fastapi|django|flask|actix-web|axum|gin-gonic|microsoft\.aspnetcore)\b/i.test(
-      manifestText,
-    ) ||
-    files.some((f) => f.language === "csharp" && !f.isTest && /\bWebApplication\.CreateBuilder\b/.test(f.content)) ||
-    lowerPaths.some((p) => p.includes("dockerfile") || p.includes("controllers/") || p.includes("routes/"));
-
-  let archetype: RepoArchetype = "library";
-  if (hasReactOrUi && hasBackendService) archetype = "fullstack";
-  else if (hasReactOrUi) archetype = "frontend";
-  else if (hasBackendService) archetype = "service";
-
+  const observedArchetype = inferArchetypeFromFiles(files, allRelPaths);
+  const loadedManifest = loadRungManifest(root);
+  const archetype = loadedManifest.manifest?.archetype ?? observedArchetype;
   const { signals, ci } = extractSignals(files, allRelPaths, languages);
 
-  return { root, files, allRelPaths, languages, archetype, signals, ci };
+  return {
+    root,
+    files,
+    allRelPaths,
+    languages,
+    archetype,
+    observedArchetype,
+    manifest: loadedManifest.manifest,
+    manifestError: loadedManifest.error,
+    scopeExclusions,
+    signals,
+    ci,
+  };
 }

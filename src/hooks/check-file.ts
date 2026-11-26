@@ -131,6 +131,8 @@ function makeSingleFileRepo(repoRoot: string, file: ScannedFile): DiscoveredRepo
     allRelPaths: [file.rel],
     languages: file.language ? [file.language] : [],
     archetype: "library",
+    observedArchetype: "library",
+    scopeExclusions: [],
     signals: {
       hasFormatter: false, hasLinter: false, hasOxlint: false, hasAntiSlop: false, hasLandmines: false,
       hasGoInternal: false, hasDeslopPlease: false, hasDesloppify: false, hasStrictTypes: false, hasTsgo: false,

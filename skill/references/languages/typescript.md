@@ -80,3 +80,17 @@ export default defineConfig({
   },
 });
 ```
+
+## Recommended Packages per Rung (R0–R8)
+
+| Rung | Recommended Packages / Tools |
+| :---: | :--- |
+| **R0** | `oxfmt`, `oxlint`, `veristack` (`veristack/lint`), `lefthook` |
+| **R1** | `typescript` (`strict: true`, `noUnusedLocals: true`), `knip`, `dependency-cruiser` |
+| **R2** | `vitest` / `bun:test` (`test.each`), `fast-check` (PBT) |
+| **R3** | `fast-check` (`fc.commands` MBT), `@testing-library/react`, `msw` (`onUnhandledRequest: 'error'`), `@pact-foundation/pact` |
+| **R4** | `@testcontainers/postgresql` / `@electric-sql/pglite`, Prisma/Drizzle migration upgrade tests |
+| **R5** | `@stryker-mutator/core`, `vstack canary`, `bend` / `quint`, `@playwright/test` (`toHaveScreenshot`) |
+| **R6** | `k6`, `@lhci/cli`, `web-vitals`, `vstack big-o` / `vstack spc` |
+| **R7** | `@playwright/test` (5–15 golden journeys, zero network mocks) |
+| **R8** | `@opentelemetry/sdk-node`, synthetic probes & canary workflows |
