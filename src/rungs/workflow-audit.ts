@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import type { ScannedFile } from "../discover.ts";
+import { sanitizeShellBlock } from "./command-audit.ts";
 
 export interface ActiveWorkflowInfo {
   file: string;
@@ -19,6 +20,7 @@ export interface CodeownersPerimeterResult {
 
 const VALID_CODEOWNERS_PATHS = new Set([".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]);
 const VALID_OWNER_TOKEN = /^(?:@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9_.-]+)?|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})$/;
+const ALLOWED_SHELLS = new Set(["bash", "sh", "pwsh", "powershell", "zsh"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -33,68 +35,41 @@ function isUnconditionalIf(cond: unknown): boolean {
 }
 
 function isContinueOnError(val: unknown): boolean {
-  if (val === true) return true;
+  if (val === undefined || val === null || val === false) return false;
   if (typeof val === "string") {
     const norm = val.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
-    return norm === "true";
+    return norm !== "false";
   }
-  return false;
+  return true;
 }
 
-function stripShellComment(line: string): string {
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i] ?? "";
-    if (ch === "'" && !inDouble) inSingle = !inSingle;
-    else if (ch === '"' && !inSingle && line[i - 1] !== "\\") inDouble = !inDouble;
-    else if (ch === "#" && !inSingle && !inDouble) {
-      if (i === 0 || /\s/.test(line[i - 1] ?? "")) return line.slice(0, i);
-    }
-  }
-  return line;
-}
-
-export function sanitizeShellBlock(runScript: string): string[] {
-  const active: string[] = [];
-  let setPlusE = false;
-  for (const raw of runScript.split(/\r?\n/)) {
-    const trimmed = stripShellComment(raw).trim();
-    if (!trimmed) continue;
-    if (/^set\s+\+e\b/.test(trimmed)) {
-      setPlusE = true;
-      continue;
-    }
-    if (/^set\s+-e\b/.test(trimmed)) {
-      setPlusE = false;
-      continue;
-    }
-    if (/^exit\s+0\b/.test(trimmed)) break;
-    if (setPlusE) continue;
-    if (/^(?:echo|printf|true)(?:\s|$)/.test(trimmed)) continue;
-    if (/^:(?:\s|$)/.test(trimmed)) continue;
-    if (/^false\s*&&/.test(trimmed)) continue;
-    if (/\|\|\s*(?:true|echo|printf|:|exit\s+0)\b/.test(trimmed)) continue;
-    if (/\s--help(?:\s|$)/.test(trimmed)) continue;
-    active.push(trimmed);
-  }
-  return active;
+function isAllowedShell(shellVal: unknown): boolean {
+  if (shellVal === undefined || shellVal === null) return true;
+  if (typeof shellVal !== "string") return false;
+  return ALLOWED_SHELLS.has(shellVal.trim().toLowerCase());
 }
 
 function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
   if (name === "merge_group") return true;
   if (name !== "pull_request" && name !== "push") return false;
   if (!isRecord(cfg)) return true;
+  const defaultBranches = new Set(["main", "master", "trunk", "**", "*"]);
   if (Array.isArray(cfg.paths) && cfg.paths.length > 0) return false;
-  if (Array.isArray(cfg["paths-ignore"]) && cfg["paths-ignore"].includes("**")) return false;
-  if (Array.isArray(cfg["branches-ignore"]) && cfg["branches-ignore"].includes("**")) return false;
-  if (name === "push" && Array.isArray(cfg.branches) && cfg.branches.length > 0) {
-    const defaultBranches = new Set(["main", "master", "trunk", "**", "*"]);
-    if (!cfg.branches.some((b) => typeof b === "string" && defaultBranches.has(b))) return false;
+  if (Array.isArray(cfg["paths-ignore"]) && cfg["paths-ignore"].length > 0) {
+    const risky = cfg["paths-ignore"].some(
+      (p) => typeof p === "string" && (/^\*+$|^\*\*\/\*|\.(?:[cm]?[jt]sx?|py|rs|go|cs|json|ya?ml)$/.test(p.trim())),
+    );
+    if (risky) return false;
+  }
+  if (Array.isArray(cfg["branches-ignore"]) && cfg["branches-ignore"].length > 0) {
+    if (cfg["branches-ignore"].some((b) => typeof b === "string" && defaultBranches.has(b.trim()))) return false;
+  }
+  if (Array.isArray(cfg.branches) && cfg.branches.length > 0) {
+    if (!cfg.branches.some((b) => typeof b === "string" && defaultBranches.has(b.trim()))) return false;
   }
   if (name === "pull_request" && Array.isArray(cfg.types) && cfg.types.length > 0) {
-    const blockingTypes = new Set(["opened", "synchronize", "reopened"]);
-    if (!cfg.types.some((t) => typeof t === "string" && blockingTypes.has(t))) return false;
+    const typeSet = new Set(cfg.types.filter((t): t is string => typeof t === "string"));
+    if (!typeSet.has("opened") || !typeSet.has("synchronize")) return false;
   }
   return true;
 }
@@ -159,12 +134,15 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
   }
 
   const activeCommands: string[] = [];
+  const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
     if (deadJobSet.has(jobId) || !isRecord(jobVal)) continue;
+    const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : wfDefaults;
     const steps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
     for (const step of steps) {
       if (!isRecord(step)) continue;
       if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
+      if (!isAllowedShell(step.shell ?? jobShell)) continue;
       if (typeof step.run === "string") {
         activeCommands.push(...sanitizeShellBlock(step.run));
       }
@@ -244,6 +222,9 @@ export function auditCodeownersPerimeter(
   for (const opt of optionalSurfaces) {
     if (allSet.has(opt)) surfaces.push(opt);
   }
+  for (const p of allRelPaths) {
+    if (p.startsWith(".verification/laws/") && p.endsWith(".laws.json")) surfaces.push(p);
+  }
 
   const uniqueSurfaces = [...new Set(surfaces)];
   const uncovered = uniqueSurfaces.filter((surf) => {
@@ -313,17 +294,33 @@ export function checkGitHubBranchProtection(repoRoot: string): {
   try {
     const parsed = JSON.parse(api.stdout) as {
       required_status_checks?: { contexts?: string[]; checks?: Array<{ context?: string }> };
-      required_pull_request_reviews?: { require_code_owner_reviews?: boolean };
+      required_pull_request_reviews?: {
+        require_code_owner_reviews?: boolean;
+        required_approving_review_count?: number;
+        dismiss_stale_reviews?: boolean;
+      };
       enforce_admins?: { enabled?: boolean };
+      allow_force_pushes?: { enabled?: boolean };
     };
     const checks = [
       ...(parsed.required_status_checks?.contexts ?? []),
       ...(parsed.required_status_checks?.checks?.map((c) => c.context ?? "").filter(Boolean) ?? []),
     ];
-    const hasVeristack = checks.some((c) => /veristack|vstack|self-verify-vstack/i.test(c));
-    const codeOwnerReviewsRequired = Boolean(parsed.required_pull_request_reviews?.require_code_owner_reviews);
+    const hasVeristack = checks.some((c) => /^(?:self-verify-vstack-strict|veristack(?:-strict)?|vstack-strict|verify-ts)$/i.test(c.trim()));
+    const prRev = parsed.required_pull_request_reviews;
+    const codeOwnerReviewsRequired = Boolean(prRev?.require_code_owner_reviews);
+    const hasApprovals = (prRev?.required_approving_review_count ?? 0) >= 1;
+    const dismissStale = Boolean(prRev?.dismiss_stale_reviews);
     const adminsEnforced = Boolean(parsed.enforce_admins?.enabled);
-    const passed = checks.length > 0 && hasVeristack && codeOwnerReviewsRequired && adminsEnforced;
+    const noForcePush = parsed.allow_force_pushes?.enabled !== true;
+    const passed =
+      checks.length > 0 &&
+      hasVeristack &&
+      codeOwnerReviewsRequired &&
+      hasApprovals &&
+      dismissStale &&
+      adminsEnforced &&
+      noForcePush;
     return {
       checked: true,
       passed,
@@ -331,8 +328,8 @@ export function checkGitHubBranchProtection(repoRoot: string): {
       codeOwnerReviewsRequired,
       adminsEnforced,
       detail: passed
-        ? `Branch '${defaultBranch}' enforces Veristack check, CODEOWNERS reviews, and admins.`
-        : `Incomplete protection on '${defaultBranch}': veristackCheck=${hasVeristack}, codeOwnerReviews=${codeOwnerReviewsRequired}, enforceAdmins=${adminsEnforced}.`,
+        ? `Branch '${defaultBranch}' enforces strict Veristack check, CODEOWNERS reviews (>=1, dismiss stale), admins, and blocks force-push.`
+        : `Incomplete protection on '${defaultBranch}': veristackCheck=${hasVeristack}, codeOwnerReviews=${codeOwnerReviewsRequired}, approvals>=1=${hasApprovals}, dismissStale=${dismissStale}, enforceAdmins=${adminsEnforced}, noForcePush=${noForcePush}.`,
     };
   } catch {
     return {

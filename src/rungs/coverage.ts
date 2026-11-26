@@ -158,7 +158,7 @@ export function buildRungStatuses(
     name: "Pure Logic, Tables & Stateless Oracles",
     speedBudget: "10 ms–2 s",
     targetBudget: `>= ${idealR2Files} specs + canary`,
-    idealCoverage: `>= ${idealR2Files} unit file(s) (or >=80% planted-fault kill rate) + Tables + PBT, receipt-verified`,
+    idealCoverage: `>= ${idealR2Files} unit file(s) + >=75% planted-fault kill rate + Tables + PBT, receipt-verified`,
     observedCoverage: `${r2Files.length} file(s) / ${r2Cases} cases, tables=${r2HasTables ? "yes" : "no"}, PBT=${r2HasPbt ? "yes" : "no"}${canaryReport ? `, canary=${(canaryReport.killRate * 100).toFixed(0)}%` : ""} | CI: ${r2Exec.executed ? (r2Exec.receipt ? "receipt" : "yes") : "no"}`,
     observedCount: r2Files.length,
     evidence: r2Evidence,
@@ -261,7 +261,13 @@ export function buildRungStatuses(
 
   const r5NeedVisual = isFront || repo.archetype === "fullstack";
   const r5Exec = isExecuted("R5", ci.runsMutationOrFormal && (s.hasMutationTool || s.hasFormalTool || s.hasVisualTool));
-  const r5HasMutation = s.hasMutationTool || Boolean(r5Exec.receipt?.canary?.passed);
+  const r5MutationScore = r5Exec.receipt?.metrics?.mutationScore;
+  const r5MutationScoreOk = r5MutationScore === undefined || r5MutationScore >= 70;
+  const r5ReceiptRanMutation =
+    Boolean(r5Exec.receipt) &&
+    /\b(?:canary|stryker|mutmut|cargo\s+mutants|gremlins|go-mutesting|pitest)\b/i.test(r5Exec.receipt?.command ?? "");
+  const r5HasMutation =
+    (s.hasMutationTool || Boolean(r5Exec.receipt?.canary?.passed) || r5ReceiptRanMutation) && r5MutationScoreOk;
   const r5Evidence: string[] = [];
   const r5Gaps: string[] = [];
   if (r5HasMutation) r5Evidence.push(r5Exec.receipt?.canary?.passed || r2Exec.receipt?.canary?.passed ? "planted-fault mutation" : "mutation tool");

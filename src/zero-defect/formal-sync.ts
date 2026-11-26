@@ -163,7 +163,20 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       continue;
     }
 
-    if (entry.coveredPaths.length === 0) continue;
+    if (entry.coveredPaths.length === 0) {
+      findings.push({
+        id: `FS:empty-covered:${entry.id}`,
+        rule: "formal-sync-empty-covered-paths",
+        category: "oracle-lock",
+        rung: isContract ? "R3" : "R5",
+        severity: "error",
+        file: parsed.planRel,
+        line: 1,
+        message: `${label} '${entry.id}' declares empty coveredPaths, which disables drift detection.`,
+        fix: "List all production paths governed by this formal/contract spec in coveredPaths.",
+      });
+      continue;
+    }
 
     const revCheck = spawnSync("git", ["-C", repo.root, "cat-file", "-e", `${entry.syncCommit}^{commit}`], {
       encoding: "utf8",
@@ -190,9 +203,10 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       continue;
     }
 
+    const watchedPaths = [...new Set([entry.specFile, ...entry.coveredPaths])];
     const logRes = spawnSync(
       "git",
-      ["-C", repo.root, "log", "--oneline", `${entry.syncCommit}..HEAD`, "--", ...entry.coveredPaths],
+      ["-C", repo.root, "log", "--oneline", `${entry.syncCommit}..HEAD`, "--", ...watchedPaths],
       { encoding: "utf8" },
     );
     const commits = (logRes.stdout ?? "")

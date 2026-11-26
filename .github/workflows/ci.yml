@@ -45,13 +45,11 @@ jobs:
         run: |
           bun run typecheck
           bun run lint:oxlint
-      - name: Build and run Veristack against itself (--strict with HEAD receipts & planted-fault canary)
+      - name: Build and run Veristack against itself (ephemeral-HMAC verify --strict & planted-fault canary)
         run: |
           bun run build
-          node bin/vstack.mjs --help > /dev/null
           node bin/vstack.mjs perimeter . --fail
-          node bin/vstack.mjs run-rung all .
-          node bin/vstack.mjs scan . --strict
+          node bin/vstack.mjs verify . --strict
           node bin/vstack.mjs no-comments . --fail
           node bin/vstack.mjs state-machines . --fail
           node bin/vstack.mjs formal-sync . --fail

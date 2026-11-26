@@ -20,6 +20,7 @@ export interface ScannedFile {
   isTest: boolean;
   isWorkflow: boolean;
   content: string;
+  rawContent?: string;
   lines: number;
 }
 
@@ -73,9 +74,10 @@ const MAX_FILE_BYTES = 512_000;
 const MAX_FILES = 12_000;
 const PRIORITY_DIRS = new Set([".github", ".verification", ".circleci", ".husky"]);
 
+const SOURCE_TREE_ROOT = /^(?:src|packages|services|apps|crates|libs|pkg|internal|cmd)\//i;
+
 export function detectLanguage(rel: string): Language | undefined {
   const lower = rel.toLowerCase();
-  if (lower.endsWith(".d.ts")) return undefined;
   if (lower.endsWith(".ts") || lower.endsWith(".tsx") || lower.endsWith(".mts") || lower.endsWith(".cts")) {
     return "typescript";
   }
@@ -87,6 +89,27 @@ export function detectLanguage(rel: string): Language | undefined {
   if (lower.endsWith(".rs")) return "rust";
   if (lower.endsWith(".go")) return "go";
   return undefined;
+}
+
+function extractSfcScript(rel: string, raw: string): { language: Language; content: string } | undefined {
+  const lower = rel.toLowerCase();
+  if (!lower.endsWith(".vue") && !lower.endsWith(".svelte")) return undefined;
+  const matches = [...raw.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  if (matches.length === 0) return undefined;
+  const isTs = matches.some((m) => /\blang\s*=\s*["']tsx?["']/i.test(m[1] ?? ""));
+  const out = Array<string>(raw.length).fill(" ");
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === "\n") out[i] = "\n";
+  }
+  for (const m of matches) {
+    const full = m[0];
+    const body = m[2] ?? "";
+    const start = (m.index ?? 0) + full.indexOf(body);
+    for (let i = 0; i < body.length; i++) {
+      out[start + i] = body[i] ?? " ";
+    }
+  }
+  return { language: isTs ? "typescript" : "javascript", content: out.join("") };
 }
 
 export function isTestFilePath(rel: string): boolean {
@@ -126,7 +149,7 @@ function shouldReadText(rel: string): boolean {
   if ((lower.endsWith(".yml") || lower.endsWith(".yaml")) && /(?:^|\/)(?:maestro|e2e|mobile-e2e|flows)\//.test(lower)) {
     return true;
   }
-  if (lower.endsWith(".vue") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
+  if (lower.endsWith(".vue") || lower.endsWith(".svelte") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
   if (lower.endsWith(".sh") || lower.endsWith(".bash")) return true;
   if (lower.endsWith(".sql") && /(?:^|\/)(?:migrations?|supabase|policies|rls|schema)\//.test(lower)) return true;
   if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) {
@@ -259,6 +282,7 @@ function loadGitTrackedDirs(root: string): Set<string> {
 function shouldSkipDirectory(rel: string, name: string, trackedDirs: ReadonlySet<string>): boolean {
   if (name === ".git" || name === "node_modules") return true;
   if (rel === ".verification/receipts") return true;
+  if (SOURCE_TREE_ROOT.test(rel)) return false;
   if (name === "bin" && /(?:^|\/)(?:obj|bin)$/.test(rel) && !trackedDirs.has(rel)) {
     if (rel === "bin") return false;
     return true;
@@ -305,6 +329,10 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
         continue;
       }
       if (entry.isDirectory()) {
+        if (entry.name === "node_modules" && trackedDirs.has(rel)) {
+          scopeExclusions.push({ path: rel, reason: "skipped-tracked-dir", detail: "git-tracked node_modules directory" });
+          continue;
+        }
         if (shouldSkipDirectory(rel, entry.name, trackedDirs)) continue;
         const ignored = matchIgnore(rel);
         if (ignored) {
@@ -316,7 +344,12 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
         continue;
       }
       if (!entry.isFile()) continue;
-      if (ARCHIVED_DOCS_PATH.test(rel)) continue;
+      if (ARCHIVED_DOCS_PATH.test(rel)) {
+        if (detectLanguage(rel) !== undefined) {
+          scopeExclusions.push({ path: rel, reason: "skipped-tracked-dir", detail: "code file under archived docs path" });
+        }
+        continue;
+      }
       const ignored = matchIgnore(rel);
       if (ignored) {
         scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` });
@@ -346,14 +379,17 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
         scopeExclusions.push({ path: rel, reason: "minified", detail: "exceeds single-line or density threshold" });
         continue;
       }
-      const language = detectLanguage(rel);
+      const sfc = extractSfcScript(rel, content);
+      const language = sfc ? sfc.language : detectLanguage(rel);
+      const effectiveContent = sfc ? sfc.content : content;
       files.push({
         rel,
         abs,
         language,
         isTest: isTestFilePath(rel),
         isWorkflow: isWorkflowPath(rel),
-        content,
+        content: effectiveContent,
+        ...(sfc ? { rawContent: content } : {}),
         lines,
       });
     }

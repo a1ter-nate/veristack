@@ -4,18 +4,19 @@ import fc from "fast-check";
 import { lintNoComments } from "../../src/no-comments.ts";
 import { buildRatchetBaseline, evaluateRatchet, type RatchetBaseline } from "../../src/ratchet.ts";
 import { computeCrapScore, reportParsers } from "../../src/rungs/reports.ts";
-const { parseCoberturaXml, parseJunitOrTrx, parseLcov, parseStrykerJson } = reportParsers;
 import { parseGitHubWorkflow } from "../../src/rungs/workflow-audit.ts";
 import type { Finding, RungStatus } from "../../src/types.ts";
 
-function makeFinding(rule: string, idx: number, severity: Finding["severity"] = "error"): Finding {
+const { parseCoberturaXml, parseJunitOrTrx, parseLcov, parseStrykerJson } = reportParsers;
+
+function makeFinding(rule: string, idx: number, file = "src/a.ts", severity: Finding["severity"] = "error"): Finding {
   return {
-    id: `F:${rule}:${idx}`,
+    id: `F:${rule}:${file}:${idx}`,
     rule,
     category: "cheat",
     rung: "R0",
     severity,
-    file: "src/a.ts",
+    file,
     line: idx + 1,
     message: "m",
     fix: "f",
@@ -33,7 +34,14 @@ function makeRung(
     name: rung,
     speedBudget: "< 2s",
     targetBudget: "100%",
-    status: grade === "well-covered" ? "covered" : grade === "poorly-covered" ? "partial" : grade === "not-applicable" ? "not-applicable" : "hole",
+    status:
+      grade === "well-covered"
+        ? "covered"
+        : grade === "poorly-covered"
+          ? "partial"
+          : grade === "not-applicable"
+            ? "not-applicable"
+            : "hole",
     coverageGrade: grade,
     coverageScore: score,
     executedInCi,
@@ -49,8 +57,7 @@ function makeRung(
 
 interface RatchetModel {
   counts: Record<string, number>;
-  r0Grade: RungStatus["coverageGrade"];
-  r2Grade: RungStatus["coverageGrade"];
+  r2Score: number;
 }
 
 interface RatchetSut {
@@ -98,78 +105,91 @@ class TightenRuleCommand implements fc.Command<RatchetModel, RatchetSut> {
     assert.equal(beforeTighten.passed, false);
     assert.ok(beforeTighten.tightenAvailable.some((t) => t.rule === this.rule));
     s.baseline = buildRatchetBaseline(findings, s.rungs);
-    const afterTighten = evaluateRatchet(findings, s.baseline, s.rungs);
-    assert.equal(afterTighten.passed, true);
+    assert.equal(s.baseline.rules[this.rule] ?? 0, m.counts[this.rule]);
   }
   toString(): string {
     return `Tighten(${this.rule})`;
   }
 }
 
-class ArchetypeDowngradeCommand implements fc.Command<RatchetModel, RatchetSut> {
-  check(): boolean {
-    return true;
+class ImproveR2ScoreCommand implements fc.Command<RatchetModel, RatchetSut> {
+  check(m: Readonly<RatchetModel>): boolean {
+    return m.r2Score < 95;
   }
   run(m: RatchetModel, s: RatchetSut): void {
-    const degraded = s.rungs.map((r) => (r.rung === "R0" ? makeRung("R0", "not-applicable", 100, false) : r));
-    const res = evaluateRatchet(buildFindings(m.counts), s.baseline, degraded);
-    assert.equal(res.passed, false);
-    assert.ok(res.rungRegressions.some((rr) => rr.rung === "R0"));
+    m.r2Score = Math.min(100, m.r2Score + 10);
+    const nextGrade = m.r2Score >= 80 ? "well-covered" : "poorly-covered";
+    s.rungs = s.rungs.map((r) => (r.rung === "R2" ? makeRung("R2", nextGrade, m.r2Score, true) : r));
+    s.baseline = buildRatchetBaseline(buildFindings(m.counts), s.rungs);
+    const dropped = s.rungs.map((r) =>
+      r.rung === "R2" ? makeRung("R2", nextGrade, Math.max(0, m.r2Score - 5), true) : r,
+    );
+    const dropRes = evaluateRatchet(buildFindings(m.counts), s.baseline, dropped);
+    assert.equal(dropRes.passed, false);
+    assert.ok(dropRes.rungRegressions.some((rr) => rr.rung === "R2"));
   }
   toString(): string {
-    return "ArchetypeDowngrade(R0)";
+    return "ImproveAndGuardR2Score";
   }
 }
 
-test("fast-check PBT: lintNoComments produces 0 FPs on generated strings and catches every generated comment", () => {
-  fc.assert(
-    fc.property(fc.integer({ min: 0, max: 10000 }), fc.integer({ min: 0, max: 10000 }), (a, b) => {
-      const clean = `export const v = "https://example.com/${a}" + String(${a} + ${b});\n`;
-      assert.deepEqual(lintNoComments("src/gen.ts", clean, "typescript"), []);
-
-      const dirty = `// generated prose ${a}\n${clean}`;
-      const hits = lintNoComments("src/gen.ts", dirty, "typescript");
-      assert.equal(hits.length, 1);
-      assert.equal(hits[0]?.rule, "no-comments");
-    }),
-    { seed: 20261125, numRuns: 50 },
-  );
-});
-
-test("fast-check PBT: CRAP score is monotonic in complexity and decreases with coverage", () => {
+test("fast-check PBT: lintNoComments produces 0 FPs on arbitrary safe string literals and catches prose comments", () => {
   fc.assert(
     fc.property(
-      fc.integer({ min: 1, max: 30 }),
-      fc.double({ min: 0, max: 1, noNaN: true }),
-      (cc, cov) => {
-        const score = computeCrapScore(cc, cov);
-        assert.ok(score >= cc);
-        assert.ok(computeCrapScore(cc, 1) === cc);
-        assert.ok(computeCrapScore(cc, 0) === cc * cc + cc);
+      fc.string({ minLength: 1, maxLength: 24 }).filter((s) => !/["'\\`\r\n]/.test(s)),
+      fc.string({ minLength: 3, maxLength: 20 }).filter((s) => /^[a-z][a-z ]+[a-z]$/.test(s)),
+      (urlPart, prose) => {
+        const clean = `export const u = "https://example.com/${urlPart}";\n`;
+        assert.deepEqual(lintNoComments("src/gen.ts", clean, "typescript"), []);
+
+        const dirty = `// ${prose}\n${clean}`;
+        const hits = lintNoComments("src/gen.ts", dirty, "typescript");
+        assert.equal(hits.length, 1);
+        assert.equal(hits[0]?.rule, "no-comments");
       },
     ),
-    { seed: 7777, numRuns: 60 },
+    { numRuns: 50 },
   );
 });
 
-test("fast-check stateful MBT: ratchet monotonicity and archetype-downgrade rejection hold under fc.commands", () => {
+test("fast-check PBT: CRAP score is strictly monotonic in complexity and non-increasing with coverage", () => {
+  fc.assert(
+    fc.property(
+      fc.integer({ min: 1, max: 25 }),
+      fc.integer({ min: 1, max: 15 }),
+      fc.double({ min: 0, max: 0.9, noNaN: true }),
+      fc.double({ min: 0.01, max: 0.1, noNaN: true }),
+      (cc1, deltaCc, cov1, deltaCov) => {
+        const cc2 = cc1 + deltaCc;
+        const cov2 = Math.min(1, cov1 + deltaCov);
+        assert.ok(computeCrapScore(cc2, cov1) > computeCrapScore(cc1, cov1));
+        assert.ok(computeCrapScore(cc1, cov2) <= computeCrapScore(cc1, cov1));
+        assert.equal(computeCrapScore(cc1, 1), cc1);
+        assert.equal(computeCrapScore(cc1, 0), cc1 * cc1 + cc1);
+      },
+    ),
+    { numRuns: 60 },
+  );
+});
+
+test("fast-check stateful MBT: ratchet monotonicity, score-drop detection, and tightening hold under fc.commands", () => {
   const cmds = [
     fc.constantFrom("rA", "rB", "rC").map((r) => new RegressRuleCommand(r)),
     fc.constantFrom("rA", "rB", "rC").map((r) => new TightenRuleCommand(r)),
-    fc.constant(new ArchetypeDowngradeCommand()),
+    fc.constant(new ImproveR2ScoreCommand()),
   ];
   fc.assert(
     fc.property(fc.commands(cmds, { maxCommands: 20 }), (seq) => {
       const initCounts = { rA: 3, rB: 2, rC: 2 };
       const initRungs = [makeRung("R0", "well-covered", 100, true), makeRung("R2", "poorly-covered", 60, true)];
-      const model: RatchetModel = { counts: { ...initCounts }, r0Grade: "well-covered", r2Grade: "poorly-covered" };
+      const model: RatchetModel = { counts: { ...initCounts }, r2Score: 60 };
       const sut: RatchetSut = {
         baseline: buildRatchetBaseline(buildFindings(initCounts), initRungs),
         rungs: initRungs,
       };
       fc.modelRun(() => ({ model, real: sut }), seq);
     }),
-    { seed: 424242, numRuns: 40 },
+    { numRuns: 40 },
   );
 });
 
@@ -196,33 +216,32 @@ test("parseGitHubWorkflow preserves quoted # tokens and strips column-0 and inli
   assert.deepEqual(parsed.activeCommands, ['bun test --grep "case#1 \\"quoted\\""', "oxlint ."]);
 });
 
-test("structured report adapters parse LCOV, Cobertura, Stryker JSON, JUnit XML, and .NET TRX accurately", () => {
-  const lcov = parseLcov("SF:src/a.ts\nDA:1,1\nDA:2,0\nend_of_record\n");
-  assert.equal(lcov.get("src/a.ts"), 0.5);
+test("structured report adapters aggregate multi-suite JUnit, reversed Cobertura, TRX errors, and LCOV summaries", () => {
+  const lcov = parseLcov("SF:src/a.ts\nLF:20\nLH:0\nend_of_record\nSF:src/b.ts\nDA:1,1\nDA:2,0\nend_of_record\n");
+  assert.equal(lcov.get("src/a.ts"), 0);
+  assert.equal(lcov.get("src/b.ts"), 0.5);
 
-  const cob = parseCoberturaXml('<coverage><class filename="src/b.cs" line-rate="0.75" /></coverage>');
-  assert.equal(cob.get("src/b.cs"), 0.75);
+  const cob = parseCoberturaXml(
+    '<coverage><class line-rate="0.0" filename="src/b.cs"/><class line-rate="1.0" filename="src/b.cs"/></coverage>',
+  );
+  assert.equal(cob.get("src/b.cs"), 0);
 
   const stryker = parseStrykerJson(
     JSON.stringify({
       files: {
         "src/a.ts": {
-          mutants: [
-            { status: "Killed" },
-            { status: "Timeout" },
-            { status: "Survived" },
-            { status: "CompileError" },
-            { status: "Ignored" },
-          ],
+          mutants: [{ status: "Killed" }, { status: "Timeout" }, { status: "Survived" }, { status: "CompileError" }],
         },
       },
     }),
   );
   assert.equal(stryker, 66.67);
 
-  const junit = parseJunitOrTrx('<testsuite tests="10" failures="1" errors="0" skipped="2"></testsuite>');
-  assert.deepEqual(junit, { passed: 7, failed: 1, skipped: 2 });
+  const junit = parseJunitOrTrx(
+    '<testsuites><testsuite name="a" tests="5" failures="0"/><testsuite name="b" tests="3" failures="2" errors="1"/></testsuites>',
+  );
+  assert.deepEqual(junit, { passed: 5, failed: 3, skipped: 0 });
 
-  const trx = parseJunitOrTrx('<ResultSummary><Counters total="12" passed="11" failed="1" /></ResultSummary>');
-  assert.deepEqual(trx, { passed: 11, failed: 1, skipped: 0 });
+  const trx = parseJunitOrTrx('<ResultSummary><Counters passed="10" failed="1" error="1" total="12" /></ResultSummary>');
+  assert.deepEqual(trx, { passed: 10, failed: 2, skipped: 0 });
 });

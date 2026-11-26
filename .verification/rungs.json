@@ -18,12 +18,16 @@
       "required": true,
       "canary": {
         "enabled": true,
-        "testCommand": "bun test ./tests/no-comments.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/rungs/council-redteam.test.ts ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts",
+        "testCommand": "bun test ./tests/no-comments.test.ts ./tests/rungs/ ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts",
         "targets": [
           "src/ratchet.ts",
           "src/no-comments.ts",
           "src/rungs/reports.ts",
-          "src/rungs/workflow-audit.ts"
+          "src/rungs/workflow-audit.ts",
+          "src/rungs/receipts.ts",
+          "src/rungs/manifest.ts",
+          "src/rungs/mutation-probe.ts",
+          "src/rungs/oracle-check.ts"
         ],
         "maxMutants": 8,
         "minKillRate": 0.75
@@ -34,7 +38,7 @@
       "required": true
     },
     "R5": {
-      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test ./tests/rungs/property-and-mbt.test.ts ./tests/rungs/council-redteam.test.ts\" --targets src/rungs/reports.ts,src/ratchet.ts --max-mutants 4 --min-kill-rate 0.75 --fail",
+      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test ./tests/rungs/\" --targets src/rungs/reports.ts,src/ratchet.ts,src/rungs/receipts.ts,src/rungs/manifest.ts --max-mutants 4 --min-kill-rate 0.75 --fail",
       "required": true
     },
     "R6": {

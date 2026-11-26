@@ -43,6 +43,7 @@ function usage(): string {
     "",
     "Commands:",
     "  vstack scan [dir] [--json | --md] [--config <file>] [--disable <rules>] [--ratchet <file>] [--ratchet-base <ref>] [--update-ratchet] [--strict] [--allow-missing-rungs] [--fail-on-poor-coverage] [--fail-on-cheats] [--fail-on-errors]",
+    "  vstack verify [dir] [--strict] [--json | --md]",
     "  vstack run-rung <R0..R8|all> [dir] [--json]",
     "  vstack canary [dir] --test-cmd <cmd> [--targets <files>] [--base <ref>] [--max-mutants <n>] [--min-kill-rate <0..1>] [--json] [--fail]",
     "  vstack perimeter [dir] [--check-github] [--json] [--fail]",

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { discoverRepo } from "../discover.ts";
 import { formatMarkdownReport, formatTerminalReport } from "../format.ts";
@@ -34,7 +35,13 @@ function loadBaseline(repoRoot: string, ratchetPath: string, baseRef?: string): 
   return JSON.parse(fs.readFileSync(ratchetPath, "utf8")) as RatchetBaseline;
 }
 
-export function handleScanCli(rest: readonly string[], target: string, asJson: boolean, asMd: boolean): number {
+export function handleScanCli(
+  rest: readonly string[],
+  target: string,
+  asJson: boolean,
+  asMd: boolean,
+  receiptHmacKey?: string,
+): number {
   const strict = rest.includes("--strict");
   const allowMissingRungs = rest.includes("--allow-missing-rungs");
   const failOnPoorCoverage = rest.includes("--fail-on-poor-coverage");
@@ -60,7 +67,7 @@ export function handleScanCli(rest: readonly string[], target: string, asJson: b
     return 1;
   }
 
-  const report = scanRepo(target, { configPath, disableRules, strict });
+  const report = scanRepo(target, { configPath, disableRules, strict, receiptHmacKey });
   let ratchetEval: ReturnType<typeof evaluateRatchet> | undefined;
 
   if (ratchetPath) {
@@ -111,6 +118,13 @@ export function handleScanCli(rest: readonly string[], target: string, asJson: b
       );
       return 1;
     }
+    const failingWorkspaces = (report.workspaces ?? []).filter((w) => w.score < 80);
+    if (failingWorkspaces.length > 0) {
+      console.error(
+        `vstack scan --strict failed: ${failingWorkspaces.length} workspace(s) scored below 80% (${failingWorkspaces.map((w) => `${w.name}=${w.score}%`).join(", ")}).`,
+      );
+      return 1;
+    }
     if (
       s.totalFindings > 0 ||
       s.errorCount > 0 ||
@@ -120,7 +134,8 @@ export function handleScanCli(rest: readonly string[], target: string, asJson: b
       s.holeCount > 0 ||
       s.poorlyCoveredCount > 0 ||
       s.unexecutedRungCount > 0 ||
-      s.pushDownCount > 0
+      s.pushDownCount > 0 ||
+      s.overallCoverageScore < 80
     ) {
       return 1;
     }
@@ -149,6 +164,22 @@ export function handleScanCli(rest: readonly string[], target: string, asJson: b
 }
 
 export function handleRungToolsCli(cmd: string, rest: readonly string[], target: string, asJson: boolean): number | null {
+  if (cmd === "verify") {
+    const asMd = rest.includes("--md");
+    const ephemeralKey = crypto.randomBytes(32).toString("hex");
+    const repo = discoverRepo(target);
+    const runResult = runAllDeclaredRungs(repo, "all", ephemeralKey);
+    if (!asJson && !asMd) {
+      for (const r of runResult.receipts) {
+        const canaryTag = r.canary ? ` | canary=${(r.canary.killRate * 100).toFixed(0)}% (${r.canary.killedMutants}/${r.canary.totalMutants})` : "";
+        console.log(`verify ${r.rung}: ${r.exitCode === 0 ? "PASS" : "FAIL"} (${r.durationMs}ms${canaryTag})`);
+      }
+    }
+    const scanArgs = rest.includes("--strict") ? rest : [...rest, "--strict"];
+    const scanExit = handleScanCli(scanArgs, target, asJson, asMd, ephemeralKey);
+    return runResult.passed && scanExit === 0 ? 0 : 1;
+  }
+
   if (cmd === "run-rung") {
     const rungArg = rest[0] ?? "all";
     if (!VALID_RUNG_ARGS.has(rungArg)) {

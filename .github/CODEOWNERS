@@ -1,8 +1,11 @@
 /skill/ @a1ter-nate
-/tests/fixtures/ @a1ter-nate
+/tests/ @a1ter-nate
+/examples/ @a1ter-nate
+/templates/ @a1ter-nate
 /.github/ @a1ter-nate
 /AGENTS.md @a1ter-nate
 /.verification/ @a1ter-nate
+/.verification/laws/ @a1ter-nate
 /.vstackignore @a1ter-nate
 /lefthook.yml @a1ter-nate
 /.oxlintrc.json @a1ter-nate
@@ -13,4 +16,3 @@
 /bin/ @a1ter-nate
 /lint/ @a1ter-nate
 /scripts/ @a1ter-nate
-/templates/bend2-reference/LAWS.bend @a1ter-nate

@@ -11,6 +11,7 @@ export interface RatchetRungEntry {
 export interface RatchetBaseline {
   version: 1;
   rules: Record<string, number>;
+  ruleFiles?: Record<string, number>;
   rungs?: Record<string, RatchetRungEntry>;
 }
 
@@ -48,16 +49,23 @@ export function buildRatchetBaseline(
   rungs?: readonly RungStatus[],
 ): RatchetBaseline {
   const counts = new Map<string, number>();
+  const fileCounts = new Map<string, number>();
   for (const f of findings) {
     if (f.severity === "info") continue;
     counts.set(f.rule, (counts.get(f.rule) ?? 0) + 1);
+    const rfKey = `${f.rule}::${f.file}`;
+    fileCounts.set(rfKey, (fileCounts.get(rfKey) ?? 0) + 1);
   }
   const rules: Record<string, number> = {};
   for (const key of [...counts.keys()].sort()) {
     rules[key] = counts.get(key) ?? 0;
   }
+  const ruleFiles: Record<string, number> = {};
+  for (const key of [...fileCounts.keys()].sort()) {
+    ruleFiles[key] = fileCounts.get(key) ?? 0;
+  }
   if (!rungs || rungs.length === 0) {
-    return { version: 1, rules };
+    return { version: 1, rules, ruleFiles };
   }
   const rungMap: Record<string, RatchetRungEntry> = {};
   for (const r of rungs) {
@@ -67,7 +75,7 @@ export function buildRatchetBaseline(
       executedInCi: r.executedInCi,
     };
   }
-  return { version: 1, rules, rungs: rungMap };
+  return { version: 1, rules, ruleFiles, rungs: rungMap };
 }
 
 export function evaluateRatchet(
@@ -75,7 +83,8 @@ export function evaluateRatchet(
   baseline: RatchetBaseline,
   rungs?: readonly RungStatus[],
 ): RatchetEvaluation {
-  const current = buildRatchetBaseline(findings).rules;
+  const built = buildRatchetBaseline(findings);
+  const current = built.rules;
   const allRules = new Set([...Object.keys(baseline.rules), ...Object.keys(current)]);
   const regressions: RatchetDelta[] = [];
   const tightenAvailable: RatchetDelta[] = [];
@@ -90,9 +99,26 @@ export function evaluateRatchet(
     }
   }
 
+  const regressedRules = new Set(regressions.map((r) => r.rule));
+  if (baseline.ruleFiles && built.ruleFiles) {
+    for (const [rfKey, curVal] of Object.entries(built.ruleFiles)) {
+      const ruleName = rfKey.split("::")[0] ?? rfKey;
+      if (regressedRules.has(ruleName)) continue;
+      const baseVal = baseline.ruleFiles[rfKey] ?? 0;
+      if (curVal > baseVal) {
+        regressions.push({ rule: rfKey, baseline: baseVal, current: curVal, delta: curVal - baseVal });
+      }
+    }
+  }
+
   const rungRegressions: RatchetRungRegression[] = [];
   const hasRungBaseline = Boolean(baseline.rungs && Object.keys(baseline.rungs).length > 0);
-  if (baseline.rungs && rungs) {
+  if (rungs && rungs.length > 0 && !hasRungBaseline) {
+    rungRegressions.push({
+      rung: "ALL",
+      reason: "ratchet baseline is missing 'rungs' snapshot — refusing to hide rung regressions",
+    });
+  } else if (baseline.rungs && rungs) {
     for (const r of rungs) {
       const base = baseline.rungs[r.rung];
       if (!base) continue;
@@ -109,6 +135,15 @@ export function evaluateRatchet(
         rungRegressions.push({
           rung: r.rung,
           reason: `grade regressed ${base.grade} -> ${r.coverageGrade} (${base.score}% -> ${r.coverageScore}%)`,
+        });
+      } else if (
+        base.grade !== "not-applicable" &&
+        r.coverageGrade !== "not-applicable" &&
+        r.coverageScore < base.score
+      ) {
+        rungRegressions.push({
+          rung: r.rung,
+          reason: `score regressed ${base.score}% -> ${r.coverageScore}%`,
         });
       } else if (base.executedInCi && !r.executedInCi && r.coverageGrade !== "not-applicable") {
         rungRegressions.push({

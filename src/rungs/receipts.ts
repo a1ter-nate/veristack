@@ -4,13 +4,14 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
 import type { Finding, PlantedFaultReport, RungId, RungManifest, RungReceipt } from "../types.ts";
+import { scrubChildEnv } from "./command-audit.ts";
 import { loadRungManifest } from "./manifest.ts";
 import { runPlantedFaultCanary } from "./mutation-probe.ts";
 import { parseStructuredReports } from "./reports.ts";
 
 const RECEIPTS_REL_DIR = ".verification/receipts";
 
-function digestPayload(receipt: Omit<RungReceipt, "digest">): string {
+function digestPayload(receipt: Omit<RungReceipt, "digest">, hmacKeyOverride?: string): string {
   const canonical = JSON.stringify({
     schemaVersion: receipt.schemaVersion,
     rung: receipt.rung,
@@ -22,7 +23,7 @@ function digestPayload(receipt: Omit<RungReceipt, "digest">): string {
     metrics: receipt.metrics ?? null,
     canary: receipt.canary ?? null,
   });
-  const key = process.env.VSTACK_RECEIPT_KEY;
+  const key = hmacKeyOverride ?? process.env.VSTACK_RECEIPT_KEY;
   if (key && key.length > 0) {
     return `hmac:${crypto.createHmac("sha256", key).update(canonical).digest("hex")}`;
   }
@@ -56,7 +57,14 @@ export function computeRepoTreeHash(repo: DiscoveredRepo): string {
     const abs = path.join(repo.root, rel);
     try {
       const stat = fs.lstatSync(abs);
-      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      if (stat.isSymbolicLink()) {
+        hasher.update(rel);
+        hasher.update("\0symlink:");
+        hasher.update(fs.readlinkSync(abs));
+        hasher.update("\0");
+        continue;
+      }
+      if (!stat.isFile()) continue;
       hasher.update(rel);
       hasher.update("\0");
       hasher.update(fs.readFileSync(abs));
@@ -79,8 +87,13 @@ function readGitHeadSha(repoRoot: string): string {
   return "no-git";
 }
 
-function parseCommandMetrics(repoRoot: string, output: string): RungReceipt["metrics"] {
-  const structured = parseStructuredReports(repoRoot);
+function parseCommandMetrics(
+  repoRoot: string,
+  output: string,
+  rung: RungId,
+  minMtimeMs: number,
+): RungReceipt["metrics"] {
+  const structured = parseStructuredReports(repoRoot, { minMtimeMs, rung });
   const metrics: NonNullable<RungReceipt["metrics"]> = {};
   if (structured.testsPassed !== undefined) metrics.testsPassed = structured.testsPassed;
   if (structured.testsFailed !== undefined) metrics.testsFailed = structured.testsFailed;
@@ -88,24 +101,35 @@ function parseCommandMetrics(repoRoot: string, output: string): RungReceipt["met
 
   if (metrics.testsPassed === undefined) {
     const bunPass = /\b(\d+)\s+pass\b/i.exec(output);
-    const bunFail = /\b(\d+)\s+fail\b/i.exec(output);
     const nodePass = /\bpass\s+(\d+)\b/i.exec(output);
     const pytestPass = /(\d+)\s+passed\b/i.exec(output);
     const cargoPass = /test result:\s*ok\.\s*(\d+)\s+passed/i.exec(output);
     const dotnetPass = /Passed:\s*(\d+)/i.exec(output);
-    const goPass = (output.match(/---\s+PASS:/g) ?? []).length;
+    const goVerbosePass = (output.match(/---\s+PASS:/g) ?? []).length;
+    const goPkgPass = (output.match(/^ok\s+\S+/gm) ?? []).length;
 
     if (bunPass?.[1]) metrics.testsPassed = Number(bunPass[1]);
     else if (nodePass?.[1]) metrics.testsPassed = Number(nodePass[1]);
     else if (pytestPass?.[1]) metrics.testsPassed = Number(pytestPass[1]);
     else if (cargoPass?.[1]) metrics.testsPassed = Number(cargoPass[1]);
     else if (dotnetPass?.[1]) metrics.testsPassed = Number(dotnetPass[1]);
-    else if (goPass > 0) metrics.testsPassed = goPass;
+    else if (goVerbosePass > 0) metrics.testsPassed = goVerbosePass;
+    else if (goPkgPass > 0) metrics.testsPassed = goPkgPass;
 
-    if (bunFail?.[1]) metrics.testsFailed = Number(bunFail[1]);
+    const bunFail = /\b(\d+)\s+fail\b/i.exec(output);
+    const nodeFail = /\bfail\s+(\d+)\b/i.exec(output);
+    const pytestFail = /(\d+)\s+failed\b/i.exec(output);
+    const cargoFail = /(\d+)\s+failed/i.exec(output);
+    const dotnetFail = /Failed:\s*(\d+)/i.exec(output);
+    const goFail = (output.match(/^FAIL\s+\S+/gm) ?? []).length;
+    const failedCount =
+      Number(bunFail?.[1] ?? nodeFail?.[1] ?? pytestFail?.[1] ?? cargoFail?.[1] ?? dotnetFail?.[1] ?? "0") + goFail;
+    if (failedCount > 0 || bunFail || nodeFail || pytestFail || dotnetFail) {
+      metrics.testsFailed = failedCount;
+    }
   }
 
-  if (metrics.mutationScore === undefined) {
+  if (metrics.mutationScore === undefined && rung === "R5") {
     const mutationMatch = /mutation\s+score[:\s]+(\d+(?:\.\d+)?)%/i.exec(output);
     if (mutationMatch?.[1]) metrics.mutationScore = Number(mutationMatch[1]);
   }
@@ -118,6 +142,7 @@ export function runRungAndWriteReceipt(
   repo: DiscoveredRepo,
   rung: RungId,
   manifest: RungManifest,
+  hmacKeyOverride?: string,
 ): RungReceipt {
   const entry = manifest.rungs[rung];
   if (!entry) {
@@ -125,17 +150,19 @@ export function runRungAndWriteReceipt(
   }
   const treeHashBefore = computeRepoTreeHash(repo);
   const commitSha = readGitHeadSha(repo.root);
+  const startedEpochMs = Date.now();
   const started = performance.now();
   const proc = spawnSync(entry.command, [], {
     cwd: repo.root,
     shell: true,
+    env: scrubChildEnv(),
     encoding: "utf8",
     timeout: 300_000,
   });
   const durationMs = Math.round(performance.now() - started);
   const exitCode = proc.status ?? 1;
   const combined = `${proc.stdout ?? ""}\n${proc.stderr ?? ""}`;
-  const metrics = parseCommandMetrics(repo.root, combined);
+  const metrics = parseCommandMetrics(repo.root, combined, rung, startedEpochMs - 25);
   const treeHashAfter = computeRepoTreeHash(repo);
   const mutatedTree = treeHashBefore !== treeHashAfter;
 
@@ -152,7 +179,11 @@ export function runRungAndWriteReceipt(
 
   const testCountMissing =
     (rung === "R2" || rung === "R3") && (!metrics || (metrics.testsPassed ?? 0) <= 0 || (metrics.testsFailed ?? 0) > 0);
-  const finalExit = mutatedTree || testCountMissing || (canary && !canary.passed) ? 1 : exitCode;
+  const minCanaryMutants = entry.canary?.enabled ? Math.min(4, entry.canary.maxMutants ?? 4) : 0;
+  const canaryFailed = Boolean(
+    canary && (!canary.passed || canary.totalMutants < minCanaryMutants || canary.invalidKills > 0),
+  );
+  const finalExit = mutatedTree || testCountMissing || canaryFailed ? 1 : exitCode;
 
   const baseReceipt: Omit<RungReceipt, "digest"> = {
     schemaVersion: 1,
@@ -170,7 +201,7 @@ export function runRungAndWriteReceipt(
 
   const receipt: RungReceipt = {
     ...baseReceipt,
-    digest: digestPayload(baseReceipt),
+    digest: digestPayload(baseReceipt, hmacKeyOverride),
   };
 
   const dir = path.join(repo.root, RECEIPTS_REL_DIR);
@@ -182,6 +213,7 @@ export function runRungAndWriteReceipt(
 export function loadValidReceipts(
   repo: DiscoveredRepo,
   manifest?: RungManifest,
+  options?: { strict?: boolean; hmacKeyOverride?: string },
 ): { receipts: Map<RungId, RungReceipt>; findings: Finding[] } {
   const valid = new Map<RungId, RungReceipt>();
   const findings: Finding[] = [];
@@ -197,6 +229,23 @@ export function loadValidReceipts(
       line: 1,
       message: "Receipts in .verification/receipts/ are tracked by git — receipts must be generated dynamically at CI runtime, never committed.",
       fix: "Add .verification/receipts/ to .gitignore and run 'git rm -r --cached .verification/receipts'.",
+    });
+    return { receipts: valid, findings };
+  }
+
+  const activeKey = options?.hmacKeyOverride ?? process.env.VSTACK_RECEIPT_KEY;
+  const requireHmac = Boolean(options?.strict);
+  if (requireHmac && (!activeKey || activeKey.length < 8)) {
+    findings.push({
+      id: "RCPT:unsigned-strict:.verification/receipts",
+      rule: "receipt-unsigned-strict",
+      category: "oracle-lock",
+      rung: "R0",
+      severity: "error",
+      file: ".verification/receipts",
+      line: 1,
+      message: "Strict scan requires HMAC-authenticated receipts (unkeyed SHA-256 receipts are forgeable offline).",
+      fix: "Run 'vstack verify . --strict' (ephemeral in-memory HMAC key) or set VSTACK_RECEIPT_KEY in the parent CI orchestrator.",
     });
     return { receipts: valid, findings };
   }
@@ -217,8 +266,9 @@ export function loadValidReceipts(
       const declared = manifest?.rungs[raw.rung];
       if (!declared) continue;
       if (raw.command !== declared.command) continue;
+      if (requireHmac && !raw.digest.startsWith("hmac:")) continue;
       const { digest, ...rest } = raw;
-      if (digestPayload(rest) !== digest) continue;
+      if (digestPayload(rest, activeKey) !== digest) continue;
       if (raw.exitCode !== 0) continue;
       if (raw.treeHash !== expectedTreeHash) continue;
       if (expectedHead !== "no-git" && raw.commitSha !== expectedHead) continue;
@@ -251,6 +301,7 @@ export function loadValidReceipts(
 export function runAllDeclaredRungs(
   repo: DiscoveredRepo,
   targetRung: RungId | "all",
+  hmacKeyOverride?: string,
 ): { receipts: RungReceipt[]; passed: boolean; manifestPath: string } {
   const loaded = loadRungManifest(repo.root);
   if (!loaded.manifest) {
@@ -263,7 +314,7 @@ export function runAllDeclaredRungs(
   const receipts: RungReceipt[] = [];
   let passed = true;
   for (const r of rungsToRun) {
-    const rec = runRungAndWriteReceipt(repo, r, loaded.manifest);
+    const rec = runRungAndWriteReceipt(repo, r, loaded.manifest, hmacKeyOverride);
     receipts.push(rec);
     if (rec.exitCode !== 0) passed = false;
   }

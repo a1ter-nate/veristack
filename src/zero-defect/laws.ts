@@ -186,20 +186,47 @@ function auditJsonLawFile(
           runBendVerdict(repo.root, ref, findings, verifiedBackends);
           continue;
         }
-        const cmdArgs: [string, string[], string] | null =
-          Array.isArray(law.verifyArgs) && law.verifyArgs.length > 0 && typeof law.verifyArgs[0] === "string"
-            ? [law.verifyArgs[0], law.verifyArgs.slice(1), repo.root]
-            : /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(ref)
-              ? ["bun", ["test", path.join(repo.root, ref)], repo.root]
-              : /(?:^|\/)test_[^/]+\.py$|_test\.py$/.test(ref)
-                ? ["pytest", [path.join(repo.root, ref)], repo.root]
-                : ref.endsWith("_test.go")
-                  ? ["go", ["test", "."], path.dirname(path.join(repo.root, ref))]
-                  : null;
+        const ALLOWED_LAW_RUNNERS = new Set(["bun", "node", "uv", "pytest", "cargo", "dotnet", "go", "bend", "quint", "dafny", "vitest", "jest"]);
+        let cmdArgs: [string, string[], string] | null = null;
+        if (Array.isArray(law.verifyArgs) && law.verifyArgs.length > 0 && typeof law.verifyArgs[0] === "string") {
+          const bin = path.posix.basename(law.verifyArgs[0]).toLowerCase();
+          if (!ALLOWED_LAW_RUNNERS.has(bin)) {
+            findings.push({
+              id: `LAW:invalid-runner:${file.rel}:${id}`,
+              rule: "laws-invalid-verifier",
+              category: "oracle-lock",
+              rung: "R3",
+              severity: "error",
+              file: file.rel,
+              line: 1,
+              message: `Executable law '${id}' declares disallowed verifyArgs runner '${law.verifyArgs[0]}'.`,
+              fix: "Use a real test/formal verifier (bun, node, pytest, cargo, dotnet, go, bend, quint, dafny).",
+            });
+            continue;
+          }
+          cmdArgs = [law.verifyArgs[0], law.verifyArgs.slice(1), repo.root];
+        } else if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(ref)) {
+          cmdArgs = ["bun", ["test", path.join(repo.root, ref)], repo.root];
+        } else if (/(?:^|\/)test_[^/]+\.py$|_test\.py$/.test(ref)) {
+          cmdArgs = ["pytest", [path.join(repo.root, ref)], repo.root];
+        } else if (ref.endsWith("_test.go")) {
+          cmdArgs = ["go", ["test", "."], path.dirname(path.join(repo.root, ref))];
+        }
         if (cmdArgs) {
           const run = spawnSync(cmdArgs[0], cmdArgs[1], { cwd: cmdArgs[2], encoding: "utf8", timeout: 45_000 });
           if (run.error) {
-            verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "skipped", detail: `${cmdArgs[0]} not on PATH` });
+            verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "failed", detail: `${cmdArgs[0]} not on PATH` });
+            findings.push({
+              id: `LAW:verifier-missing:${file.rel}:${id}`,
+              rule: "laws-verifier-missing",
+              category: "oracle-lock",
+              rung: "R3",
+              severity: "error",
+              file: ref,
+              line: 1,
+              message: `Executable law '${id}' could not be verified: runner '${cmdArgs[0]}' not found on PATH.`,
+              fix: `Install '${cmdArgs[0]}' in CI so --verify executes every law witness without fail-open skips.`,
+            });
           } else if (run.status === 0) {
             verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "passed", detail: `law '${id}' witness passed` });
           } else {

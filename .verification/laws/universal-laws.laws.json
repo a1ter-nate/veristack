@@ -4,7 +4,7 @@
   "laws": [
     {
       "id": "bend2-universal-kernel-proofs",
-      "invariant": "Idempotency, monotonic terminal states, total saturating arithmetic, zero-cap clamping, codec round-trip, and stack unwind proven by Bend 2 BendTT Lean kernel.",
+      "invariant": "Idempotency, monotonic terminal states, total saturating arithmetic, zero-cap clamping, codec round-trip, and stack unwind type-checked by Bend 2 (--check-only; Lean --verdict when Lean is installed).",
       "witnessRef": "templates/bend2-reference/PROOF.bend"
     },
     {

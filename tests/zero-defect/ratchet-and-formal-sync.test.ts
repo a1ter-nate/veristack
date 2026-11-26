@@ -27,7 +27,8 @@ function makeFinding(rule: string, severity: Finding["severity"] = "error"): Fin
 test("auto-shrinking ratchet passes on exact match, fails on regression, and flags tighten opportunities", () => {
   const initial = [makeFinding("no-test-doubles"), makeFinding("no-test-doubles"), makeFinding("wide-directory", "warn")];
   const baseline = buildRatchetBaseline(initial);
-  assert.deepEqual(baseline, { version: 1, rules: { "no-test-doubles": 2, "wide-directory": 1 } });
+  assert.equal(baseline.version, 1);
+  assert.deepEqual(baseline.rules, { "no-test-doubles": 2, "wide-directory": 1 });
 
   const same = evaluateRatchet(initial, baseline);
   assert.equal(same.passed, true);

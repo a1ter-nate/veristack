@@ -1,5 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseSync } from "oxc-parser";
+import { discoverRepo } from "../discover.ts";
+import type { RungId } from "../types.ts";
+import { isHostRepoFile } from "./manifest.ts";
 
 interface StructuredReportMetrics {
   testsPassed?: number;
@@ -23,38 +27,68 @@ interface CrapReport {
   worstCrap: number;
   offenders: CrapEntry[];
   evaluatedFiles: number;
+  uncoveredRepoFiles: string[];
 }
 
 function parseLcov(content: string): Map<string, number> {
-  const map = new Map<string, number>();
+  const accum = new Map<string, { found: number; hit: number }>();
   let currentFile = "";
-  let found = 0;
-  let hit = 0;
+  let daFound = 0;
+  let daHit = 0;
+  let lf = -1;
+  let lh = -1;
+
   for (const raw of content.split(/\r?\n/)) {
     const line = raw.trim();
     if (line.startsWith("SF:")) {
       currentFile = line.slice(3).replace(/\\/g, "/");
-      found = 0;
-      hit = 0;
+      daFound = 0;
+      daHit = 0;
+      lf = -1;
+      lh = -1;
     } else if (line.startsWith("DA:")) {
       const parts = line.slice(3).split(",");
-      found += 1;
-      if (Number(parts[1] ?? "0") > 0) hit += 1;
+      daFound += 1;
+      if (Number(parts[1] ?? "0") > 0) daHit += 1;
+    } else if (line.startsWith("LF:")) {
+      lf = Number(line.slice(3));
+    } else if (line.startsWith("LH:")) {
+      lh = Number(line.slice(3));
     } else if (line === "end_of_record" && currentFile) {
-      map.set(currentFile, found > 0 ? hit / found : 1);
+      const found = daFound > 0 ? daFound : lf > 0 ? lf : 0;
+      const hit = daFound > 0 ? daHit : lh >= 0 ? lh : 0;
+      const prev = accum.get(currentFile) ?? { found: 0, hit: 0 };
+      accum.set(currentFile, { found: prev.found + found, hit: prev.hit + hit });
       currentFile = "";
     }
+  }
+
+  const map = new Map<string, number>();
+  for (const [file, { found, hit }] of accum.entries()) {
+    map.set(file, found > 0 ? Math.max(0, Math.min(1, hit / found)) : 0);
   }
   return map;
 }
 
+function readXmlAttr(attrs: string, name: string): string | undefined {
+  const target = name.toLowerCase();
+  for (const m of attrs.matchAll(/\b([a-zA-Z0-9_:-]+)\s*=\s*"([^"]*)"/g)) {
+    if ((m[1] ?? "").toLowerCase() === target) return m[2];
+  }
+  return undefined;
+}
+
 function parseCoberturaXml(content: string): Map<string, number> {
   const map = new Map<string, number>();
-  const classRe = /<class\b[^>]*filename="([^"]+)"[^>]*line-rate="([0-9.]+)"/gi;
-  for (const m of content.matchAll(classRe)) {
-    const file = (m[1] ?? "").replace(/\\/g, "/");
-    const rate = Number(m[2] ?? "0");
-    if (file && Number.isFinite(rate)) map.set(file, Math.max(0, Math.min(1, rate)));
+  for (const m of content.matchAll(/<class\b([^>]*?)>/gi)) {
+    const attrs = m[1] ?? "";
+    const file = (readXmlAttr(attrs, "filename") ?? "").replace(/\\/g, "/");
+    const rateRaw = readXmlAttr(attrs, "line-rate");
+    const rate = rateRaw !== undefined ? Number(rateRaw) : Number.NaN;
+    if (!file || !Number.isFinite(rate)) continue;
+    const clamped = Math.max(0, Math.min(1, rate));
+    const prev = map.get(file);
+    map.set(file, prev === undefined ? clamped : Math.min(prev, clamped));
   }
   return map;
 }
@@ -83,32 +117,75 @@ function parseStrykerJson(content: string): number | undefined {
 }
 
 function parseJunitOrTrx(content: string): { passed: number; failed: number; skipped: number } | undefined {
-  const trxMatch = /<Counters\b[^>]*total="(\d+)"[^>]*passed="(\d+)"[^>]*failed="(\d+)"/i.exec(content);
-  if (trxMatch) {
-    const total = Number(trxMatch[1] ?? "0");
-    const passed = Number(trxMatch[2] ?? "0");
-    const failed = Number(trxMatch[3] ?? "0");
-    return { passed, failed, skipped: Math.max(0, total - passed - failed) };
+  const trxMatch = /<Counters\b([^>]*?)>/i.exec(content);
+  if (trxMatch?.[1]) {
+    const attrs = trxMatch[1];
+    const total = Number(readXmlAttr(attrs, "total") ?? "NaN");
+    const passed = Number(readXmlAttr(attrs, "passed") ?? "0");
+    const failed =
+      Number(readXmlAttr(attrs, "failed") ?? "0") +
+      Number(readXmlAttr(attrs, "error") ?? "0") +
+      Number(readXmlAttr(attrs, "timeout") ?? "0") +
+      Number(readXmlAttr(attrs, "aborted") ?? "0");
+    if (Number.isFinite(total)) {
+      return { passed, failed, skipped: Math.max(0, total - passed - failed) };
+    }
   }
-  const junitMatch = /<testsuites?\b[^>]*tests="(\d+)"/i.exec(content);
-  if (junitMatch) {
-    const total = Number(junitMatch[1] ?? "0");
-    const failMatch = /failures="(\d+)"/i.exec(content);
-    const errMatch = /errors="(\d+)"/i.exec(content);
-    const skipMatch = /skipped="(\d+)"/i.exec(content);
-    const failed = Number(failMatch?.[1] ?? "0") + Number(errMatch?.[1] ?? "0");
-    const skipped = Number(skipMatch?.[1] ?? "0");
-    return { passed: Math.max(0, total - failed - skipped), failed, skipped };
+
+  const suites = [...content.matchAll(/<testsuite\b([^>]*?)>/gi)];
+  if (suites.length > 0) {
+    let total = 0;
+    let failed = 0;
+    let skipped = 0;
+    let matchedAny = false;
+    for (const s of suites) {
+      const attrs = s[1] ?? "";
+      const t = Number(readXmlAttr(attrs, "tests") ?? "NaN");
+      if (!Number.isFinite(t)) continue;
+      matchedAny = true;
+      total += t;
+      failed += Number(readXmlAttr(attrs, "failures") ?? "0") + Number(readXmlAttr(attrs, "errors") ?? "0");
+      skipped += Number(readXmlAttr(attrs, "skipped") ?? "0");
+    }
+    if (matchedAny) {
+      return { passed: Math.max(0, total - failed - skipped), failed, skipped };
+    }
+  }
+
+  const rootMatch = /<testsuites\b([^>]*?)>/i.exec(content);
+  if (rootMatch?.[1]) {
+    const attrs = rootMatch[1];
+    const total = Number(readXmlAttr(attrs, "tests") ?? "NaN");
+    if (Number.isFinite(total)) {
+      const failed = Number(readXmlAttr(attrs, "failures") ?? "0") + Number(readXmlAttr(attrs, "errors") ?? "0");
+      const skipped = Number(readXmlAttr(attrs, "skipped") ?? "0");
+      return { passed: Math.max(0, total - failed - skipped), failed, skipped };
+    }
   }
   return undefined;
 }
 
-export function parseStructuredReports(repoRoot: string): StructuredReportMetrics {
+function isFreshFile(abs: string, minMtimeMs?: number): boolean {
+  if (!fs.existsSync(abs)) return false;
+  if (minMtimeMs === undefined) return true;
+  try {
+    return fs.statSync(abs).mtimeMs >= minMtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+export function parseStructuredReports(
+  repoRoot: string,
+  options?: { minMtimeMs?: number; rung?: RungId },
+): StructuredReportMetrics {
   const result: StructuredReportMetrics = { fileCoverage: new Map() };
-  const lcovPaths = ["coverage/lcov.info", "lcov.info", ".verification/lcov.info"];
-  for (const rel of lcovPaths) {
+  const minMtimeMs = options?.minMtimeMs;
+  const rung = options?.rung;
+
+  for (const rel of ["coverage/lcov.info", "lcov.info", ".verification/lcov.info"]) {
     const abs = path.join(repoRoot, rel);
-    if (fs.existsSync(abs)) {
+    if (isFreshFile(abs, minMtimeMs)) {
       result.fileCoverage = parseLcov(fs.readFileSync(abs, "utf8"));
       break;
     }
@@ -116,7 +193,7 @@ export function parseStructuredReports(repoRoot: string): StructuredReportMetric
   if (result.fileCoverage.size === 0) {
     for (const rel of ["coverage/cobertura-coverage.xml", "coverage.cobertura.xml", ".verification/coverage.cobertura.xml"]) {
       const abs = path.join(repoRoot, rel);
-      if (fs.existsSync(abs)) {
+      if (isFreshFile(abs, minMtimeMs)) {
         result.fileCoverage = parseCoberturaXml(fs.readFileSync(abs, "utf8"));
         break;
       }
@@ -127,35 +204,104 @@ export function parseStructuredReports(repoRoot: string): StructuredReportMetric
     result.lineCoveragePct = Number(((vals.reduce((a, b) => a + b, 0) / vals.length) * 100).toFixed(2));
   }
 
-  for (const rel of ["reports/mutation/mutation.json", "StrykerOutput/mutation-report.json", ".verification/mutation.json"]) {
-    const abs = path.join(repoRoot, rel);
-    if (fs.existsSync(abs)) {
-      const score = parseStrykerJson(fs.readFileSync(abs, "utf8"));
-      if (score !== undefined) {
-        result.mutationScore = score;
-        break;
+  if (!rung || rung === "R5") {
+    for (const rel of ["reports/mutation/mutation.json", "StrykerOutput/mutation-report.json", ".verification/mutation.json"]) {
+      const abs = path.join(repoRoot, rel);
+      if (isFreshFile(abs, minMtimeMs)) {
+        const score = parseStrykerJson(fs.readFileSync(abs, "utf8"));
+        if (score !== undefined) {
+          result.mutationScore = score;
+          break;
+        }
       }
     }
   }
 
-  for (const rel of ["junit.xml", "test-results/junit.xml", "TestResults/results.trx", ".verification/junit.xml"]) {
-    const abs = path.join(repoRoot, rel);
-    if (fs.existsSync(abs)) {
-      const counts = parseJunitOrTrx(fs.readFileSync(abs, "utf8"));
-      if (counts) {
-        result.testsPassed = counts.passed;
-        result.testsFailed = counts.failed;
-        result.testsSkipped = counts.skipped;
-        break;
+  if (!rung || rung === "R2" || rung === "R3" || rung === "R4") {
+    for (const rel of ["junit.xml", "test-results/junit.xml", "TestResults/results.trx", ".verification/junit.xml"]) {
+      const abs = path.join(repoRoot, rel);
+      if (isFreshFile(abs, minMtimeMs)) {
+        const counts = parseJunitOrTrx(fs.readFileSync(abs, "utf8"));
+        if (counts) {
+          result.testsPassed = counts.passed;
+          result.testsFailed = counts.failed;
+          result.testsSkipped = counts.skipped;
+          break;
+        }
       }
     }
   }
   return result;
 }
 
-function estimateCyclomaticComplexity(source: string): number {
-  const branches = source.match(/\b(?:if|else\s+if|for|while|case|catch)\b|\?\?|\?[^:]|&&|\|\|/g);
-  return 1 + (branches ? branches.length : 0);
+const JS_BRANCH_TYPES = new Set([
+  "IfStatement",
+  "ForStatement",
+  "ForInStatement",
+  "ForOfStatement",
+  "WhileStatement",
+  "DoWhileStatement",
+  "CatchClause",
+  "ConditionalExpression",
+  "LogicalExpression",
+]);
+
+const JS_FUNC_TYPES = new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+
+function maxJsFunctionCc(filePath: string, source: string): number {
+  try {
+    const parsed = parseSync(filePath, source);
+    let maxCc = 1;
+    const walk = (node: unknown, curFuncBranches: { count: number }): void => {
+      if (!node || typeof node !== "object") return;
+      const rec = node as Record<string, unknown>;
+      const t = typeof rec.type === "string" ? rec.type : "";
+      if (JS_FUNC_TYPES.has(t)) {
+        const childCounter = { count: 1 };
+        for (const val of Object.values(rec)) {
+          if (Array.isArray(val)) for (const item of val) walk(item, childCounter);
+          else if (val && typeof val === "object") walk(val, childCounter);
+        }
+        if (childCounter.count > maxCc) maxCc = childCounter.count;
+        return;
+      }
+      if (JS_BRANCH_TYPES.has(t) || (t === "SwitchCase" && rec.test !== null)) {
+        curFuncBranches.count += 1;
+      }
+      for (const val of Object.values(rec)) {
+        if (Array.isArray(val)) for (const item of val) walk(item, curFuncBranches);
+        else if (val && typeof val === "object") walk(val, curFuncBranches);
+      }
+    };
+    const topLevel = { count: 1 };
+    walk(parsed.program, topLevel);
+    return Math.max(maxCc, topLevel.count);
+  } catch {
+    return 1;
+  }
+}
+
+function stripNonCode(source: string): string {
+  return source
+    .replace(/"""[\s\S]*?"""|'''[\s\S]*?'''/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, "$1 ")
+    .replace(/(^|\s)#[^\n]*/g, "$1 ")
+    .replace(/"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/'(?:\\.|[^'\\])*'/g, "''");
+}
+
+function estimateMaxFunctionCc(filePath: string, source: string): number {
+  if (/\.[cm]?[jt]sx?$/.test(filePath)) return maxJsFunctionCc(filePath, source);
+  const cleaned = stripNonCode(source);
+  const chunks = cleaned.split(/\n(?=(?:def |async def |pub\s+fn |fn |func ))/);
+  let maxCc = 1;
+  for (const chunk of chunks) {
+    const branches = chunk.match(/\b(?:if|elif|else\s+if|for|while|case|catch|except|and|or)\b|&&|\|\||=>|\?(?![.?])/g);
+    const cc = 1 + (branches ? branches.length : 0);
+    if (cc > maxCc) maxCc = cc;
+  }
+  return maxCc;
 }
 
 export function computeCrapScore(cyclomaticComplexity: number, coverageFraction: number): number {
@@ -169,23 +315,31 @@ export function evaluateCrapForCoverageFile(
   coveragePath: string,
   maxAllowed = 30,
 ): CrapReport {
-  const absCov = path.isAbsolute(coveragePath) ? coveragePath : path.join(repoRoot, coveragePath);
+  if (!Number.isFinite(maxAllowed) || maxAllowed <= 0) {
+    throw new Error(`Invalid --max-crap threshold '${String(maxAllowed)}'; must be a positive finite number.`);
+  }
+  const absRoot = path.resolve(repoRoot);
+  const absCov = path.isAbsolute(coveragePath) ? coveragePath : path.join(absRoot, coveragePath);
   const raw = fs.readFileSync(absCov, "utf8");
   const covMap = raw.trimStart().startsWith("<") ? parseCoberturaXml(raw) : parseLcov(raw);
   const offenders: CrapEntry[] = [];
+  const coveredRelSet = new Set<string>();
   let worstCrap = 0;
   let evaluatedFiles = 0;
 
   for (const [fileRel, covFrac] of covMap.entries()) {
-    const absFile = path.isAbsolute(fileRel) ? fileRel : path.join(repoRoot, fileRel);
-    if (!fs.existsSync(absFile)) continue;
+    const absFile = path.resolve(absRoot, fileRel);
+    if (absFile !== absRoot && !absFile.startsWith(`${absRoot}${path.sep}`)) continue;
+    if (!fs.existsSync(absFile) || !fs.statSync(absFile).isFile()) continue;
+    const normRel = path.relative(absRoot, absFile).split(path.sep).join("/");
+    coveredRelSet.add(normRel);
     evaluatedFiles += 1;
-    const cc = estimateCyclomaticComplexity(fs.readFileSync(absFile, "utf8"));
+    const cc = estimateMaxFunctionCc(absFile, fs.readFileSync(absFile, "utf8"));
     const score = computeCrapScore(cc, covFrac);
     if (score > worstCrap) worstCrap = score;
     if (score > maxAllowed) {
       offenders.push({
-        file: path.relative(repoRoot, absFile).split(path.sep).join("/"),
+        file: normRel,
         cyclomaticComplexity: cc,
         coveragePct: Number((covFrac * 100).toFixed(1)),
         crapScore: score,
@@ -193,13 +347,20 @@ export function evaluateCrapForCoverageFile(
     }
   }
 
+  const repo = discoverRepo(absRoot);
+  const uncoveredRepoFiles = repo.files
+    .filter((f) => f.language && !f.isTest && isHostRepoFile(f.rel) && !coveredRelSet.has(f.rel))
+    .map((f) => f.rel)
+    .sort();
+
   offenders.sort((a, b) => b.crapScore - a.crapScore);
   return {
     maxAllowed,
-    passed: evaluatedFiles > 0 && offenders.length === 0,
+    passed: evaluatedFiles > 0 && offenders.length === 0 && uncoveredRepoFiles.length === 0,
     worstCrap,
     offenders,
     evaluatedFiles,
+    uncoveredRepoFiles,
   };
 }
 

@@ -131,11 +131,12 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
   }
 
   if (file.rel.endsWith(".vue") && hasTsRepo) {
-    for (const m of raw.matchAll(VUE_SCRIPT_NO_TS)) {
+    const vueRaw = file.rawContent ?? raw;
+    for (const m of vueRaw.matchAll(VUE_SCRIPT_NO_TS)) {
       push(
         findings,
         file.rel,
-        lineOf(raw, m.index ?? 0),
+        lineOf(vueRaw, m.index ?? 0),
         "vue-require-script-lang-ts",
         "R1",
         "warn",

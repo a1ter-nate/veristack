@@ -1,8 +1,9 @@
 import path from "node:path";
 import type { ScannedFile } from "../discover.ts";
 import type { CiExecutionSignals, Language, ToolSignals } from "../types.ts";
+import { sanitizeShellBlock } from "./command-audit.ts";
 import { isHostRepoFile } from "./manifest.ts";
-import { auditCodeownersPerimeter, parseGitHubWorkflow, sanitizeShellBlock } from "./workflow-audit.ts";
+import { auditCodeownersPerimeter, parseGitHubWorkflow } from "./workflow-audit.ts";
 
 const MANIFEST_BASENAMES = new Set([
   "package.json",
@@ -21,6 +22,7 @@ function isManifestFile(rel: string): boolean {
 function isConfigFile(file: ScannedFile): boolean {
   const lower = file.rel.replace(/\\/g, "/").toLowerCase();
   const base = path.posix.basename(lower);
+  if (lower === ".verification/rungs.json") return false;
   if (file.isWorkflow || isManifestFile(file.rel)) return true;
   if (lower.endsWith(".md")) return false;
   if (!file.language) return true;
@@ -151,7 +153,14 @@ function hasValidStrykerConfig(files: readonly ScannedFile[]): boolean {
   if (!cfg) return false;
   try {
     const parsed = JSON.parse(cfg.content) as Record<string, unknown>;
-    return typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0;
+    if (typeof parsed !== "object" || parsed === null) return false;
+    return (
+      "mutate" in parsed ||
+      "testRunner" in parsed ||
+      "checkers" in parsed ||
+      "stryker-config" in parsed ||
+      "thresholds" in parsed
+    );
   } catch {
     return false;
   }
@@ -187,17 +196,28 @@ function hasStrictTypesForLanguages(
   const needsRust = languages.includes("rust");
   const needsGo = languages.includes("go");
   if (needsTs && !/"strict"\s*:\s*true/.test(configText)) return false;
-  if (needsCs && !/<Nullable>enable<\/Nullable>/i.test(manifestAndConfig)) return false;
-  if (
-    needsPy &&
-    !/\bstrict\s*=\s*true\b|"typeCheckingMode"\s*:\s*"strict"|\bmypy\b[^\n]*--strict|\bpyright\b/i.test(
-      `${configText}\n${effectiveCiText}`,
-    )
-  ) {
-    return false;
+  if (needsCs) {
+    if (!/<Nullable>enable<\/Nullable>/i.test(manifestAndConfig)) return false;
+    if (/<TreatWarningsAsErrors>false<\/TreatWarningsAsErrors>/i.test(manifestAndConfig)) return false;
   }
-  if (needsRust && !/\b(?:unsafe_code|clippy|warnings\s*=\s*"deny")\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`)) {
-    return false;
+  if (needsPy) {
+    const pyText = `${configText}\n${effectiveCiText}`;
+    if (/"typeCheckingMode"\s*:\s*"off"/i.test(configText)) return false;
+    const hasMypyStrict =
+      /\[tool\.mypy\][\s\S]{0,400}\bstrict\s*=\s*true\b/i.test(configText) ||
+      /\[mypy\][\s\S]{0,400}\bstrict\s*=\s*true\b/i.test(configText) ||
+      /\bmypy\b[^\n]*--strict/i.test(pyText) ||
+      /"typeCheckingMode"\s*:\s*"strict"/i.test(configText) ||
+      /\bbasedpyright\b/i.test(pyText);
+    if (!hasMypyStrict) return false;
+  }
+  if (needsRust) {
+    const rustText = `${manifestAndConfig}\n${effectiveCiText}`;
+    const hasRustStrict =
+      /unsafe_code\s*=\s*"(?:forbid|deny)"|clippy::[a-z_]+\s*=\s*"deny"|warnings\s*=\s*"deny"|--\s*-D\s+warnings/i.test(
+        rustText,
+      );
+    if (!hasRustStrict) return false;
   }
   if (needsGo && !/\b(?:go\s+vet|golangci-lint)\b/i.test(`${configText}\n${effectiveCiText}`)) {
     return false;
@@ -260,11 +280,11 @@ export function extractSignals(
 
   const hasAntiSlop =
     /\b(?:anti-slop|dmmulroy\/anti-slop|VStack\.Analyzers)\b/i.test(configText) ||
-    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines)\b/i.test(effectiveCiText);
+    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|verify|no-comments|state-machines)\b/i.test(effectiveCiText);
 
   const hasLandmines =
     /@interfere\/landmines|landmines-testing|\blandmines\//i.test(configText) ||
-    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+scan\b/i.test(effectiveCiText);
+    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|verify)\b/i.test(effectiveCiText);
 
   const hasGoInternal = /\boxlint-plugin-go-internal\b/i.test(configText);
   const hasDeslopPlease = hasHostPath(/\.deslop-please\.allow/) || /\bdeslop-please\b/i.test(configAndCi);
@@ -275,8 +295,8 @@ export function extractSignals(
 
   const hasKnipOrDeadCode =
     hasHostPath(/(?:^|\/)knip\.jsonc?$/) ||
-    /\bknip\b|"noUnusedLocals"\s*:\s*true|CS0162|IDE0051|dead_code|\bclippy\b|\bruff\s+check\b|\bgo\s+vet\b/i.test(
-      configAndCi,
+    /\b(?:knip|vulture|deadcode|cargo-udeps|cargo-machete)\b|"noUnusedLocals"\s*:\s*true|CS0162|IDE0051|dead_code|<AnalysisLevel>latest|\bclippy\b|\bruff\s+check\b|\bgo\s+vet\b/i.test(
+      `${manifestAndConfig}\n${effectiveCiText}`,
     );
 
   const hasJscpd = hasHostPath(/jscpd/) || /\bjscpd\b/i.test(configAndCi);
@@ -284,7 +304,8 @@ export function extractSignals(
   const hasArchFitness =
     /\b(?:dependency-cruiser|archunit|netarchtest|import-linter|deptrac|packwerk|turbo\s+boundaries|check-max-lines)\b/i.test(
       `${configAndCi}\n${testImportLines}`,
-    ) || hasHostPath(/(?:check-boundaries|arch-fitness|architecture.*test|check-max-lines)/);
+    ) ||
+    hasHostPath(/(?:check-boundaries|arch-fitness|architecture.*test|clippy\.toml|\.golangci\.ya?ml|(?:^|\/)internal\/.+\.go$)/);
 
   const hasPreCommitHook =
     hasNonEmptyLefthook(hostFiles) ||
@@ -296,7 +317,7 @@ export function extractSignals(
   const hasAgentsMd = hasHostPath(/(?:^|\/)(?:agents|claude)\.md$/);
 
   const hasPbt =
-    /(?:\bfc\.property\s*\(|\bfc\.asyncProperty\s*\(|\bproptest!\s*\{|@given\s*\(|\[Property\b|\brapid\.Check\s*\(|\bquick\.Check\s*\()/m.test(
+    /(?:\bfc\.property\s*\(|\bfc\.asyncProperty\s*\(|\bproptest!\s*\{|@(?:hypothesis\.)?given\s*\(|\[Property\b|\brapid\.Check\s*\(|\bquick\.Check\s*\()/m.test(
       codeTestText,
     );
 
@@ -309,7 +330,7 @@ export function extractSignals(
     /\bstateright\b/i.test(testImportLines);
 
   const hasContractTool =
-    /\b(?:@pact-foundation|pactnet|schemathesis|openapi|asyncapi)\b/i.test(`${manifestAndConfig}\n${testImportLines}`) ||
+    /\b(?:@pact-foundation|pactnet|pact-go|schemathesis|openapi|asyncapi)\b/i.test(`${manifestAndConfig}\n${testImportLines}`) ||
     hasHostPath(/(?:^|\/)(?:buf\.yaml|openapi\.(?:ya?ml|json)|asyncapi\.(?:ya?ml|json)|.*\.contract\.[cm]?[jt]sx?)$/);
 
   const hasComponentUiTool =
@@ -325,7 +346,9 @@ export function extractSignals(
     );
 
   const hasMigrationTest =
-    /\b(?:MigrateAsync|MigrationBuilder|alembic|flyway|prisma\s+migrate)\b/i.test(`${configAndCi}\n${codeTestText}`);
+    /\b(?:MigrateAsync|MigrationBuilder|alembic|flyway|prisma\s+migrate|sqlx::migrate|golang-migrate|goose|drizzle-kit)\b/i.test(
+      `${configAndCi}\n${codeTestText}`,
+    );
 
   const hasBusDlqTest =
     /\b(?:DeadLetter|MaxDeliveryCount|ServiceBusClient|RabbitMQ|Kafka)\b/.test(`${manifestText}\n${codeTestText}`);
@@ -339,19 +362,20 @@ export function extractSignals(
   const hasMutationTool =
     hasValidStrykerConfig(hostFiles) ||
     hasHostPath(/(?:^|\/)(?:mutants\.toml|stryker\.conf\.[cm]?[jt]s)$/) ||
-    /\b(?:@stryker-mutator|stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|go-mutesting|(?:vstack(?:\.mjs)?|cli\.ts)\s+canary)\b/i.test(
+    /\b(?:@stryker-mutator|stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|gremlins|go-mutesting|(?:vstack(?:\.mjs)?|cli\.ts)\s+canary)\b/i.test(
       configAndCi,
     );
 
   const hasFormalTool =
     hasNonEmptyFormalSpec(files) ||
+    hasHostPath(/(?:^|\/)test_formal_model_check\.py$/) ||
     /\b(?:everystate|z3-solver|Microsoft\.Z3|stateright|kani|verus|loom|shuttle|quint\s+(?:verify|run)|dafny\s+verify|crosshair)\b/i.test(
       `${testImportLines}\n${effectiveCiText}`,
     ) ||
     (hasAnyPath(/(?:^|\/)\.verification\/control-plan\.json$/) && hasAnyPath(/(?:^|\/)\.verification\/laws\/.+\.laws\.json$/));
 
   const hasFuzzTool =
-    /\b(?:cargo-fuzz|libFuzzer|jazzer|atheris)\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`) ||
+    /\b(?:cargo-fuzz|libFuzzer|jazzer|atheris|SharpFuzz)\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`) ||
     /\bfuzzTest\s*\(/.test(codeTestText);
 
   const hasBombadil = /\bbombadil\b/i.test(configAndCi);
@@ -362,7 +386,7 @@ export function extractSignals(
 
   const hasPerfOrLoadTool =
     hasHostPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js))$/) ||
-    /\b(?:k6\s+run|BenchmarkDotNet|criterion|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|web-vitals|lighthouse|@lhci\/cli|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(
+    /\b(?:k6\s+run|BenchmarkDotNet|NBomber|criterion|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|web-vitals|lighthouse|@lhci\/cli|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(
       `${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`,
     );
 
@@ -378,93 +402,75 @@ export function extractSignals(
   const hasDiffSelection =
     /\b(?:testscope|--changed|--affected|affected-projects|turbo\s+run[^\n]*--filter)\b/i.test(configAndCi);
 
+  const runsVerifyAll =
+    hasCiWorkflows && /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:verify|run-rung\s+all)\b/i.test(effectiveCiText);
+
   const runsUnitTests =
-    hasCiWorkflows &&
-    /\b(?:bun\s+test|vitest|jest|node\s+--test|mocha|ava|dotnet\s+test|cargo\s+(?:test|nextest)|pytest|go\s+test|phpunit|rspec|run-rung\s+(?:R2|all))\b/i.test(
-      effectiveCiText,
-    );
+    runsVerifyAll ||
+    (hasCiWorkflows &&
+      /\b(?:bun\s+test|vitest|jest|node\s+--test|mocha|ava|dotnet\s+test|cargo\s+(?:test|nextest)|pytest|go\s+test|phpunit|rspec|run-rung\s+(?:R2|all))\b/i.test(
+        effectiveCiText,
+      ));
 
   const ci: CiExecutionSignals = {
     hasCiWorkflows,
     workflowFiles,
     runsFormatterOrLint:
-      hasCiWorkflows &&
-      /\b(?:oxlint|oxfmt|eslint|prettier|biome|ruff\s+(?:check|format)|cargo\s+(?:fmt|clippy)|dotnet\s+(?:format|build\b[^\n]*warnaserror)|gofmt|golangci-lint|go\s+vet|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines|run-rung))\b/i.test(
-        effectiveCiText,
-      ),
+      runsVerifyAll ||
+      (hasCiWorkflows &&
+        /\b(?:oxlint|oxfmt|eslint|prettier|biome|ruff\s+(?:check|format)|cargo\s+(?:fmt|clippy)|dotnet\s+(?:format|build\b[^\n]*warnaserror)|gofmt|golangci-lint|go\s+vet|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines|run-rung))\b/i.test(
+          effectiveCiText,
+        )),
     runsTypeOrStructureCheck:
-      hasCiWorkflows &&
-      /\b(?:tsc\b|tsgo\b|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|go\s+(?:vet|build)|knip\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(
-        effectiveCiText,
-      ),
+      runsVerifyAll ||
+      (hasCiWorkflows &&
+        /\b(?:tsc\b|tsgo\b|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|basedpyright\b|go\s+(?:vet|build)|knip\b|vulture\b|deadcode\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(
+          effectiveCiText,
+        )),
     runsUnitTests,
     runsBoundaryOrMbtTests:
-      hasCiWorkflows &&
-      /\b(?:pact|storybook|test:contract|test:component|test:mbt|dotnet\s+test[^\n]*--filter|pytest[^\n]*-m\b|cargo\s+(?:test|nextest)[^\n]*--test|go\s+test[^\n]*-race|run-rung\s+(?:R3|all))\b/i.test(
-        effectiveCiText,
-      ),
+      runsVerifyAll ||
+      (hasCiWorkflows &&
+        /\b(?:pact|pact-go|schemathesis|storybook|test:contract|test:component|test:mbt|dotnet\s+test|pytest\b|cargo\s+(?:test|nextest)|go\s+test|run-rung\s+(?:R3|all))\b/i.test(
+          effectiveCiText,
+        )),
     runsIntegrationOrDbTests:
-      hasCiWorkflows &&
-      /\b(?:testcontainers|test:int|test:integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|run-rung\s+(?:R4|all))\b/i.test(
-        effectiveCiText,
-      ),
+      runsVerifyAll ||
+      (hasCiWorkflows &&
+        /\b(?:testcontainers|test:int|test:integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|goose\s+up|run-rung\s+(?:R4|all))\b/i.test(
+          effectiveCiText,
+        )),
     runsMutationOrFormal:
-      hasCiWorkflows &&
-      (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|run-rung\s+(?:R5|all))\b/i.test(
-        effectiveCiText,
-      ) ||
-        /\bbend\b[^\n]*--check-only/i.test(effectiveCiText) ||
-        /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText)),
+      runsVerifyAll ||
+      (hasCiWorkflows &&
+        (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|gremlins|go-mutesting|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|run-rung\s+(?:R5|all))\b/i.test(
+          effectiveCiText,
+        ) ||
+          /\bbend\b[^\n]*--check-only/i.test(effectiveCiText) ||
+          /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText))),
     runsPerfOrBench:
-      hasCiWorkflows &&
-      /\b(?:k6\s+run|BenchmarkDotNet|cargo\s+bench|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|lighthouse|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(
-        effectiveCiText,
-      ),
+      runsVerifyAll ||
+      (hasCiWorkflows &&
+        /\b(?:k6\s+run|BenchmarkDotNet|NBomber|cargo\s+bench|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|lighthouse|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(
+          effectiveCiText,
+        )),
     runsE2eTests:
-      hasCiWorkflows && /\b(?:playwright\s+test|cypress\s+run|maestro\s+test|test:e2e|run-rung\s+(?:R7|all))\b/i.test(effectiveCiText),
+      runsVerifyAll ||
+      (hasCiWorkflows && /\b(?:playwright\s+test|cypress\s+run|maestro\s+test|test:e2e|run-rung\s+(?:R7|all))\b/i.test(effectiveCiText)),
     runsProdVerification:
-      hasCiWorkflows &&
-      /\b(?:synthetic|canary|rollback|smoke-prod|post-deploy|healthcheck|run-rung\s+(?:R8|all))\b/i.test(effectiveCiText),
+      runsVerifyAll ||
+      (hasCiWorkflows &&
+        /\b(?:synthetic|canary|rollback|smoke-prod|post-deploy|healthcheck|run-rung\s+(?:R8|all))\b/i.test(effectiveCiText)),
   };
 
   const signals: ToolSignals = {
-    hasFormatter,
-    hasLinter,
-    hasOxlint,
-    hasAntiSlop,
-    hasLandmines,
-    hasGoInternal,
-    hasDeslopPlease,
-    hasDesloppify,
-    hasStrictTypes,
-    hasTsgo,
-    hasKnipOrDeadCode,
-    hasJscpd,
-    hasArchFitness,
-    hasPreCommitHook,
-    hasCodeowners,
-    hasReviewMd,
-    hasAgentsMd,
-    hasPbt,
-    hasMbt,
-    hasContractTool,
-    hasComponentUiTool,
-    hasMsw,
-    hasMswStrict,
-    hasTestcontainersOrRealDb,
-    hasMigrationTest,
-    hasBusDlqTest,
-    hasDst,
-    hasDryRun,
-    hasMutationTool,
-    hasFormalTool,
-    hasFuzzTool,
-    hasBombadil,
-    hasVisualTool,
-    hasPerfOrLoadTool,
-    hasE2eTool,
-    hasProdTelemetryOrCanary,
-    hasDiffSelection,
+    hasFormatter, hasLinter, hasOxlint, hasAntiSlop, hasLandmines, hasGoInternal,
+    hasDeslopPlease, hasDesloppify, hasStrictTypes, hasTsgo, hasKnipOrDeadCode,
+    hasJscpd, hasArchFitness, hasPreCommitHook, hasCodeowners, hasReviewMd,
+    hasAgentsMd, hasPbt, hasMbt, hasContractTool, hasComponentUiTool, hasMsw,
+    hasMswStrict, hasTestcontainersOrRealDb, hasMigrationTest, hasBusDlqTest,
+    hasDst, hasDryRun, hasMutationTool, hasFormalTool, hasFuzzTool, hasBombadil,
+    hasVisualTool, hasPerfOrLoadTool, hasE2eTool, hasProdTelemetryOrCanary, hasDiffSelection,
   };
 
   return { signals, ci };

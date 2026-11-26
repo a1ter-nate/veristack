@@ -14,7 +14,11 @@ export interface ScanOptions {
   configPath?: string;
   disableRules?: readonly string[];
   strict?: boolean;
+  receiptHmacKey?: string;
 }
+
+const PROTECTED_EXCLUSION_ROOT =
+  /^(?:src|lib|app|apps|packages|services|crates|libs|pkg|internal|cmd|tests|test|__tests__|spec|bin)(?:\/|$)/i;
 
 function matchAllowPattern(pattern: string, target: string): boolean {
   const normPat = pattern.trim().replace(/^\/+/, "");
@@ -38,7 +42,9 @@ function filterUnallowlistedExclusions(
   if (allowExcluded.length === 0) return [...exclusions];
   return exclusions.filter((ex) => {
     if (ex.reason === "truncated") return true;
-    return !allowExcluded.some((pat) => matchAllowPattern(pat, ex.path));
+    const norm = ex.path.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (PROTECTED_EXCLUSION_ROOT.test(norm)) return true;
+    return !allowExcluded.some((pat) => matchAllowPattern(pat, norm));
   });
 }
 
@@ -78,7 +84,7 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
       fix: "Fix .verification/rungs.json schema so declared archetype and rung commands are valid.",
     });
   }
-  rawFindings.push(...auditDeclaredArchetype(repo.manifest, repo.observedArchetype));
+  rawFindings.push(...auditDeclaredArchetype(repo.manifest, repo.observedArchetype, repo));
 
   if (!isRuleDisabled("no-comments", config, options.disableRules)) {
     for (const file of repo.files) {
@@ -94,8 +100,25 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
   rawFindings.push(...testResult.findings);
   rawFindings.push(...auditCiWorkflows(repo));
 
-  const receiptBundle = loadValidReceipts(repo, repo.manifest);
+  const receiptBundle = loadValidReceipts(repo, repo.manifest, {
+    strict: options.strict,
+    hmacKeyOverride: options.receiptHmacKey,
+  });
   rawFindings.push(...receiptBundle.findings);
+
+  if (options.strict && repo.manifest?.rungs.R2 && !repo.manifest.rungs.R2.canary?.enabled) {
+    rawFindings.push({
+      id: "RUNG:r2-canary-required:.verification/rungs.json",
+      rule: "rung-canary-required",
+      category: "oracle-lock",
+      rung: "R2",
+      severity: "error",
+      file: ".verification/rungs.json",
+      line: 1,
+      message: "Strict scan requires planted-fault canary (canary.enabled: true) on R2 so tests prove real fault detection.",
+      fix: "Enable rungs.R2.canary in .verification/rungs.json.",
+    });
+  }
 
   const applied = applyRepoConfig(rawFindings, config, options.disableRules);
   const findings = applied.findings;
@@ -133,11 +156,8 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
       : 100;
 
   if (workspaces.length > 0) {
-    const highRiskWs = workspaces.filter((w) => w.highRiskFiles > 0);
-    if (highRiskWs.length > 0) {
-      const riskCeiling = Math.min(...highRiskWs.map((w) => w.score));
-      overallCoverageScore = Math.min(overallCoverageScore, riskCeiling);
-    }
+    const wsCeiling = Math.min(...workspaces.map((w) => w.score));
+    overallCoverageScore = Math.min(overallCoverageScore, wsCeiling);
   }
 
   return {

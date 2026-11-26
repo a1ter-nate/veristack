@@ -344,7 +344,12 @@ export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDi
     (replay.combinedCaughtPairs > 0 && replay.cleanAfterPairs === replay.totalPairs);
 
   return {
-    passed: totalExpectedRules === totalMatchedRules && totalCleanFps === 0 && totalAdversarialFps === 0 && replayPassed,
+    passed:
+      totalExpectedRules > 0 &&
+      totalExpectedRules === totalMatchedRules &&
+      totalCleanFps === 0 &&
+      totalAdversarialFps === 0 &&
+      replayPassed,
     totalExpectedRules,
     totalMatchedRules,
     totalCleanFps,

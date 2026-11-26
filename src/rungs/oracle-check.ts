@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isTestFilePath } from "../discover.ts";
+import { scrubChildEnv } from "./command-audit.ts";
 
 export interface TwoSidedOracleResult {
   passed: boolean;
@@ -14,10 +15,14 @@ export interface TwoSidedOracleResult {
 }
 
 const ORACLE_CONFIG_SURFACE =
-  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|pyproject\.toml|pytest\.ini|(?:vitest|jest|playwright)\.config\.[cm]?[jt]s|conftest\.py)$|__snapshots__\/.*\.snap$/i;
+  /(?:^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|pyproject\.toml|pytest\.ini|(?:vitest|vite|jest|playwright)\.config\.[cm]?[jt]s|jest\.config\.json|conftest\.py|\.verification\/rungs\.json)$|__snapshots__\/.*\.snap$/i;
+
+const TEST_DIR_SURFACE =
+  /(?:^|\/)(?:tests|test|__tests__|spec|specs|[^/]+\.(?:Tests|UnitTests|IntegrationTests))\//i;
 
 function isOracleSurface(rel: string): boolean {
-  return isTestFilePath(rel) || ORACLE_CONFIG_SURFACE.test(rel);
+  const norm = rel.replace(/\\/g, "/");
+  return isTestFilePath(norm) || TEST_DIR_SURFACE.test(norm) || ORACLE_CONFIG_SURFACE.test(norm);
 }
 
 function loadBaseApprovedBehaviorChanges(repoRoot: string, baseRef: string): Set<string> {
@@ -51,7 +56,7 @@ function loadBaseApprovedBehaviorChanges(repoRoot: string, baseRef: string): Set
 
 function copyWorkingTreeToSandbox(repoRoot: string): string {
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oracle-"));
-  const skipTop = new Set([".git", "node_modules", ".venv", "venv", "target", "dist"]);
+  const skipTop = new Set([".git", "node_modules", ".venv", "venv", "target"]);
   for (const entry of fs.readdirSync(repoRoot, { withFileTypes: true })) {
     if (entry.name === ".git") continue;
     const src = path.join(repoRoot, entry.name);
@@ -99,7 +104,8 @@ export function runTwoSidedOracleCheck(
     };
   }
 
-  const headRun = spawnSync(testCmd, [], { cwd: root, shell: true, encoding: "utf8", timeout: 120_000 });
+  const childEnv = scrubChildEnv();
+  const headRun = spawnSync(testCmd, [], { cwd: root, shell: true, env: childEnv, encoding: "utf8", timeout: 120_000 });
   const headExit = headRun.status ?? 1;
   if (headExit !== 0) {
     return {
@@ -171,7 +177,7 @@ export function runTwoSidedOracleCheck(
       };
     }
 
-    const baseOnHead = spawnSync(testCmd, [], { cwd: sandboxDir, shell: true, encoding: "utf8", timeout: 120_000 });
+    const baseOnHead = spawnSync(testCmd, [], { cwd: sandboxDir, shell: true, env: childEnv, encoding: "utf8", timeout: 120_000 });
     const baseExit = baseOnHead.status ?? 1;
     const passed = baseExit === 0 || allApproved;
     return {

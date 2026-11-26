@@ -15,6 +15,10 @@ const MAX_EXPORTS = 6;
 const MAX_AGENTS_LINES = 200;
 
 const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
+const GENERATED_HEADER = /(?:@generated|auto-generated|do\s+not\s+edit|generated\s+by\b)/i;
+const GO_SWALLOW_ERR = /\bif\s+err\s*!=\s*nil\s*\{\s*\}/g;
+const GO_UNSAFE_PTR = /\bunsafe\.Pointer\b/g;
+const GO_BARE_NOLINT = /\/\/\s*nolint(?:\s*$|\s*\n)/gm;
 const TEST_ONLY_EXPORT =
   /\bexport\s+(?:async\s+)?(?:function|const|let|class|type)\s+[A-Za-z0-9_]*(?:ForTesting|TestOnly|__test|_testOnly|VisibleForTesting)\b/g;
 const CHAINED_AS = /\bas\s+unknown\s+as\b|\bas\s+any\b/g;
@@ -59,7 +63,8 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
   }
 
   for (const file of repo.files) {
-    const isGenerated = GENERATED_PATH.test(file.rel);
+    const headerSlice = file.content.slice(0, 600);
+    const isGenerated = GENERATED_PATH.test(file.rel) && GENERATED_HEADER.test(headerSlice);
 
     if (file.language && !file.isTest && !isGenerated) {
       const dir = path.posix.dirname(file.rel);
@@ -144,6 +149,21 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
             message: `Unsafe type escape hatch (${match[0]}) hides real contract.`,
             fix: "Parse external data once at the boundary with a schema or verifying type guard instead of casting.",
           });
+        }
+      }
+    }
+
+    if (file.language === "go" && !file.isTest && !isGenerated) {
+      const goCode = maskCode(file.content, "go");
+      const goRules: ReadonlyArray<[string, RegExp, string, Finding["category"], string, string, string]> = [
+        [goCode, GO_SWALLOW_ERR, "no-swallowing-catch", "structure", "Empty 'if err != nil {}' block silently swallows Go error.", "Return or wrap the error explicitly with fmt.Errorf(..., err).", "go-swallow-err"],
+        [goCode, GO_UNSAFE_PTR, "no-unsafe-pointer", "structure", "unsafe.Pointer bypasses Go memory and type safety.", "Use safe typed Go values/slices instead of unsafe.Pointer.", "go-unsafe"],
+        [file.content, GO_BARE_NOLINT, "no-bare-suppression", "cheat", "Bare //nolint suppression hides Go linter diagnostics without rule or justification.", "Fix the diagnostic or name the specific linter with justification.", "go-nolint"],
+      ];
+      for (const [src, re, rule, category, message, fix, tag] of goRules) {
+        for (const match of src.matchAll(re)) {
+          const line = lineOf(file.content, match.index ?? 0);
+          findings.push({ id: `ST:${tag}:${file.rel}:${line}`, rule, category, rung: "R0", severity: "error", file: file.rel, line, message, fix });
         }
       }
     }

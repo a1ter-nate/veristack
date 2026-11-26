@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DiscoveredRepo } from "./discover.ts";
 import { auditDiffInvariantLoss } from "./ast/invariant-loss.ts";
+import { auditManifestDowngrade } from "./rungs/command-audit.ts";
 import { maskStrings } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
 import { auditDiffAntiEvasion, type DiffLineEvent } from "./zero-defect/anti-evasion.ts";
@@ -466,6 +467,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
 
   findings.push(...auditDiffAntiEvasion(diffEvents));
   findings.push(...auditDiffInvariantLoss(diffEvents, { allowTestedPredicateRefactor: true }));
+  findings.push(...auditManifestDowngrade(repoPath, baseRef));
 
   return findings;
 }

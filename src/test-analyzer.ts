@@ -13,15 +13,15 @@ export interface TestAnalysisResult {
 }
 
 const TEST_CASE_DECL =
-  /\b(?:test|it)(?:\.(?:only|skip|concurrent|each))?\s*\(|\[(?:Fact|Theory|Test|TestCase|TestMethod|Property)\b|\bdef\s+test_[a-zA-Z0-9_]+\s*\(|\bfunc\s+Test[A-Z][a-zA-Z0-9_]*\s*\(|#\[(?:test|tokio::test|rstest)\]/g;
+  /\b(?:test|it)(?:\.(?:only|skip|concurrent|each))?\s*\(|\[(?:Fact|Theory|Test|TestCase|TestMethod|Property)\b|\bdef\s+test_[a-zA-Z0-9_]+\s*\(|\bfunc\s+Test[A-Z][a-zA-Z0-9_]*\s*\(|#\[(?:test|tokio::test|sqlx::test|rstest)\]/g;
 const TABLE_TEST =
-  /\b(?:test|it)\.each\s*\(|\[Theory\]|\[InlineData\(|\[MemberData\(|#\[rstest\]|#\[case\(|@pytest\.mark\.parametrize\b|\.csv["']|\.ya?ml["']|fixtures\/.*\.json/i;
-const PBT_SIGNAL = /(?:\bfc\.property\s*\(|\bfc\.asyncProperty\s*\(|\bfast-check\b|@given\s*\(|\bhypothesis\b|\bproptest!\s*\{|\[Property(?:\(|\])|\bFsCheck\b|\brapid\.Check\s*\(|\bquick\.Check\s*\()/i;
+  /\b(?:test|it)\.each\s*\(|\[Theory\]|\[InlineData\(|\[MemberData\(|#\[rstest\]|#\[case\(|@pytest\.mark\.parametrize\b|\.csv["']|\.ya?ml["']|(?:fixtures\/|transition-table).*\.json|\[\]struct\s*\{[\s\S]{0,600}t\.Run\s*\(/i;
+const PBT_SIGNAL = /(?:\bfc\.property\s*\(|\bfc\.asyncProperty\s*\(|\bfast-check\b|@(?:hypothesis\.)?given\s*\(|\bhypothesis\b|\bproptest!\s*\{|\[Property(?:\(|\])|\bFsCheck\b|\brapid\.Check\s*\(|\bquick\.Check\s*\()/i;
 const MBT_SIGNAL =
   /\bfc\.commands\s*\(\s*\[(?!\s*\])|\b(?:fc\.modelRun|fc\.asyncModelRun|RuleBasedStateMachine|PropEr|stateright|FsCheck\.Experimental|StateMachine<|Machine<|proptest_state_machine|ReferenceStateMachine|state_machine_test!|rapid\.StateMachine)\b/i;
 const E2E_SIGNAL = /\b(?:@playwright\/test|page\.goto\(|cy\.visit\(|webdriver|selenium|puppeteer)\b/i;
 const COMPONENT_SIGNAL = /\b(?:@testing-library|render\(|screen\.getBy|mount\(|playwright\/experimental-ct)\b/i;
-const HOST_SIGNAL = /\b(?:WebApplicationFactory|TestServer|supertest\(|app\.request\(|TestClient\(|oneshot\(|actix_web::test|spawnSync\s*\(\s*process\.execPath)\b/i;
+const HOST_SIGNAL = /\b(?:WebApplicationFactory|TestServer|actix_web::test|httptest\.(?:NewServer|NewRecorder))\b|\b(?:supertest|app\.request|TestClient|oneshot)\s*\(|\bspawnSync\s*\(\s*process\.execPath/i;
 const CONTRACT_SIGNAL = /\b(?:@pact-foundation|PactBuilder|VerifyProvider|schemathesis|OpenApiValidator|openapi-response-contract)\b/i;
 const REAL_DB_SIGNAL =
   /\b(?:Testcontainers|PostgreSqlContainer|MsSqlContainer|UseNpgsql|UseSqlServer|SqlConnection|pg\.Pool|PgPool::connect|sqlx::test|PGlite|MigrateAsync|FIRESTORE_EMULATOR_HOST|FIREBASE_AUTH_EMULATOR_HOST|firebase-emulator|initializeTestEnvironment)\b/i;
@@ -33,11 +33,11 @@ const PY_MODULE_MOCK = /@\s*(?:unittest\.mock\.)?patch(?:\.object)?\s*\(|\b(?:un
 const TEST_DOUBLE =
   /\bnew\s+Mock\s*<|\bSubstitute\.For\s*[<(]|\bA\.Fake\s*<|\bMock[A-Z][A-Za-z0-9_]*::new\s*\(|#\[automock\]|\b(?:MagicMock|AsyncMock|Mock)\s*\(|\bsinon\.(?:stub|mock)\s*\(|\bvi\.fn\s*\(\s*(?:\(|async|function)/g;
 const FIXED_SLEEP =
-  /\b(?:page|Page)\.waitForTimeout(?:Async)?\s*\(|\bcy\.wait\(\s*\d+|\bThread\.Sleep\s*\(|\bTask\.Delay\(\s*\d+|\b(?:std::)?thread::sleep\s*\(|\btokio::time::sleep\s*\(|\b(?:time|asyncio)\.sleep\s*\(|\bnew\s+Promise\s*\((?:[^()]|\([^)]*\))*\bsetTimeout\b|\bnetworkidle\b/g;
+  /\b(?:page|Page)\.waitForTimeout(?:Async)?\s*\(|\bcy\.wait\(\s*\d+|\bThread\.Sleep\s*\(|\bTask\.Delay\(\s*\d+|\b(?:std::)?thread::sleep\s*\(|\btokio::time::sleep\s*\(|\b(?:time|asyncio)\.(?:sleep|Sleep)\s*\(|\bnew\s+Promise\s*\((?:[^()]|\([^)]*\))*\bsetTimeout\b|\bnetworkidle\b/g;
 const FLAKE_MASK_ANYWHERE = /\bjest\.retryTimes\s*\(|\bpytest\.mark\.flaky\b|--reruns\b|\bconfigure\s*\(\s*\{[^}]*\bretries\s*:\s*[1-9]/g;
 const FLAKE_MASK_CONFIG = /\bretries\s*:\s*[1-9]/g;
 const SKIP_OR_ONLY =
-  /\b(?:describe|test|it)(?:\.concurrent)?\.(?:only|todo|fixme)\s*\(|\b(?:fdescribe|fit|xdescribe|xit|xtest)\s*\(|\[(?:Fact|Theory|Test|TestMethod)\s*\([^\]]*\bSkip\s*=|\[Ignore\b|#\[ignore\b|@pytest\.mark\.(?:skip|xfail)\b|@unittest\.skip\b/g;
+  /\b(?:describe|test|it)(?:\.concurrent)?\.(?:only|todo|fixme)\s*\(|\b(?:fdescribe|fit|xdescribe|xit|xtest)\s*\(|\[(?:Fact|Theory|Test|TestMethod)\s*\([^\]]*\bSkip\s*=|\[Ignore\b|#\[ignore\b|@pytest\.mark\.(?:skip|xfail)\b|@unittest\.skip\b|\bt\.Skip(?:f|Now)?\s*\(/g;
 const UNCONDITIONAL_SKIP = /\b(?:describe|test|it)(?:\.concurrent)?\.skip\s*\(\s*(?:["'`])/g;
 const TAUTOLOGY =
   /\bexpect\(\s*(?:true|false)\s*\)|\bassert\.ok\(\s*true\s*\)|\bAssert\.(?:True|IsTrue)\(\s*true\s*\)|\bAssert\.Pass\s*\(|\bassert!\(\s*true\s*\)|\bassert_eq!\(\s*(\d+|true|false)\s*,\s*\1\s*\)|^\s*assert\s+(?:True|1\s*==\s*1)\b/gm;
@@ -148,7 +148,8 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
       file.language === "javascript" ||
       file.language === "csharp" ||
       file.language === "rust" ||
-      file.language === "python") &&
+      file.language === "python" ||
+      file.language === "go") &&
     testCases > 0 &&
     boundary === "unit" &&
     !hasNonFrameworkImport(raw, file.language) &&

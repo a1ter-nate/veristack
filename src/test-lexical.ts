@@ -215,6 +215,23 @@ export function hasNonFrameworkImport(raw: string, language?: string): boolean {
     }
     return false;
   }
+  if (language === "go") {
+    const goImports = [...raw.matchAll(/"([a-zA-Z0-9._/-]+)"/g)].map((m) => m[1] ?? "");
+    if (goImports.some((imp) => imp.includes(".") && !/^(?:github\.com\/stretchr\/testify|pgregory\.net\/rapid)/.test(imp))) {
+      return true;
+    }
+    const pkgMatch = /^\s*package\s+([a-zA-Z0-9_]+)/m.exec(raw);
+    if (pkgMatch?.[1] && !pkgMatch[1].endsWith("_test")) {
+      const masked = maskCode(raw, "go");
+      for (const m of masked.matchAll(/\b([A-Za-z][A-Za-z0-9_]*)\s*\(/g)) {
+        const fn = m[1] ?? "";
+        if (!/^(?:Test[A-Z]|Benchmark[A-Z]|Fuzz[A-Z]|Example|if|for|switch|func|make|len|cap|append|new|delete|panic|recover|fmt|t|b|assert|require|rapid|errors|strings|bytes|time|context|json|os|filepath|http|httptest|testing)$/.test(fn)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
   for (const match of raw.matchAll(IMPORT_SOURCE)) {
     const spec = match[1] ?? "";
     if (!FRAMEWORK_IMPORT.test(spec)) return true;
