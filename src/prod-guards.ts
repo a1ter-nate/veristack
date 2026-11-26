@@ -38,10 +38,10 @@ const CDC_WALL_CLOCK_PY = /\b(?:datetime\.(?:utc)?now\s*\([^)]*\)|time\.time\s*\
 
 const UNBOUNDED_LOOP = /\bwhile\s*\(\s*true\s*\)|\bwhile\s+True\s*:|\bloop\s*\{/g;
 const CATCH_OPEN = /\bcatch\s*(?:\([^)]*\))?\s*\{/g;
-const SHAM_SUCCESS_RETURN = /\breturn\s*(?:true|(?:(?:Results\.|TypedResults\.)?Ok|new\s+OkObjectResult|new\s+JsonResult|Response\.json|res\.(?:status\s*\(\s*200\s*\)\.)?json)\s*\(\s*(?:new\s*)?\{[^}]{0,160}\b(?:accepted|ok|success)\s*[:=]\s*true\b[^}]*\}\s*\)|\{[^}]{0,160}\b(?:accepted|ok|success)\s*:\s*true\b[^}]*\})\s*;/i;
-const CATCHALL_SUCCESS_STUB = /\bdefault\s*:\s*\{?\s*return\s*(?:(?:Results\.|TypedResults\.)?Ok\s*\(\s*new\s*|new\s+OkObjectResult\s*\(\s*new\s*|Response\.json\s*\(|res\.(?:status\s*\(\s*200\s*\)\.)?json\s*\()?\{[^}]{0,120}\b(?:accepted|ok|success)\s*[:=]\s*true\b/g;
+const SHAM_SUCCESS_RETURN = /\breturn\s*(?:true|(?:(?:Results\.|TypedResults\.)?Ok|new\s+OkObjectResult|new\s+JsonResult|NextResponse\.json|Response\.json|res\.(?:status\s*\(\s*200\s*\)\.)?json)\s*\(\s*(?:new\s*)?\{[^}]{0,160}\b(?:accepted|ok|success)\s*[:=]\s*true\b[^}]*\}\s*\)|\{[^}]{0,160}\b(?:accepted|ok|success)\s*:\s*true\b[^}]*\})\s*;|(?:const|let|var)\s+([A-Za-z_$]\w*)\s*=\s*\{[^}]{0,160}\b(?:accepted|ok|success)\s*:\s*true\b[^}]*\}[\s\S]{0,120}\breturn\s+\1\b/i;
+const CATCHALL_SUCCESS_STUB = /\bdefault\s*:\s*\{?\s*return\s*(?:(?:Results\.|TypedResults\.)?Ok\s*\(\s*new\s*|new\s+OkObjectResult\s*\(\s*new\s*|NextResponse\.json\s*\(|Response\.json\s*\(|res\.(?:status\s*\(\s*200\s*\)\.)?json\s*\()?\{[^}]{0,120}\b(?:accepted|ok|success)\s*[:=]\s*true\b/g;
 const PY_EXCEPT_OR_CASE_HEAD = /^([ \t]*)(except\b[^\n:]*|case\s+_)\s*:/gm;
-const PY_SHAM_RETURN = /\breturn\s+(?:True|(?:JSONResponse\s*\(\s*)?\{[^\n}]*["'](?:accepted|ok|success)["']\s*:\s*True[^\n}]*\})/;
+const PY_SHAM_RETURN = /\breturn\s+(?:True|(?:JSONResponse\s*\(\s*)?\{[^\n}]*(?:["'](?:accepted|ok|success)["']\s*:\s*True|["']status["']\s*:\s*["']ok["'])[^\n}]*\})|([A-Za-z_]\w*)\s*=\s*\{[^\n}]*(?:["'](?:accepted|ok|success)["']\s*:\s*True|["']status["']\s*:\s*["']ok["'])[^\n}]*\}[\s\S]{0,120}\breturn\s+\1\b/;
 
 function extractBalancedBraceBody(masked: string, raw: string, openBraceIdx: number): string {
   let depth = 0;
@@ -258,7 +258,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
       const window = masked.slice(Math.max(0, idx - 220), idx + 450);
       if (
         /\b(?:maxIter|max_iter|maxAttempts|max_attempts|maxRetries|max_retries|maxPages|max_pages|deadline|timeout|limit|fuel|budget|countdown)\b/i.test(window) ||
-        /\b(?:if\s*\([^)]*(?:done|eof|empty|null|err)|if\s*\(\s*!\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)|if\s+not\s+\w+|Err\s*\([^)]*\)\s*=>|None\s*=>)[\s\S]{0,60}\b(?:break|return)\b/i.test(window)
+        /\b(?:if\s*\([^)]*(?:done|eof|empty|null|err)|if\s*\(\s*!\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)|if\s+not\s+\w+|if\s+\w+\s+is\s+None\b|if\s+[A-Za-z_]\w*\s*>=\s*[^\n{]+\.len\s*\(|Err\s*\([^)]*\)\s*=>|None\s*=>)[\s\S]{0,60}\b(?:break|return)\b/i.test(window)
       ) {
         continue;
       }

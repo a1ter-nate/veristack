@@ -381,7 +381,7 @@ async function run(): Promise<number> {
     };
     const maxTimeRaw = parseFlagValue(rest, "--max-time-exp");
     const maxSpaceRaw = parseFlagValue(rest, "--max-space-exp");
-    const maxTimeExp = maxTimeRaw !== undefined ? Number(maxTimeRaw) : (parsed.maxTimeExponent ?? 1.45);
+    const maxTimeExp = maxTimeRaw !== undefined ? Number(maxTimeRaw) : Math.min(1.45, parsed.maxTimeExponent ?? 1.45);
     const maxSpaceExp = maxSpaceRaw !== undefined ? Number(maxSpaceRaw) : parsed.maxSpaceExponent;
     if (!Number.isFinite(maxTimeExp) || maxTimeExp <= 0 || maxTimeExp > 2.5) {
       throw new Error(`Invalid --max-time-exp '${maxTimeRaw ?? String(maxTimeExp)}'; expected a number in (0, 2.5].`);

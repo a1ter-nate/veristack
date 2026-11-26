@@ -15,14 +15,19 @@ interface ExampleManifest {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const examplesRoot = path.join(repoRoot, "examples");
 const cliPath = path.join(repoRoot, "src", "cli.ts");
-const languages = ["typescript", "csharp", "rust", "python"] as const;
+const languages = ["typescript", "csharp", "rust", "python", "go", "sql", "shell"] as const;
 
-function listFiles(dir: string): string[] {
-  return fs
-    .readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && !entry.name.startsWith("."))
-    .map((entry) => entry.name)
-    .sort();
+const IGNORED_EXAMPLE_DIRS = new Set(["__pycache__", "node_modules", "bin", "obj", "target"]);
+
+function listFiles(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || IGNORED_EXAMPLE_DIRS.has(entry.name)) continue;
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...listFiles(path.join(dir, entry.name), rel));
+    else if (entry.isFile() && !entry.name.endsWith(".pyc")) out.push(rel);
+  }
+  return out.sort();
 }
 
 for (const lang of languages) {

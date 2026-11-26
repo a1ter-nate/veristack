@@ -8,7 +8,7 @@ import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./comm
 import { loadRungManifest } from "./manifest.ts";
 import { runPlantedFaultCanary } from "./mutation-probe.ts";
 import { parseStructuredReports, reportParsers } from "./reports.ts";
-import { parseRunnerTestCounts, stripAnsi } from "./runner-metrics.ts";
+import { hasTestRunnerCommand, parseRunnerTestCounts, stripAnsi } from "./runner-metrics.ts";
 
 const RECEIPTS_REL_DIR = ".verification/receipts";
 
@@ -253,7 +253,7 @@ export function loadValidReceipts(
       if (raw.exitCode !== 0 || raw.treeHash !== expectedTreeHash) continue;
       if (expectedHead !== "no-git" && raw.commitSha !== expectedHead) continue;
       if (activeCiRunId && raw.ciRunId !== activeCiRunId) continue;
-      const needsTests = raw.rung === "R2" || raw.rung === "R3" || ((raw.rung === "R4" || raw.rung === "R7") && /\b(?:test|pytest|vitest|jest|mocha|ava|playwright|cypress|unittest|nextest)\b/i.test(declared.command));
+      const needsTests = raw.rung === "R2" || raw.rung === "R3" || ((raw.rung === "R4" || raw.rung === "R7") && hasTestRunnerCommand(raw.rung, declared.command, repo.root));
       if (needsTests && ((raw.metrics?.testsPassed ?? 0) <= 0 || (raw.metrics?.testsFailed ?? 0) > 0)) continue;
       if (declared.canary?.enabled) {
         const minFloor = Math.max(0.75, declared.canary.minKillRate ?? 0.8);

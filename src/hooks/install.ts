@@ -115,8 +115,9 @@ function installHarnessManifest(repoRoot: string, harness: HookHarness, cmdPrefi
 
   if (harness === "cursor") {
     hooks.preToolUse = mergeHookBucket(hooks.preToolUse, {
-      matcher: "Write|Edit|StrReplace",
+      matcher: "Write|Edit|StrReplace|Delete",
       command: `${cmdPrefix} hook pre-edit --harness cursor`,
+      failClosed: true,
     });
     writeJsonObj(filePath, { ...doc, version: 1, hooks });
     return rel;

@@ -32,10 +32,15 @@ function readStdinBlocking(timeoutMs = 5000): { content: string; error?: string 
   const chunks: Buffer[] = [];
   const buf = Buffer.alloc(65_536);
   const deadline = performance.now() + timeoutMs;
+  let totalBytes = 0;
   for (;;) {
     try {
       const n = fs.readSync(0, buf, 0, buf.length, null);
       if (n === 0) break;
+      totalBytes += n;
+      if (totalBytes > 8_388_608) {
+        return { content: "", error: "stdin payload exceeded 8 MiB safety cap" };
+      }
       chunks.push(Buffer.from(buf.subarray(0, n)));
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
@@ -94,12 +99,28 @@ export function handleHooksAndDoctorCli(
     const event: HookEventKind = sub;
     const harness = parseHarness(parseFlag(rest, "--harness"));
     const tier = parseTier(parseFlag(rest, "--tier"));
-    const stdin = readStdinBlocking();
-    const rawStdin = stdin.error && !stdin.content.trim() ? "__VSTACK_STDIN_READ_ERROR__" : stdin.content;
-    const res = executeHookEvent(event, rawStdin, { repoRoot: process.cwd(), harness, tier });
-    if (res.stderr) console.error(res.stderr);
-    if (res.stdout) console.log(res.stdout);
-    return res.exitCode;
+    try {
+      const stdin = readStdinBlocking();
+      const rawStdin = stdin.error && !stdin.content.trim() ? "__VSTACK_STDIN_READ_ERROR__" : stdin.content;
+      const res = executeHookEvent(event, rawStdin, { repoRoot: process.cwd(), harness, tier });
+      if (res.stderr) console.error(res.stderr);
+      if (res.stdout) console.log(res.stdout);
+      return res.exitCode;
+    } catch (err: unknown) {
+      const msg = `Veristack hook failed closed on unexpected error: ${err instanceof Error ? err.message : String(err)}`;
+      if (event === "pre-edit") {
+        console.error(msg);
+        if (harness !== "codex") {
+          console.log(JSON.stringify({ permission: "deny", hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: msg }, user_message: msg, agent_message: msg }));
+        }
+        return 2;
+      }
+      if (event === "stop") {
+        console.log(JSON.stringify({ decision: "block", reason: msg }));
+        return 0;
+      }
+      return 0;
+    }
   }
 
   if (cmd === "hooks") {

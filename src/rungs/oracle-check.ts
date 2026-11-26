@@ -17,7 +17,7 @@ export interface TwoSidedOracleResult {
 }
 
 const ORACLE_CONFIG_SURFACE =
-  /(?:^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config\.toml|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|sitecustomize\.py|conftest\.py|go\.mod|babel\.config\.[cm]?[jt]s|vitest\.workspace\.[cm]?[jt]s|(?:vitest|vite|jest|playwright)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|Directory\.Build\.props|Directory\.Packages\.props|[^/]+\.csproj|[^/]+\.runsettings|\.env\.test|\.verification\/rungs\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
+  /(?:^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config(?:\.toml)?|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|sitecustomize\.py|usercustomize\.py|conftest\.py|go\.mod|babel\.config\.[cm]?[jt]s|vitest\.workspace\.[cm]?[jt]s|(?:vitest|vite|jest|playwright)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|Directory\.Build\.props|Directory\.Packages\.props|[^/]+\.csproj|[^/]+\.runsettings|\.env\.test|\.verification\/rungs\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
 
 const TEST_DIR_SURFACE =
   /(?:^|\/)(?:tests|test|__tests__|spec|specs|testdata|fixtures|__fixtures__|golden|goldens|[^/]+\.(?:Tests|UnitTests|IntegrationTests|Specs))\//i;
@@ -27,9 +27,27 @@ function isOracleSurface(rel: string): boolean {
   return isTestFilePath(norm) || TEST_DIR_SURFACE.test(norm) || ORACLE_CONFIG_SURFACE.test(norm);
 }
 
+function listAllWorkingTreeOracleFiles(repoRoot: string): string[] {
+  const out: string[] = [];
+  const skipDirs = new Set([".git", "node_modules", ".venv", "venv", "target", "dist", "bin", "obj"]);
+  const walk = (dir: string, relPrefix: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (skipDirs.has(entry.name)) continue;
+        walk(path.join(dir, entry.name), rel);
+      } else if (isOracleSurface(rel)) {
+        out.push(rel);
+      }
+    }
+  };
+  walk(repoRoot, "");
+  return out;
+}
+
 function extractRustInlineTestSpans(raw: string): Array<{ start: number; end: number }> {
   const withTests = maskCode(raw, "rust", false);
-  const prodOnly = maskCode(raw, "rust", true);
+  const prodOnly = maskCode(raw, "rust", true, true);
   const spans: Array<{ start: number; end: number }> = [];
   let inRegion = false;
   let start = -1;
@@ -110,17 +128,17 @@ function linkNodeModulesWorkspaceAware(absRoot: string, sandboxDir: string): voi
 function copyWorkingTreeToSandbox(repoRoot: string): string {
   const absRoot = fs.realpathSync(path.resolve(repoRoot));
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oracle-"));
-  const skipTop = new Set([".git", "node_modules", ".venv", "venv", "target"]);
+  const skipDirs = new Set([".git", "node_modules", ".venv", "venv", "target", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "obj"]);
   for (const entry of fs.readdirSync(absRoot, { withFileTypes: true })) {
     if (entry.name === ".git") continue;
     const src = path.join(absRoot, entry.name);
     const dst = path.join(sandboxDir, entry.name);
-    if (skipTop.has(entry.name)) {
+    if (skipDirs.has(entry.name)) {
       if (entry.name === "node_modules") linkNodeModulesWorkspaceAware(absRoot, sandboxDir);
       else if (entry.name === ".venv" || entry.name === "venv") { try { fs.symlinkSync(src, dst); } catch { continue; } }
       continue;
     }
-    fs.cpSync(src, dst, { recursive: true, dereference: false });
+    fs.cpSync(src, dst, { recursive: true, dereference: false, filter: (p) => p === src || !skipDirs.has(path.basename(p)) });
   }
   return sandboxDir;
 }
@@ -158,20 +176,27 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   const allDiffPaths = (diffFiles.stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const diffSet = new Set<string>(allDiffPaths.filter((s) => isOracleSurface(s)));
   const rustInlineCandidates = allDiffPaths.filter((s) => s.endsWith(".rs") && !diffSet.has(s));
-  const untracked = spawnSync("git", ["-C", root, "ls-files", "--others", "--exclude-standard"], { encoding: "utf8" });
-  if (untracked.status === 0) {
-    for (const rel of (untracked.stdout ?? "").split(/\r?\n/).map((s) => s.trim())) {
-      if (rel && isOracleSurface(rel)) diffSet.add(rel);
-    }
+  const trackedAtBase = new Set(
+    (spawnSync("git", ["-C", root, "ls-tree", "-r", "--name-only", baseRef], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).stdout ?? "")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  for (const rel of listAllWorkingTreeOracleFiles(root)) {
+    if (!trackedAtBase.has(rel)) diffSet.add(rel);
   }
   const changedOracleFiles = [...diffSet].sort();
   const rustInlineSplices: Array<{ rel: string; spliced: string }> = [];
   for (const rel of rustInlineCandidates) {
     const baseShow = spawnSync("git", ["-C", root, "show", `${baseRef}:${rel}`], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
     const headAbs = path.join(root, rel);
-    if (baseShow.status === 0 && fs.existsSync(headAbs)) {
-      const spliced = spliceBaseRustTestsIntoHead(fs.readFileSync(headAbs, "utf8"), baseShow.stdout);
-      if (spliced !== null) rustInlineSplices.push({ rel, spliced });
+    if (baseShow.status === 0) {
+      if (fs.existsSync(headAbs)) {
+        const spliced = spliceBaseRustTestsIntoHead(fs.readFileSync(headAbs, "utf8"), baseShow.stdout);
+        if (spliced !== null) rustInlineSplices.push({ rel, spliced });
+      } else if (extractRustInlineTestSpans(baseShow.stdout).length > 0) {
+        rustInlineSplices.push({ rel, spliced: baseShow.stdout });
+      }
     }
   }
 

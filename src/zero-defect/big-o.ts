@@ -132,14 +132,24 @@ export function fitEmpiricalBigO(
     );
   }
   if (ordered.length >= 4) {
-    const tail = ordered.slice(Math.floor(ordered.length / 2));
+    const tail = ordered.slice(Math.min(Math.floor(ordered.length / 2), ordered.length - 3));
     const tailMinN = tail[0]?.n ?? 1;
     const tailMaxN = tail[tail.length - 1]?.n ?? 1;
     if (tail.length >= 3 && tailMaxN / tailMinN >= 2) {
       const tailFit = fitLogLogSlope(tail.map((s) => s.n), tail.map((s) => s.timeMs));
-      if (tailFit.r2 >= 0.7 && tailFit.slope > thresholds.maxTimeExponent + 0.2) {
+      if (tailFit.r2 >= 0.65 && tailFit.slope > thresholds.maxTimeExponent + 0.2) {
         reasons.push(
           `Upper-half tail scaling exponent ${tailFit.slope} (${classifyExponent(tailFit.slope)}) exceeds budget <= ${thresholds.maxTimeExponent} (padded small-n tail).`,
+        );
+      }
+    }
+    const prev = ordered[ordered.length - 2];
+    const last = ordered[ordered.length - 1];
+    if (prev && last && last.n > prev.n && last.timeMs > prev.timeMs) {
+      const finalStepSlope = Math.log(last.timeMs / prev.timeMs) / Math.log(last.n / prev.n);
+      if (finalStepSlope > thresholds.maxTimeExponent + 0.8) {
+        reasons.push(
+          `Final scaling step exponent ${finalStepSlope.toFixed(3)} exceeds budget <= ${thresholds.maxTimeExponent} (sudden super-linear jump at largest n).`,
         );
       }
     }

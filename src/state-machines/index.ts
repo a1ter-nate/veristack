@@ -12,7 +12,7 @@ const LIFECYCLE_BOOL_NAME =
 const STATE_DISCRIMINANT_NAME = /^(?:status|state|phase|stage|mode)$/;
 const CONFIG_TYPE_SUFFIX = /(?:Options|Config|Settings|Flags|Args|Params|Props|Input|Query|Filter)$/;
 const EXHAUSTIVE_GUARD = /\b(?:assertNever|exhaustiveCheck|unreachable)\s*\(|:\s*never\b|\bsatisfies\s+never\b/;
-const STATE_SWITCH_EXPR = /^(?:[A-Za-z_$][A-Za-z0-9_$.]*\.)?(?:status|state|phase|stage|kind)$/;
+const STATE_SWITCH_EXPR = /^(?:[A-Za-z_$][A-Za-z0-9_$.]*\.)?(?:[a-z][A-Za-z0-9]*[Ss]tatus|[a-z][A-Za-z0-9]*[Ss]tate|status|state|phase|stage|kind)$/;
 const CANONICAL_TRANSITION_FN = /^(?:transition|reduce|reducer|applyEvent|nextState|stepState|handleEvent)$/i;
 
 function lineOf(text: string, index: number): number {
@@ -312,7 +312,7 @@ function checkNonExhaustiveSwitches(file: ScannedFile, masked: string): Finding[
 
 export function lintImplicitStateMachinesInFile(file: ScannedFile): Finding[] {
   const generatedHeader = /(?:@generated|auto-generated|do\s+not\s+edit|generated\s+by\b)/i;
-  if (file.isTest || (GENERATED_PATH.test(file.rel) && generatedHeader.test(file.content.slice(0, 600)))) return [];
+  if (file.isTest || /\.d\.[cm]?ts$|\.pyi$/i.test(file.rel) || (GENERATED_PATH.test(file.rel) && generatedHeader.test(file.content.slice(0, 600)))) return [];
   if (file.language === "csharp") return lintCsharpStateMachines(file);
   if (file.language === "rust") return lintRustStateMachines(file);
   if (file.language === "python") return lintPythonStateMachines(file);

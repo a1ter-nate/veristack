@@ -194,7 +194,24 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
     const gitEnv = { ...process.env };
     delete gitEnv.GIT_DIR;
     delete gitEnv.GIT_WORK_TREE;
-    const topRes = spawnSync("git", ["-C", repo.root, "rev-parse", "--show-toplevel"], { encoding: "utf8", env: gitEnv });
+    const runGit = (args: readonly string[]) => spawnSync("git", ["-C", repo.root, ...args], { encoding: "utf8", env: gitEnv });
+    const specAbs = path.resolve(repo.root, entry.specFile);
+    const specText = fs.existsSync(specAbs) && fs.statSync(specAbs).isFile() ? fs.readFileSync(specAbs, "utf8") : "";
+    if (!specText.trim()) {
+      findings.push({
+        id: `FS:empty-spec:${entry.id}`,
+        rule: "formal-spec-missing",
+        category: "oracle-lock",
+        rung: isContract ? "R3" : "R5",
+        severity: "error",
+        file: entry.specFile,
+        line: 1,
+        message: `${label} '${entry.id}' spec file '${entry.specFile}' is empty.`,
+        fix: `Populate '${entry.specFile}' with real formal/contract specifications.`,
+      });
+      continue;
+    }
+    const topRes = runGit(["rev-parse", "--show-toplevel"]);
     const realRoot = (() => { try { return fs.realpathSync(repo.root); } catch { return path.resolve(repo.root); } })();
     const realTop = topRes.status === 0 && topRes.stdout.trim() ? (() => { try { return fs.realpathSync(topRes.stdout.trim()); } catch { return path.resolve(topRes.stdout.trim()); } })() : "";
     const isGitRepo = topRes.status === 0 && realTop === realRoot;
@@ -212,14 +229,9 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       });
       continue;
     }
-    const ancestor = spawnSync("git", ["-C", repo.root, "merge-base", "--is-ancestor", entry.syncCommit, "HEAD"], {
-      encoding: "utf8",
-      env: gitEnv,
-    });
+    const ancestor = runGit(["merge-base", "--is-ancestor", entry.syncCommit, "HEAD"]);
     if (ancestor.status !== 0) {
-      const isShallow =
-        (spawnSync("git", ["-C", repo.root, "rev-parse", "--is-shallow-repository"], { encoding: "utf8", env: gitEnv }).stdout ?? "")
-          .trim() === "true";
+      const isShallow = (runGit(["rev-parse", "--is-shallow-repository"]).stdout ?? "").trim() === "true";
       findings.push({
         id: `FS:unknown-commit:${entry.id}`,
         rule: "formal-sync-unknown-commit",
@@ -255,9 +267,21 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
     }
 
     const watchedPaths = [...new Set([entry.specFile, ...entry.coveredPaths])];
-    const dirtyRes = spawnSync("git", ["-C", repo.root, "status", "--porcelain", "--", ...watchedPaths], {
-      encoding: "utf8",
-    });
+    const dirtyRes = runGit(["status", "--porcelain", "--", ...watchedPaths]);
+    if (dirtyRes.status !== 0) {
+      findings.push({
+        id: `FS:git-status-fail:${entry.id}`,
+        rule: "formal-sync-unknown-commit",
+        category: "oracle-lock",
+        rung: "R5",
+        severity: "error",
+        file: parsed.planRel,
+        line: 1,
+        message: `Formal check '${entry.id}' failed running git status — failing closed.`,
+        fix: "Ensure git repository metadata is intact and readable.",
+      });
+      continue;
+    }
     const dirtyLines = (dirtyRes.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     if (dirtyLines.length > 0) {
       findings.push({
@@ -273,11 +297,21 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       });
       continue;
     }
-    const logRes = spawnSync(
-      "git",
-      ["-C", repo.root, "log", "--oneline", `${entry.syncCommit}..HEAD`, "--", ...watchedPaths],
-      { encoding: "utf8" },
-    );
+    const logRes = runGit(["log", "--oneline", `${entry.syncCommit}..HEAD`, "--", ...watchedPaths]);
+    if (logRes.status !== 0) {
+      findings.push({
+        id: `FS:git-log-fail:${entry.id}`,
+        rule: "formal-sync-unknown-commit",
+        category: "oracle-lock",
+        rung: "R5",
+        severity: "error",
+        file: parsed.planRel,
+        line: 1,
+        message: `Formal check '${entry.id}' failed running git log — failing closed.`,
+        fix: "Ensure git history is intact and readable.",
+      });
+      continue;
+    }
     const commits = (logRes.stdout ?? "")
       .split(/\r?\n/)
       .map((line) => line.trim())

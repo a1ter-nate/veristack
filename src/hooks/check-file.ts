@@ -5,7 +5,7 @@ import { analyzeUniversalBendLaws } from "../anti-slop/universal-laws.ts";
 import { analyzeBlackHoleReplayGuards } from "../ast/blackhole-replay-guards.ts";
 import { analyzeImmuneSystemGates } from "../ast/immune-gates.ts";
 import { analyzeT3ProdGuards } from "../ast/t3-immune-rules.ts";
-import { analyzeTsAstGuards, parseTsAst } from "../ast/ts-ast.ts";
+import { analyzeTsAstGuards, hasPathologicalNesting, parseTsAst } from "../ast/ts-ast.ts";
 import { analyzeWave5AiFirstGuards } from "../ast/wave5-ai-first.ts";
 import { analyzeWave6TitansAGuards } from "../ast/wave6-titans-a.ts";
 import { analyzeWave7TitansBGuards } from "../ast/wave7-titans-b.ts";
@@ -191,6 +191,17 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
       throw new Error(`File not found: ${filePath}`);
     }
     content = fs.readFileSync(abs, "utf8");
+  }
+
+  if (hasPathologicalNesting(content)) {
+    return {
+      file: rel, tier, language: language ?? null, elapsedMs: Number((performance.now() - started).toFixed(2)),
+      findings: [{
+        id: `HF:syntax-bomb:${rel}:1`, rule: "syntax-nesting-bomb", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1,
+        message: `${rel} exceeds safe syntax nesting depth (>128) or size (>2 MiB) — blocked fail-closed.`,
+        fix: "Remove deeply nested expressions or oversized generated payloads.",
+      }],
+    };
   }
 
   const isSql = /\.sql$/i.test(rel);

@@ -141,7 +141,12 @@ export function runDoctor(repoPath: string): DoctorReport {
           }
         };
         for (const b of Object.values(hooksObj)) collectCmds(b);
-        const badCmd = cmds.find((c) => /\bvstack\b/i.test(c) && (/\|\|\s*(?:true|:)|;\s*true\b|>\/dev\/null/i.test(c)));
+        let badCmd: string | undefined;
+        let preCmd: string | undefined;
+        for (const c of cmds) {
+          if (!badCmd && /\bvstack\b/i.test(c) && /\|\|\s*(?:true|:)|;\s*true\b|>\/dev\/null/i.test(c)) badCmd = c;
+          if (!preCmd && /\bhook\s+pre-edit\b/.test(c) && !/[;|>&`\n\r]/.test(c)) preCmd = c;
+        }
         if (badCmd) {
           findings.push({
             id: `DOC:hook-swallowed:${rel}`,
@@ -151,7 +156,6 @@ export function runDoctor(repoPath: string): DoctorReport {
             fix: "Remove '|| true' / redirection wrappers so hook denials propagate cleanly.",
           });
         }
-        const preCmd = cmds.find((c) => /\bhook\s+pre-edit\b/.test(c) && !/[;|>&`\n\r]/.test(c));
         if (hookStatus.enabled && preCmd && !badCmd) {
           let probePassed = probedCmds.get(preCmd);
           if (probePassed === undefined) {

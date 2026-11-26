@@ -229,6 +229,7 @@ export function analyzeWave7TitansBGuards(file: ScannedFile): Finding[] {
         if (prodCode[idx] === " ") continue;
         const win = prodRaw.slice(idx, idx + 650);
         if (/no-store/i.test(win)) continue;
+        if (/no-store/i.test(prodRaw) && /\b(?:no_store|noStore|cache_control|cacheControl)\b/i.test(win)) continue;
         push(
           findings, file.rel, lineOf(raw, idx), "auth-get-missing-no-store", "R0", "warn",
           "Auth/session/CSRF GET endpoint does not set 'Cache-Control: no-store', risking CDN/proxy token leakage.",

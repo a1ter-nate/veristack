@@ -219,6 +219,25 @@ function findSlashComments(source: string, language: Language): CommentHit[] {
       prevWord = "";
       continue;
     }
+    if (language === "rust" && (a === "r" || (a === "b" && b === "r")) && (i === 0 || !/[A-Za-z0-9_]/.test(source[i - 1] ?? ""))) {
+      const pLen = a === "b" ? 2 : 1;
+      let hashes = 0;
+      while (source[i + pLen + hashes] === "#") hashes += 1;
+      if (source[i + pLen + hashes] === '"') {
+        bump(pLen + hashes + 1);
+        while (i < source.length) {
+          if (source[i] === '"') {
+            let h = 0;
+            while (h < hashes && source[i + 1 + h] === "#") h += 1;
+            if (h === hashes) { bump(1 + hashes); break; }
+          }
+          bump(1);
+        }
+        prevNonSpace = '"';
+        prevWord = "";
+        continue;
+      }
+    }
     if (language === "rust" && a === "'" && /[a-zA-Z_]/.test(b) && source[i + 2] !== "'") {
       bump(1);
       prevNonSpace = "'";

@@ -227,6 +227,15 @@ export function evaluateSpcSeries(metric: string, values: readonly number[], upp
   for (let i = 0; i < values.length; i++) {
     const cur = values[i] ?? 0;
     if (stdDev > 0 && cur > mean + 3 * stdDev) nelsonRule1Outlier = true;
+    if (!nelsonRule1Outlier && values.length >= 4) {
+      const others = values.filter((_, idx) => idx !== i);
+      const oMean = others.reduce((acc, v) => acc + v, 0) / others.length;
+      const oVar = others.reduce((acc, v) => acc + (v - oMean) ** 2, 0) / Math.max(1, others.length - 1);
+      const oSd = Math.sqrt(oVar);
+      if ((oSd > 0 && cur > oMean + 3 * oSd) || (oSd === 0 && Math.abs(cur - oMean) > Math.max(1, Math.abs(oMean) * 0.5))) {
+        nelsonRule1Outlier = true;
+      }
+    }
     if (cur > mean) {
       consecAbove += 1;
       if (consecAbove >= 7) nelsonRule2Breach = true;

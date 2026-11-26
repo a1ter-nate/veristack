@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Write|Edit|StrReplace|Delete",
+        "command": "node bin/vstack.mjs hook pre-edit --harness cursor",
+        "failClosed": true
+      }
+    ]
+  }
+}

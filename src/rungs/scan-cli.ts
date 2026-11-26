@@ -197,6 +197,12 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
       }
       if (baseToCheck) {
         const downgrades = auditManifestDowngrade(repo.root, baseToCheck, { failClosedOnMissingBase: failClosed });
+        const headSha = (spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", "HEAD^{commit}"], { encoding: "utf8" }).stdout ?? "").trim();
+        const baseSha = (spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", `${baseToCheck}^{commit}`], { encoding: "utf8" }).stdout ?? "").trim();
+        if (!explicitBase && headSha && baseSha === headSha) {
+          const prevOk = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", "HEAD~1^{commit}"], { encoding: "utf8" }).status === 0;
+          if (prevOk) downgrades.push(...auditManifestDowngrade(repo.root, "HEAD~1", { downgradeOnly: true }));
+        }
         if (downgrades.length > 0) {
           for (const d of downgrades) console.error(`verify control-plane lock [${d.rule}]: ${d.message}`);
           return 1;

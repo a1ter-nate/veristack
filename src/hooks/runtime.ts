@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { hasPathologicalNesting } from "../ast/ts-ast.ts";
 import { scanGitDiffCheats } from "../ci-auditor.ts";
 import type { Finding } from "../types.ts";
 import { type CheckFileTier, scanSingleFile } from "./check-file.ts";
@@ -30,7 +31,7 @@ export interface HookExecutionResult {
 }
 
 const PROTECTED_CONTROL_PLANE =
-  /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|bunfig\.toml|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook\.yml|CODEOWNERS|package\.json|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|mypy\.ini|pyrightconfig\.json|biome\.jsonc?|\.?ruff\.toml|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.props|Directory\.Packages\.props|control-plan\.json|escapes\.json|invariants\.json|chokepoints\.json|(?:vitest|vite|jest|playwright|eslint|stryker)\.config\.[cm]?[jt]s|jest\.config\.json|\.eslintrc(?:\.[^/]+)?|stryker-config\.json|mutants\.toml)$|(?:^|\/)(?:\.verification\/|\.claude\/(?:settings(?:\.local)?\.json$|hooks\/)|\.cursor\/hooks\.json$|\.codex\/hooks\.json$|\.github\/(?:hooks\/|workflows\/|CODEOWNERS$)|\.grok\/hooks\/|docs\/CODEOWNERS$)/i;
+  /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|\.gitignore|\.npmrc|\.mcp\.json|Makefile|bun\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|bunfig\.toml|conftest\.py|sitecustomize\.py|usercustomize\.py|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook(?:-local)?\.ya?ml|CODEOWNERS|package\.json|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|mypy\.ini|pyrightconfig\.json|biome\.jsonc?|\.?ruff\.toml|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.props|Directory\.Packages\.props|control-plan\.json|escapes\.json|invariants\.json|chokepoints\.json|(?:vitest|vite|jest|playwright|eslint|stryker)\.config\.[cm]?[jt]s|jest\.config\.json|\.eslintrc(?:\.[^/]+)?|stryker-config\.json|mutants\.toml)$|(?:^|\/)(?:\.verification\/|\.git\/|\.husky\/|\.cargo\/|node_modules\/|bin\/vstack\.mjs$|dist\/|scripts\/|src\/hooks\/|templates\/formal\/|\.claude\/|\.cursor\/|\.codex\/|\.github\/|\.grok\/|docs\/CODEOWNERS$)/i;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -137,13 +138,43 @@ function appendAuditLog(repoRoot: string, auditLogPath: string | undefined, entr
 
 function extractPatchPaths(text: string): string[] {
   const paths: string[] = [];
-  for (const m of text.matchAll(/^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s+(.+)$/gm)) {
+  for (const m of text.matchAll(/^\s*\*\*\*\s+(?:Update|Add|Delete)\s+File:\s+(.+)$/gm)) {
     if (m[1]) paths.push(m[1].trim());
   }
-  for (const m of text.matchAll(/^\*\*\*\s+Move\s+to:\s+(.+)$/gm)) {
+  for (const m of text.matchAll(/^\s*\*\*\*\s+Move\s+to:\s+(.+)$/gm)) {
     if (m[1]) paths.push(m[1].trim());
   }
   return paths;
+}
+
+function extractPatchContentForFile(patchText: string, relOrTarget: string, base: string | undefined): string | undefined {
+  const normTarget = relOrTarget.replace(/\\/g, "/").replace(/^\.\//, "");
+  const lines = patchText.split(/\r?\n/);
+  let active = false;
+  let mode: "add" | "update" | null = null;
+  const addedLines: string[] = [];
+  const removedLines: string[] = [];
+  for (const raw of lines) {
+    const hdr = /^\s*\*\*\*\s+(Add|Update|Delete)\s+File:\s+(.+)$/.exec(raw);
+    if (hdr) {
+      const f = (hdr[2] ?? "").trim().replace(/\\/g, "/").replace(/^\.\//, "");
+      active = f === normTarget || normTarget.endsWith(`/${f}`);
+      mode = hdr[1] === "Add" ? "add" : hdr[1] === "Update" ? "update" : null;
+      continue;
+    }
+    if (/^\s*\*\*\*\s+(?:End Patch|Move to:)/.test(raw)) { active = false; continue; }
+    if (!active || !mode) continue;
+    if (raw.startsWith("@@")) continue;
+    if (raw.startsWith("+")) addedLines.push(raw.slice(1));
+    else if (raw.startsWith("-")) removedLines.push(raw.slice(1));
+  }
+  if (addedLines.length === 0) return undefined;
+  if (mode === "add" || base === undefined) return `${addedLines.join("\n")}\n`;
+  let merged = base;
+  for (const rm of removedLines) {
+    if (rm && merged.includes(rm)) merged = merged.replace(rm, "");
+  }
+  return `${merged}\n${addedLines.join("\n")}\n`;
 }
 
 function extractEditedPaths(payload: Record<string, unknown>): string[] {
@@ -196,6 +227,12 @@ function extractProposedContent(payload: Record<string, unknown>, absFilePath: s
     }
     return `${base}\n${newStr}`;
   }
+  for (const raw of [toolInput.patch, toolInput.input, toolInput.command, payload.input]) {
+    if (typeof raw === "string" && raw.includes("*** ")) {
+      const fromPatch = extractPatchContentForFile(raw, absFilePath, base);
+      if (fromPatch !== undefined) return fromPatch;
+    }
+  }
   return undefined;
 }
 
@@ -210,6 +247,9 @@ function formatReminder(header: string, findings: readonly Finding[]): string {
 }
 
 function formatPreEditDeny(harness: HookHarness, count: number, msg: string): { exitCode: number; stdout: string; stderr?: string } {
+  if (harness === "codex") {
+    return { exitCode: 2, stderr: msg, stdout: "" };
+  }
   if (harness === "claude") {
     return {
       exitCode: 2,
@@ -227,7 +267,8 @@ function formatPreEditDeny(harness: HookHarness, count: number, msg: string): { 
     };
   }
   return {
-    exitCode: 0,
+    exitCode: 2,
+    stderr: msg,
     stdout: JSON.stringify({
       permission: "deny",
       user_message: `Veristack blocked write with ${count} violation(s).`,
@@ -263,7 +304,8 @@ export function executeHookEvent(
   options: { repoRoot?: string; harness?: HookHarness; tier?: CheckFileTier } = {},
 ): HookExecutionResult {
   const harness: HookHarness = options.harness ?? "claude";
-  if (process.env.VSTACK_HOOK_DISABLED === "1") return { exitCode: 0, stdout: "", findings: [] };
+  const hookDisabledEnv = process.env.VSTACK_HOOK_DISABLED === "1";
+  if (hookDisabledEnv && event !== "pre-edit") return { exitCode: 0, stdout: "", findings: [] };
 
   let payload: Record<string, unknown> = {};
   if (!rawStdin.trim()) {
@@ -327,13 +369,28 @@ export function executeHookEvent(
         });
         continue;
       }
+      if (hookDisabledEnv) continue;
       const proposed = extractProposedContent(payload, abs);
       if (proposed === undefined && !fs.existsSync(abs)) continue;
+      if (proposed !== undefined && hasPathologicalNesting(proposed)) {
+        findings.push({
+          id: `HOOK:syntax-bomb:${rel}`,
+          rule: "syntax-nesting-bomb",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: rel,
+          line: 1,
+          message: `Proposed edit to '${rel}' contains pathological syntax nesting or size (>128 depth or >2 MiB) — blocked fail-closed.`,
+          fix: "Remove deeply nested expressions or oversized generated payloads.",
+        });
+        continue;
+      }
       const res = scanSingleFile(abs, { repoRoot, tier: "immediate", content: proposed, strict: true });
       findings.push(...res.findings);
     }
     appendAuditLog(repoRoot, config.auditLog, { event, harness, files: edited, findings: findings.length });
-    if (findings.length === 0) return { exitCode: 0, stdout: JSON.stringify({ permission: "allow" }), findings: [] };
+    if (findings.length === 0) return { exitCode: 0, stdout: harness === "codex" ? "" : JSON.stringify({ permission: "allow" }), findings: [] };
     const msg = formatReminder(`Veristack blocked write (${findings.length} immediate slop/cheat violation(s)):`, findings);
     const deny = formatPreEditDeny(harness, findings.length, msg);
     return { ...deny, findings };

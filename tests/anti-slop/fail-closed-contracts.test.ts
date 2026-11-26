@@ -61,9 +61,12 @@ test("fail-closed contract: pre-edit blocks empty/malformed/no-path/large-100KB 
     }
 
     const delPatch = executeHookEvent("pre-edit", JSON.stringify({ cwd: dir, tool_input: { patch: "*** Delete File: CODEOWNERS\n" } }), { repoRoot: dir, harness: "codex" });
-    assert.equal(JSON.parse(delPatch.stdout).permission, "deny");
+    assert.equal(delPatch.exitCode, 2);
+    assert.equal(delPatch.stdout, "");
+    assert.ok(delPatch.stderr && delPatch.stderr.includes("hook-protected-control-plane"));
     const movePatch = executeHookEvent("pre-edit", JSON.stringify({ cwd: dir, tool_input: { command: "*** Move to: .verification/rungs.json\n" } }), { repoRoot: dir, harness: "codex" });
-    assert.equal(JSON.parse(movePatch.stdout).permission, "deny");
+    assert.equal(movePatch.exitCode, 2);
+    assert.ok(movePatch.stderr && movePatch.stderr.includes("hook-protected-control-plane"));
 
     fs.mkdirSync(path.join(dir, "src"), { recursive: true });
     const targetFile = path.join(dir, "src", "a.ts");

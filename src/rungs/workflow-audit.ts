@@ -59,9 +59,8 @@ function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
   }
   if (Array.isArray(cfg.paths) && cfg.paths.length > 0) return false;
   if (Array.isArray(cfg["paths-ignore"]) && cfg["paths-ignore"].length > 0) {
-    const risky = cfg["paths-ignore"].some(
-      (p) => typeof p === "string" && (/^\*+$|^\*\*\/\*|\.(?:[cm]?[jt]sx?|py|rs|go|cs|json|ya?ml)$/.test(p.trim())),
-    );
+    const SAFE_DOCS_IGNORE = /^(?:\*\*\/)?(?:docs\/.+|README(?:\.[^/]+)?|CHANGELOG(?:\.[^/]+)?|LICENSE(?:\.[^/]+)?|\*\.md|\*\*\/\*\.md|\*\.txt|\*\.png|\*\.svg|\.vscode\/.+)$/i;
+    const risky = cfg["paths-ignore"].some((p) => typeof p !== "string" || !SAFE_DOCS_IGNORE.test(p.trim()));
     if (risky) return false;
   }
   if (Array.isArray(cfg["branches-ignore"]) && cfg["branches-ignore"].length > 0) {
@@ -140,13 +139,17 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
   const scopedCommands: Array<{ cwd: string; command: string }> = [];
   const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
   const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
+  const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|NODE_OPTIONS|PYTEST_ADDOPTS|GOFLAGS|RUSTFLAGS|DOTNET_STARTUP_HOOKS|CARGO_TARGET_.*_RUNNER)$/i;
+  const hasPoisonedEnv = (envObj: unknown): boolean => isRecord(envObj) && Object.keys(envObj).some((k) => BAD_ENV_KEY.test(k));
+  const wfPoisoned = hasPoisonedEnv(doc.env);
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
     if (deadJobSet.has(jobId) || !isRecord(jobVal)) continue;
+    if (wfPoisoned || hasPoisonedEnv(jobVal.env)) continue;
     const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : wfDefaults;
     const jobWorkDir = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run["working-directory"] : wfWorkDir;
     const steps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
     for (const step of steps) {
-      if (!isRecord(step)) continue;
+      if (!isRecord(step) || hasPoisonedEnv(step.env)) continue;
       if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
       if (!isAllowedShell(step.shell ?? jobShell)) continue;
       const rawWd = step["working-directory"] ?? jobWorkDir;
@@ -323,9 +326,19 @@ export function checkGitHubBranchProtection(repoRoot: string): {
         : `Unable to read branch protection for ${slug}/${defaultBranch}: ${stderr.slice(0, 140)}`,
     };
   }
+  return evaluateBranchProtectionJson(defaultBranch, api.stdout);
+}
 
+export function evaluateBranchProtectionJson(defaultBranch: string, rawJson: string): {
+  checked: boolean;
+  passed: boolean;
+  requiredChecks: string[];
+  codeOwnerReviewsRequired: boolean;
+  adminsEnforced: boolean;
+  detail: string;
+} {
   try {
-    const parsed = JSON.parse(api.stdout) as {
+    const parsed = JSON.parse(rawJson) as {
       required_status_checks?: { contexts?: string[]; checks?: Array<{ context?: string }> };
       required_pull_request_reviews?: {
         require_code_owner_reviews?: boolean;

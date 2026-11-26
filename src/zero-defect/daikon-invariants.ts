@@ -74,7 +74,7 @@ export function inferDynamicInvariants(samples: readonly TraceSample[]): Invaria
     if (group.length < 3) continue;
 
     if (group.every((s) => s.throws !== true)) {
-      invariants.push({ fn, kind: "never-throws", detail: `${fn} never throws across ${group.length} trace(s)` });
+      invariants.push({ fn, kind: "never-throws", detail: `${fn} never throws` });
     }
 
     const okSamples = group.filter((s) => s.throws !== true);

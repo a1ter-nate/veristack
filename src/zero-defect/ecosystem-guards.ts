@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
+import { type DiscoveredRepo, scanSfcScriptSpans, type ScannedFile } from "../discover.ts";
 import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
@@ -17,7 +17,6 @@ const WORKER_FETCH_REDIRECT_ERROR = /\bfetch\s*\([\s\S]{0,220}?\bredirect\s*:\s*
 const DATETIMEFORMAT_RAW_NEW_DATE = /\bDateTimeFormat\s*\([^)]*\)\s*\.\s*format\s*\(\s*new\s+Date\s*\(/g;
 const RUST_ONCE_MUTEX_MAP = /\b(?:OnceLock|LazyLock)\s*<\s*(?:std::sync::)?Mutex\s*<\s*(?:HashMap|BTreeMap)\b/g;
 const RUST_STD_MUTEX_IN_ASYNC = /\basync\s+fn\b[\s\S]{0,500}?\.lock\s*\(\s*\)\s*(?:\.unwrap\(\)|\?)[\s\S]{0,300}?\.await\b/g;
-const VUE_SCRIPT_NO_TS = /<script(?:\s+setup)?\s*>/g;
 const ENV_REAL_SECRET = /\b(?:AIzaSy[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|xoxb-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16})\b/g;
 const SHORT_FIXED_OVERLAY_CSS = /(?:^|[}\s])(\.[a-z][a-z0-9_-]{0,2})\s*\{[^}]*position\s*:\s*fixed[^}]*inset\s*:\s*0/gim;
 const DOCKER_CA_UPDATE = /\bupdate-ca-certificates\b/;
@@ -131,23 +130,24 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
   }
 
   if ((file.rel.endsWith(".vue") || file.rel.endsWith(".svelte")) && hasTsRepo) {
-    const sfcRaw = (file.rawContent ?? raw).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
-    for (const m of sfcRaw.matchAll(VUE_SCRIPT_NO_TS)) {
-      push(
-        findings,
-        file.rel,
-        lineOf(sfcRaw, m.index ?? 0),
-        "vue-require-script-lang-ts",
-        "R1",
-        "warn",
-        'SFC <script> omits lang="ts" in a TypeScript repository, silently disabling template type checks.',
-        'Add lang="ts" to <script> / <script setup> blocks.',
-      );
+    const sfcRaw = file.rawContent ?? raw;
+    for (const sp of scanSfcScriptSpans(sfcRaw)) {
+      if (!/\blang\s*=\s*["']tsx?["']/i.test(sp.attrs)) {
+        push(
+          findings,
+          file.rel,
+          lineOf(sfcRaw, sp.bodyStart),
+          "vue-require-script-lang-ts",
+          "R1",
+          "warn",
+          'SFC <script> omits lang="ts" in a TypeScript repository, silently disabling template type checks.',
+          'Add lang="ts" to <script> / <script setup> blocks.',
+        );
+      }
     }
-    return;
   }
 
-  if (!file.language || file.isTest) return;
+  if (!file.language || file.isTest || /\.d\.[cm]?ts$|\.pyi$/i.test(file.rel)) return;
 
   const masked = maskCode(raw, file.language, true);
 
@@ -166,6 +166,18 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
       );
     }
     for (const m of prodMasked.matchAll(RUST_STD_MUTEX_IN_ASYNC)) {
+      const snippet = m[0];
+      const lockIdx = snippet.search(/\.lock\s*\(\s*\)/);
+      const awaitIdx = snippet.search(/\.await\b/);
+      if (lockIdx >= 0 && awaitIdx > lockIdx) {
+        let depth = 0;
+        let closedBeforeAwait = false;
+        for (let i = lockIdx; i < awaitIdx; i++) {
+          if (snippet[i] === "{") depth += 1;
+          else if (snippet[i] === "}") { depth -= 1; if (depth < 0) { closedBeforeAwait = true; break; } }
+        }
+        if (closedBeforeAwait) continue;
+      }
       push(
         findings,
         file.rel,

@@ -30,7 +30,7 @@ jobs:
           node-version: "24"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: latest
+          bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
       - name: Enforce zero ratchets, 500-line ceiling, and strict self-scan
         run: |
@@ -45,7 +45,7 @@ jobs:
           node scripts/check-max-lines.mjs
       - run: bun run check
       - run: bun src/cli.ts bench . --fail
-      - run: bun run build && node bin/vstack.mjs verify . --strict > /dev/null
+      - run: bun run build && node bin/vstack.mjs verify . --strict
       - name: Ensure npm supports Trusted Publishing OIDC
         run: npm install -g npm@latest
       - name: Resolve next monotonic version

@@ -3,6 +3,9 @@
 /examples/ @a1ter-nate
 /templates/ @a1ter-nate
 /.github/ @a1ter-nate
+/.claude/ @a1ter-nate
+/.codex/ @a1ter-nate
+/.cursor/ @a1ter-nate
 /AGENTS.md @a1ter-nate
 /.verification/ @a1ter-nate
 /.verification/laws/ @a1ter-nate

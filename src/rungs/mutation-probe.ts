@@ -10,16 +10,8 @@ import type { PlantedFaultReport, PlantedFaultSurvivor } from "../types.ts";
 import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
 import { parseRunnerTestCounts, stripAnsi } from "./runner-metrics.ts";
 
-interface MutantCandidate {
-  file: string;
-  line: number;
-  start: number;
-  end: number;
-  replacement: string;
-  operator: string;
-  original: string;
-  mutated: string;
-}
+interface MutantCandidate { file: string; line: number; start: number; end: number; replacement: string; operator: string; original: string; mutated: string; }
+export interface CanaryOptions { repoRoot: string; testCmd: string; targets?: readonly string[]; baseRef?: string; maxMutants?: number; minKillRate?: number; }
 
 const BINARY_MUTATIONS: Record<string, string> = {
   "===": "!==", "!==": "===", "==": "!=", "!=": "==",
@@ -97,22 +89,32 @@ function collectAstMutants(rel: string, source: string, maxPerFile: number, runS
       if (rec.body) stack.push(rec.body);
       continue;
     }
-    if (type === "BinaryExpression" && typeof rec.operator === "string" && typeof rec.start === "number" && typeof rec.end === "number") {
+    if (type === "BinaryExpression" || type === "LogicalExpression") {
+      const op = typeof rec.operator === "string" ? rec.operator : "";
       const left = rec.left as Record<string, unknown> | undefined;
       const right = rec.right as Record<string, unknown> | undefined;
-      const replacement = BINARY_MUTATIONS[rec.operator];
-      if (replacement && left && right && typeof left.end === "number" && typeof right.start === "number") {
-        const opIdx = maskCommentsOnly(source.slice(left.end, right.start)).indexOf(rec.operator);
+      const replacement = type === "BinaryExpression" ? BINARY_MUTATIONS[op] : LOGICAL_MUTATIONS[op];
+      if (replacement && left && right && typeof left.end === "number" && typeof right.start === "number" && typeof rec.start === "number" && typeof rec.end === "number") {
+        const opIdx = maskCommentsOnly(source.slice(left.end, right.start)).indexOf(op);
         if (opIdx >= 0) {
           const opStart = left.end + opIdx;
-          const opEnd = opStart + rec.operator.length;
+          const opEnd = opStart + op.length;
           addCandidate({
             file: rel, line: lineAt(source, opStart), start: opStart, end: opEnd, replacement,
-            operator: `${rec.operator} -> ${replacement}`,
+            operator: `${op} -> ${replacement}`,
             original: source.slice(rec.start, Math.min(rec.end, rec.start + 60)),
             mutated: `${source.slice(rec.start, opStart)}${replacement}${source.slice(opEnd, Math.min(rec.end, opEnd + 30))}`,
           });
         }
+      }
+    } else if (type === "UnaryExpression" && rec.operator === "!" && typeof rec.start === "number" && typeof rec.end === "number" && rec.argument && typeof rec.argument === "object") {
+      const arg = rec.argument as Record<string, unknown>;
+      if (typeof arg.start === "number" && typeof arg.end === "number") {
+        const inner = source.slice(arg.start, arg.end);
+        addCandidate({
+          file: rel, line: lineAt(source, rec.start), start: rec.start, end: rec.end, replacement: `(${inner})`,
+          operator: "!x -> x", original: source.slice(rec.start, Math.min(rec.end, rec.start + 60)), mutated: `(${inner})`.slice(0, 60),
+        });
       }
     } else if (type === "ReturnStatement") {
       const arg = rec.argument as Record<string, unknown> | undefined;
@@ -123,6 +125,20 @@ function collectAstMutants(rel: string, source: string, maxPerFile: number, runS
           file: rel, line: lineAt(source, arg.start), start: arg.start, end: arg.end, replacement: nextBool,
           operator: `${origBool} -> ${nextBool}`, original: `return ${origBool}`, mutated: `return ${nextBool}`,
         });
+      } else if (arg && arg.type === "BinaryExpression" && (arg.operator === "+" || arg.operator === "-") && typeof arg.start === "number" && typeof arg.end === "number") {
+        const left = arg.left as Record<string, unknown> | undefined;
+        const right = arg.right as Record<string, unknown> | undefined;
+        const rep = arg.operator === "+" ? "-" : "+";
+        if (left && right && typeof left.end === "number" && typeof right.start === "number") {
+          const opIdx = maskCommentsOnly(source.slice(left.end, right.start)).indexOf(arg.operator);
+          if (opIdx >= 0) {
+            const opStart = left.end + opIdx;
+            addCandidate({
+              file: rel, line: lineAt(source, opStart), start: opStart, end: opStart + 1, replacement: rep,
+              operator: `${arg.operator} -> ${rep}`, original: source.slice(arg.start, Math.min(arg.end, arg.start + 60)), mutated: rep,
+            });
+          }
+        }
       }
     }
     for (const val of Object.values(rec)) {
@@ -134,11 +150,7 @@ function collectAstMutants(rel: string, source: string, maxPerFile: number, runS
 }
 
 function langForRel(rel: string): string | undefined {
-  if (rel.endsWith(".py")) return "python";
-  if (rel.endsWith(".rs")) return "rust";
-  if (rel.endsWith(".go")) return "go";
-  if (rel.endsWith(".cs")) return "csharp";
-  return undefined;
+  return rel.endsWith(".py") ? "python" : rel.endsWith(".rs") ? "rust" : rel.endsWith(".go") ? "go" : rel.endsWith(".cs") ? "csharp" : undefined;
 }
 
 function collectFallbackMutants(rel: string, source: string, maxPerFile: number, runSeed: number): MutantCandidate[] {
@@ -151,7 +163,12 @@ function collectFallbackMutants(rel: string, source: string, maxPerFile: number,
     if (idx < 0) continue;
     const prevCh = idx > 0 ? (masked[idx - 1] ?? "") : "";
     const nextCh = masked[idx + op.length] ?? "";
-    if ((op === "<" || op === ">") && (/[A-Za-z0-9_:]/.test(prevCh) || prevCh === "-" || prevCh === "=" || prevCh === "<" || prevCh === ">" || nextCh === "-" || nextCh === "<" || nextCh === ">")) continue;
+    if ((op === "<" || op === ">") && (/[A-Za-z0-9_:)?>\]]/.test(prevCh) || prevCh === "-" || prevCh === "=" || prevCh === "<" || nextCh === "-" || nextCh === "<" || nextCh === ">" || nextCh === "(")) continue;
+    if (rel.endsWith(".rs") && (op === "&&" || op === "||")) {
+      const before = masked.slice(Math.max(0, idx - 12), idx).trimEnd();
+      if (op === "&&" && (!before || /[(:=,[<]$/.test(before))) continue;
+      if (op === "||" && (!before || /[(:=,[{]$/.test(before))) continue;
+    }
     const replacement = op === "and" ? "or" : op === "or" ? "and" : (BINARY_MUTATIONS[op] ?? LOGICAL_MUTATIONS[op]);
     if (!replacement) continue;
     const line = lineAt(source, idx);
@@ -187,6 +204,7 @@ function findFnBodyOpenBrace(masked: string, startAfterParams: number, allowInli
     else if (ch === ">" && masked[i - 1] !== "-") angle = Math.max(0, angle - 1);
     else if (paren === 0 && angle === 0) {
       if (ch === ";") return -1;
+      if (ch === "=" && masked[i + 1] === ">") return -1;
       if (ch === "{") {
         if (allowInlineStructBrace) {
           const before = masked.slice(Math.max(startAfterParams, i - 16), i);
@@ -202,98 +220,88 @@ function findFnBodyOpenBrace(masked: string, startAfterParams: number, allowInli
   return -1;
 }
 
-function insertSemanticNoOp(rel: string, source: string, variant: number): string {
+export function insertSemanticNoOp(rel: string, source: string, variant: number): string {
   const id = randomLocalIdent();
   if (/\.[cm]?[jt]sx?$/.test(rel)) {
-    const stmts = [` if (false) {} `, ` const ${id} = 0; void ${id}; `, ` { const ${id} = 1; void ${id}; } `];
-    const stmt = stmts[variant % stmts.length] ?? stmts[0] ?? " if (false) {} ";
+    const stmt = variant % 2 === 0 ? ` const ${id} = 0; void ${id}; ` : ` if (false) {} `;
     try {
       const parsed = parseSync(rel, source);
-      const stack: unknown[] = [parsed.program];
-      while (stack.length > 0) {
-        const node = stack.pop();
-        if (!node || typeof node !== "object") continue;
-        const rec = node as Record<string, unknown>;
+      const walkFind = (fn: (rec: Record<string, unknown>) => string | null): string | null => {
+        const stack: unknown[] = [parsed.program];
+        while (stack.length > 0) {
+          const node = stack.pop();
+          if (!node || typeof node !== "object") continue;
+          const rec = node as Record<string, unknown>;
+          const hit = fn(rec);
+          if (hit !== null) return hit;
+          for (const val of Object.values(rec)) {
+            if (Array.isArray(val)) for (const item of val) stack.push(item);
+            else if (val && typeof val === "object") stack.push(val);
+          }
+        }
+        return null;
+      };
+      if (variant % 2 === 1) {
+        const wrapped = walkFind((rec) => {
+          if (rec.type !== "ReturnStatement" || !rec.argument || typeof rec.argument !== "object") return null;
+          const arg = rec.argument as Record<string, unknown>;
+          if (typeof arg.start !== "number" || typeof arg.end !== "number") return null;
+          const c = `${source.slice(0, arg.start)}(${source.slice(arg.start, arg.end)})${source.slice(arg.end)}`;
+          return parseSync(rel, c).errors.length === 0 ? c : null;
+        });
+        if (wrapped) return wrapped;
+      }
+      const inFn = walkFind((rec) => {
         if ((rec.type === "FunctionDeclaration" || rec.type === "FunctionExpression" || rec.type === "ArrowFunctionExpression") && rec.body && typeof rec.body === "object") {
           const body = rec.body as Record<string, unknown>;
           if (body.type === "BlockStatement" && typeof body.start === "number") {
-            const pos = body.start + 1;
-            const candidate = `${source.slice(0, pos)}${stmt}${source.slice(pos)}`;
-            if (parseSync(rel, candidate).errors.length === 0) return candidate;
+            const c = `${source.slice(0, body.start + 1)}${stmt}${source.slice(body.start + 1)}`;
+            return parseSync(rel, c).errors.length === 0 ? c : null;
           }
         }
-        for (const val of Object.values(rec)) {
-          if (Array.isArray(val)) for (const item of val) stack.push(item);
-          else if (val && typeof val === "object") stack.push(val);
-        }
-      }
-    } catch {
-      return `${source}\n${stmt}\n`;
-    }
+        return null;
+      });
+      if (inFn) return inFn;
+    } catch { return `${source}\n${stmt}\n`; }
     return `${source}\n${stmt}\n`;
   }
   if (rel.endsWith(".py")) {
     const lines = source.split("\n");
-    let i = 0; let inTriple: string | null = null;
+    let i = 0; let inTriple: string | null = null; let inFuture = false;
     while (i < lines.length) {
       const l = (lines[i] ?? "").trim();
       if (inTriple) { if (l.includes(inTriple)) inTriple = null; i += 1; continue; }
-      if (l === "" || l.startsWith("#") || l.startsWith("from __future__ import")) { i += 1; continue; }
-      const docStart = /^(?:[rRbBuUfF]{0,2})("""|''')/.exec(l);
-      if (docStart?.[1]) {
-        const q = docStart[1];
-        const rest = l.slice(docStart[0].length);
-        if (!rest.includes(q)) inTriple = q;
-        i += 1; continue;
-      }
+      if (inFuture) { if (l.includes(")")) inFuture = false; i += 1; continue; }
+      if (l === "" || l.startsWith("#")) { i += 1; continue; }
+      if (l.startsWith("from __future__ import")) { if (l.includes("(") && !l.includes(")")) inFuture = true; i += 1; continue; }
+      const ds = /^(?:[rRbBuUfF]{0,2})("""|''')/.exec(l);
+      if (ds?.[1]) { if (!l.slice(ds[0].length).includes(ds[1])) inTriple = ds[1]; i += 1; continue; }
       break;
     }
-    const stmt = variant % 2 === 0 ? "if False:\n    pass" : `${id} = 0`;
-    return [...lines.slice(0, i), stmt, ...lines.slice(i)].join("\n");
+    return [...lines.slice(0, i), variant % 2 === 0 ? "if False:\n    pass" : `_${id} = 0`, ...lines.slice(i)].join("\n");
   }
   const masked = maskCode(source, langForRel(rel), true);
   if (rel.endsWith(".go")) {
     for (const m of masked.matchAll(/\bfunc\s+(?:\([^)]*\)\s*)?[A-Za-z_]\w*\s*\(/g)) {
-      const parenEnd = findBalancedParenEnd(masked, (m.index ?? 0) + m[0].length - 1);
-      if (parenEnd < 0) continue;
-      const braceIdx = findFnBodyOpenBrace(masked, parenEnd + 1, true);
-      if (braceIdx >= 0) {
-        const stmt = variant % 2 === 0 ? " if false {} " : ` _ = 0; `;
-        return `${source.slice(0, braceIdx + 1)}${stmt}${source.slice(braceIdx + 1)}`;
-      }
+      const pEnd = findBalancedParenEnd(masked, (m.index ?? 0) + m[0].length - 1);
+      const bIdx = pEnd >= 0 ? findFnBodyOpenBrace(masked, pEnd + 1, true) : -1;
+      if (bIdx >= 0) return `${source.slice(0, bIdx + 1)}${variant % 2 === 0 ? " if false {} " : " _ = 0; "}${source.slice(bIdx + 1)}`;
     }
   } else if (rel.endsWith(".rs")) {
     for (const m of masked.matchAll(/\bfn\s+[A-Za-z_]\w*(?:\s*<[^>]*>)?\s*\(/g)) {
-      const parenEnd = findBalancedParenEnd(masked, (m.index ?? 0) + m[0].length - 1);
-      if (parenEnd < 0) continue;
-      const braceIdx = findFnBodyOpenBrace(masked, parenEnd + 1, false);
-      if (braceIdx >= 0) {
-        const stmt = variant % 2 === 0 ? " if false {} " : ` let ${id} = (); `;
-        return `${source.slice(0, braceIdx + 1)}${stmt}${source.slice(braceIdx + 1)}`;
-      }
+      const pEnd = findBalancedParenEnd(masked, (m.index ?? 0) + m[0].length - 1);
+      const bIdx = pEnd >= 0 ? findFnBodyOpenBrace(masked, pEnd + 1, false) : -1;
+      if (bIdx >= 0) return `${source.slice(0, bIdx + 1)}${variant % 2 === 0 ? " if false {} " : ` let _${id} = (); `}${source.slice(bIdx + 1)}`;
     }
   } else if (rel.endsWith(".cs")) {
     for (const m of masked.matchAll(/\b(?:public|private|internal|protected)\s+(?:static\s+|async\s+|virtual\s+|override\s+)*[A-Za-z0-9_<>,.\s?]+\s+[A-Za-z_]\w*\s*\(/g)) {
       if (/\b(?:class|record|struct|interface)\b/.test(m[0])) continue;
-      const parenEnd = findBalancedParenEnd(masked, (m.index ?? 0) + m[0].length - 1);
-      if (parenEnd < 0) continue;
-      const braceIdx = findFnBodyOpenBrace(masked, parenEnd + 1, false);
-      if (braceIdx >= 0) {
-        const stmt = variant % 2 === 0 ? " if (false) {} " : ` var ${id} = 0; _ = ${id}; `;
-        return `${source.slice(0, braceIdx + 1)}${stmt}${source.slice(braceIdx + 1)}`;
-      }
+      const pEnd = findBalancedParenEnd(masked, (m.index ?? 0) + m[0].length - 1);
+      const bIdx = pEnd >= 0 ? findFnBodyOpenBrace(masked, pEnd + 1, false) : -1;
+      if (bIdx >= 0) return `${source.slice(0, bIdx + 1)}${variant % 2 === 0 ? " if (false) {} " : ` var ${id} = 0; _ = ${id}; `}${source.slice(bIdx + 1)}`;
     }
   }
   return `${source}\n`;
-}
-
-export interface CanaryOptions {
-  repoRoot: string;
-  testCmd: string;
-  targets?: readonly string[];
-  baseRef?: string;
-  maxMutants?: number;
-  minKillRate?: number;
 }
 
 function resolveTargetFiles(options: CanaryOptions): string[] {
@@ -345,20 +353,21 @@ function linkNodeModulesIntoSandbox(absRoot: string, sandboxDir: string): void {
   linkDir(srcNm, dstNm);
 }
 
+const SANDBOX_SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "target", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "obj"]);
+
 function copyRepoForIsolatedCanary(repoRoot: string): string {
   const absRoot = fs.realpathSync(path.resolve(repoRoot));
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), "t-"));
-  const skipTop = new Set([".git", "node_modules", ".venv", "venv", "target"]);
   for (const entry of fs.readdirSync(absRoot, { withFileTypes: true })) {
     if (entry.name === ".git") continue;
     const src = path.join(absRoot, entry.name);
     const dst = path.join(sandboxDir, entry.name);
-    if (skipTop.has(entry.name)) {
+    if (SANDBOX_SKIP_DIRS.has(entry.name)) {
       if (entry.name === "node_modules") linkNodeModulesIntoSandbox(absRoot, sandboxDir);
       else if (entry.name === ".venv" || entry.name === "venv") { try { fs.symlinkSync(src, dst); } catch { continue; } }
       continue;
     }
-    fs.cpSync(src, dst, { recursive: true, dereference: false });
+    fs.cpSync(src, dst, { recursive: true, dereference: false, filter: (p) => p === src || !SANDBOX_SKIP_DIRS.has(path.basename(p)) });
   }
   return sandboxDir;
 }
@@ -387,96 +396,98 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
   const parsedCmd = parseAndValidateCommandArgv("canary", options.testCmd, absRoot);
   if (parsedCmd.error) return failReport(0, 1);
 
-  const runSeed = crypto.randomBytes(4).readUInt32BE(0);
-  const targets = resolveTargetFiles(options);
-  const candidates: MutantCandidate[] = [];
-  const perFileCap = Math.max(1, Math.ceil(maxMutants / Math.max(1, targets.length)));
+  const targets = resolveTargetFiles(options).sort();
+  const seedHasher = crypto.createHash("sha256").update(options.testCmd);
   for (const rel of targets) {
-    if (candidates.length >= maxMutants) break;
+    seedHasher.update(rel).update(fs.readFileSync(path.join(absRoot, rel), "utf8"));
+  }
+  const runSeed = seedHasher.digest().readUInt32BE(0);
+  const perFileBuckets: MutantCandidate[][] = [];
+  for (const rel of seededShuffle(targets, runSeed)) {
     const source = fs.readFileSync(path.join(absRoot, rel), "utf8");
-    const found = /\.[cm]?[jt]sx?$/.test(rel) ? collectAstMutants(rel, source, perFileCap, runSeed) : collectFallbackMutants(rel, source, perFileCap, runSeed);
-    for (const c of found) if (candidates.length < maxMutants) candidates.push(c);
+    const found = /\.[cm]?[jt]sx?$/.test(rel) ? collectAstMutants(rel, source, maxMutants, runSeed) : collectFallbackMutants(rel, source, maxMutants, runSeed);
+    if (found.length > 0) perFileBuckets.push(found);
+  }
+  const candidates: MutantCandidate[] = [];
+  for (let round = 0; candidates.length < maxMutants; round++) {
+    let added = false;
+    for (const bucket of perFileBuckets) {
+      const c = bucket[round];
+      if (c && candidates.length < maxMutants) { candidates.push(c); added = true; }
+    }
+    if (!added) break;
   }
   if (candidates.length === 0) return failReport(0, 0);
 
   const baseEnv = scrubChildEnv();
-  const sandboxDir = copyRepoForIsolatedCanary(absRoot);
-  try {
-    const baselineStart = performance.now();
-    const baselineRun = withOpaqueTmpEnv(baseEnv, sandboxDir, (env) => runArgvChain(parsedCmd.steps, sandboxDir, env, 90_000));
-    const baselineMs = Math.max(500, Math.round(performance.now() - baselineStart));
-    const mutantTimeoutMs = Math.round(Math.max(20_000, Math.min(60_000, baselineMs * 6)));
-    if (baselineRun.status !== 0) return failReport(candidates.length, candidates.length);
+  const withFreshSandbox = <T>(fn: (sandboxDir: string) => T): T => {
+    const sb = copyRepoForIsolatedCanary(absRoot);
+    try { return fn(sb); } finally { fs.rmSync(sb, { recursive: true, force: true }); }
+  };
 
-    const uniqueTargetFiles = [...new Set(candidates.map((c) => c.file))];
-    const runNoOpCheck = (variant: number): boolean => {
-      const originals = new Map<string, string>();
-      try {
-        for (const rel of uniqueTargetFiles) {
-          const p = path.join(sandboxDir, rel);
-          const orig = fs.readFileSync(p, "utf8");
-          originals.set(rel, orig);
-          fs.writeFileSync(p, insertSemanticNoOp(rel, orig, variant), "utf8");
-        }
-        return withOpaqueTmpEnv(baseEnv, sandboxDir, (env) => runArgvChain(parsedCmd.steps, sandboxDir, env, 90_000)).status === 0;
-      } finally {
-        for (const [rel, orig] of originals.entries()) fs.writeFileSync(path.join(sandboxDir, rel), orig, "utf8");
-      }
-    };
+  const baselineStart = performance.now();
+  const baselineRun = withFreshSandbox((sb) => withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, 90_000)));
+  const baselineMs = Math.max(500, Math.round(performance.now() - baselineStart));
+  const mutantTimeoutMs = Math.round(Math.max(20_000, Math.min(60_000, baselineMs * 6)));
+  if (baselineRun.status !== 0) return failReport(candidates.length, candidates.length);
 
-    type Task = { kind: "noop"; variant: number } | { kind: "mutant"; mutant: MutantCandidate };
-    const tasks: Task[] = [
-      { kind: "noop", variant: 0 },
-      ...(candidates.length >= 2 ? [{ kind: "noop" as const, variant: 1 }] : []),
-      ...candidates.map((mutant) => ({ kind: "mutant" as const, mutant })),
-    ];
-    const shuffledTasks = seededShuffle(tasks, runSeed ^ 0x9e3779b9);
+  const uniqueTargetFiles = [...new Set(candidates.map((c) => c.file))];
+  const runNoOpCheck = (variant: number): boolean =>
+    withFreshSandbox((sb) => {
+      for (const rel of uniqueTargetFiles) {
+        const p = path.join(sb, rel);
+        fs.writeFileSync(p, insertSemanticNoOp(rel, fs.readFileSync(p, "utf8"), variant), "utf8");
+      }
+      return withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, 90_000)).status === 0;
+    });
 
-    let killed = 0; let invalidKills = 0;
-    const survivors: PlantedFaultSurvivor[] = [];
+  type Task = { kind: "noop"; variant: number } | { kind: "mutant"; mutant: MutantCandidate };
+  const tasks: Task[] = [
+    { kind: "noop", variant: 0 },
+    ...(candidates.length >= 2 ? [{ kind: "noop" as const, variant: 1 }] : []),
+    ...candidates.map((mutant) => ({ kind: "mutant" as const, mutant })),
+  ];
+  const shuffledTasks = seededShuffle(tasks, runSeed ^ 0x9e3779b9);
 
-    for (const task of shuffledTasks) {
-      if (task.kind === "noop") {
-        if (!runNoOpCheck(task.variant)) return failReport(candidates.length, candidates.length);
-        continue;
-      }
-      const mutant = task.mutant;
-      const mutantPath = path.join(sandboxDir, mutant.file);
-      const originalBytes = fs.readFileSync(mutantPath, "utf8");
-      const mutatedSource = `${originalBytes.slice(0, mutant.start)}${mutant.replacement}${originalBytes.slice(mutant.end)}`;
-      if (/\.[cm]?[jt]sx?$/.test(mutant.file) && parseSync(mutant.file, mutatedSource).errors.length > 0) {
-        invalidKills += 1; continue;
-      }
-      try {
-        fs.writeFileSync(mutantPath, mutatedSource, "utf8");
-        const mutStart = performance.now();
-        const res = withOpaqueTmpEnv(baseEnv, sandboxDir, (env) => runArgvChain(parsedCmd.steps, sandboxDir, env, mutantTimeoutMs));
-        const elapsedMs = performance.now() - mutStart;
-        const cleanCombined = stripAnsi(`${res.stdout}\n${res.stderr}`);
-        const timedOut = (res.signal === "SIGTERM" || (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") && elapsedMs >= mutantTimeoutMs * 0.8;
-        if (timedOut) {
-          killed += 1;
-        } else if (res.signal === "SIGTERM" || res.error) {
-          invalidKills += 1;
-        } else if (res.status !== 0) {
-          const parsedCounts = parseRunnerTestCounts(cleanCombined, parsedCmd.steps);
-          const runnerReportedFail = parsedCounts.matched && parsedCounts.failed > 0;
-          const hasCrash = COMPILE_OR_RUNTIME_CRASH.test(cleanCombined);
-          const hasTestFail = runnerReportedFail || (!hasCrash && STRICT_TEST_FAILURE.test(cleanCombined));
-          if (!hasTestFail) invalidKills += 1;
-          else killed += 1;
-        } else {
-          survivors.push({ file: mutant.file, line: mutant.line, operator: mutant.operator, original: mutant.original, mutated: mutant.mutated });
-        }
-      } finally {
-        fs.writeFileSync(mutantPath, originalBytes, "utf8");
-      }
+  let killed = 0; let invalidKills = 0;
+  const survivors: PlantedFaultSurvivor[] = [];
+
+  for (const task of shuffledTasks) {
+    if (task.kind === "noop") {
+      if (!runNoOpCheck(task.variant)) return failReport(candidates.length, candidates.length);
+      continue;
     }
-
-    const killRate = Number((killed / candidates.length).toFixed(4));
-    const passed = killed > 0 && invalidKills === 0 && killRate >= minKillRate;
-    return { totalMutants: candidates.length, killedMutants: killed, survivedMutants: survivors.length, invalidKills, killRate, minKillRate, passed, survivors };
-  } finally {
-    fs.rmSync(sandboxDir, { recursive: true, force: true });
+    const mutant = task.mutant;
+    const origSource = fs.readFileSync(path.join(absRoot, mutant.file), "utf8");
+    const mutatedSource = `${origSource.slice(0, mutant.start)}${mutant.replacement}${origSource.slice(mutant.end)}`;
+    if (/\.[cm]?[jt]sx?$/.test(mutant.file) && parseSync(mutant.file, mutatedSource).errors.length > 0) {
+      invalidKills += 1; continue;
+    }
+    withFreshSandbox((sb) => {
+      fs.writeFileSync(path.join(sb, mutant.file), mutatedSource, "utf8");
+      const mutStart = performance.now();
+      const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, mutantTimeoutMs));
+      const elapsedMs = performance.now() - mutStart;
+      const cleanCombined = stripAnsi(`${res.stdout}\n${res.stderr}`);
+      const timedOut = (res.signal === "SIGTERM" || (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") && elapsedMs >= mutantTimeoutMs * 0.8;
+      if (timedOut) {
+        killed += 1;
+      } else if (res.signal === "SIGTERM" || res.error) {
+        invalidKills += 1;
+      } else if (res.status !== 0) {
+        const parsedCounts = parseRunnerTestCounts(cleanCombined, parsedCmd.steps);
+        const runnerReportedFail = parsedCounts.matched && parsedCounts.failed > 0;
+        const hasCrash = COMPILE_OR_RUNTIME_CRASH.test(cleanCombined);
+        const hasTestFail = runnerReportedFail || (!hasCrash && STRICT_TEST_FAILURE.test(cleanCombined));
+        if (!hasTestFail) invalidKills += 1;
+        else killed += 1;
+      } else {
+        survivors.push({ file: mutant.file, line: mutant.line, operator: mutant.operator, original: mutant.original, mutated: mutant.mutated });
+      }
+    });
   }
+
+  const killRate = Number((killed / candidates.length).toFixed(4));
+  const passed = killed > 0 && invalidKills === 0 && killRate >= minKillRate;
+  return { totalMutants: candidates.length, killedMutants: killed, survivedMutants: survivors.length, invalidKills, killRate, minKillRate, passed, survivors };
 }

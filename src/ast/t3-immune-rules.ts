@@ -50,10 +50,10 @@ export function analyzeT3TestGuards(file: ScannedFile): Finding[] {
   const ast = parseTsAst(file);
   if (ast) {
     walkAst(ast, (node) => {
-      if (node.type === "CallExpression" && isAstNode(node.callee) && Array.isArray(node.arguments) && node.arguments.length >= 3) {
+      if (node.type === "CallExpression" && isAstNode(node.callee) && Array.isArray(node.arguments) && node.arguments.length >= 2) {
         const name = getMemberChain(node.callee);
-        if (name === "test" || name === "it") {
-          const candidates = [node.arguments[1], node.arguments[2]];
+        if (/^(?:test|it)(?:\.(?:concurrent|sequential|only|skip|todo|fails))?$/.test(name)) {
+          const candidates = node.arguments.slice(1, 3);
           const hasTimeout = candidates.some((arg) => {
             const isNum = isAstNode(arg) && arg.type === "Literal" && typeof arg.value === "number" && arg.value >= 1000;
             const isObj = isAstNode(arg) && arg.type === "ObjectExpression" && Array.isArray(arg.properties) && arg.properties.some((p) => isAstNode(p) && isAstNode(p.key) && p.key.name === "timeout");

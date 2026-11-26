@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { sanitizeShellBlock } from "../rungs/command-audit.ts";
+import { auditBunfigContent } from "../rungs/config-audit.ts";
 import type { Finding, RungId, RungManifest } from "../types.ts";
 
 export interface DiffLineEvent {
@@ -24,18 +25,7 @@ function pushDiff(findings: Finding[], file: string, line: number, rule: string,
 }
 
 function hasBunfigCheat(raw: string): boolean {
-  let section = "";
-  for (const line of raw.split(/\r?\n/)) {
-    const cleaned = line.replace(/#.*$/, "").trim();
-    if (!cleaned) continue;
-    const sec = /^\[([^\]]+)\]$/.exec(cleaned);
-    if (sec?.[1]) { section = sec[1].trim().replace(/^["']|["']$/g, "").toLowerCase(); continue; }
-    const kv = /^["']?([A-Za-z0-9_.-]+)["']?\s*=/.exec(cleaned);
-    if (!kv?.[1]) continue;
-    const key = kv[1].toLowerCase();
-    if (key === "preload" || key.endsWith(".preload") || (section === "test" && key === "root") || key === "test.root") return true;
-  }
-  return false;
+  return auditBunfigContent(raw) !== null;
 }
 
 export function normalizeDiffMigrationPairs(
@@ -68,10 +58,16 @@ export function normalizeDiffMigrationPairs(
 }
 
 export function scanUntrackedConfigCheats(repoPath: string): Finding[] {
-  const res = spawnSync("git", ["-C", repoPath, "ls-files", "--others", "--exclude-standard"], { encoding: "utf8" });
-  if (res.status !== 0) return [];
+  const trackedSet = new Set(
+    (spawnSync("git", ["-C", repoPath, "ls-files"], { encoding: "utf8" }).stdout ?? "")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  const candidates = [".vstackignore", ".vstack.json", ".verification/vstack.json", "bunfig.toml", ".cargo/config.toml", ".cargo/config"];
   const findings: Finding[] = [];
-  for (const rel of (res.stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
+  for (const rel of candidates) {
+    if (trackedSet.has(rel)) continue;
     const lower = rel.toLowerCase();
     const abs = path.join(repoPath, rel);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
@@ -85,6 +81,8 @@ export function scanUntrackedConfigCheats(repoPath: string): Finding[] {
       }
     } else if (lower === "bunfig.toml" && hasBunfigCheat(raw)) {
       pushDiff(findings, rel, 1, "diff-config-strictness-downgrade", "Untracked bunfig.toml adds preload hook or overrides [test].root.", "Remove preload hook / [test].root override from bunfig.toml.");
+    } else if ((lower === ".cargo/config.toml" || lower === ".cargo/config") && /\b(?:runner|rustc-wrapper)\s*=/i.test(raw)) {
+      pushDiff(findings, rel, 1, "diff-config-strictness-downgrade", `Untracked ${rel} overrides cargo runner/rustc-wrapper.`, `Remove runner/rustc-wrapper override from ${rel}.`);
     }
   }
   return findings;
@@ -102,12 +100,34 @@ export function auditDiffAntiEvasion(
   const addThresholds = new Map<string, Array<{ key: string; val: number; line: number }>>();
   const codeownersDelOwners = new Map<string, number>();
   const codeownersAddOwners = new Map<string, number>();
+  const lawsDelCount = new Map<string, number>();
+  const lawsAddCount = new Map<string, number>();
+  const fileHasDel = new Set<string>();
+  const fileHasAdd = new Set<string>();
+  const addedCheckStepsByFile = new Map<string, number>();
+  for (const ev of events) {
+    if (ev.kind === "add" && ev.file.toLowerCase().endsWith("package.json") && /"check"\s*:\s*"/.test(ev.raw)) {
+      addedCheckStepsByFile.set(ev.file, Math.max(addedCheckStepsByFile.get(ev.file) ?? 0, ev.raw.split("&&").length));
+    }
+  }
 
   for (const ev of events) {
+    if (ev.kind === "del") fileHasDel.add(ev.file);
+    else fileHasAdd.add(ev.file);
     const lower = ev.file.toLowerCase();
     const isWorkflow = /(?:^|\/)\.github\/workflows\/.+\.ya?ml$/i.test(lower);
+    const isLawArtifact = /(?:^|\/)(?:\.verification\/laws\/|LAWS\.bend$|PROOF\.bend$|\.laws\.(?:json|bend)$)/i.test(ev.file);
 
     if (ev.kind === "add") {
+      if (isLawArtifact && /(?:"id"\s*:|^\s*(?:law|theorem)\s+\w+)/.test(ev.raw)) {
+        lawsAddCount.set(ev.file, (lawsAddCount.get(ev.file) ?? 0) + 1);
+      }
+      if (!TEST_FILE_PATH.test(ev.file) && /\bif\s*\(\s*false\s*&&/.test(ev.code)) {
+        pushDiff(findings, ev.file, ev.line, "diff-invariant-guard-weakened", "Added always-false short-circuit guard 'if (false && ...)' disabling a runtime check.", "Keep the runtime guard condition active instead of short-circuiting it with false.");
+      }
+      if (lower.endsWith("lefthook.yml") && /^\s*run:\s*(?:true|:|echo\b|exit\s+0)\b/i.test(ev.raw)) {
+        pushDiff(findings, ev.file, ev.line, "diff-ci-safety-gate-removed", "Replaced lefthook verification hook with a no-op command in diff.", "Keep real verification commands in lefthook.yml.");
+      }
       if (/\.[cm]?[jt]sx?$/.test(lower)) {
         if (/\/\/\s*@ts-(?:ignore|nocheck)\b|\/\*\s*@ts-(?:ignore|nocheck)\b/.test(ev.raw)) {
           pushDiff(findings, ev.file, ev.line, "diff-ts-suppression-added", "Added @ts-ignore/@ts-nocheck type-safety escape hatch in diff.", "Fix the underlying type error instead of disabling the TypeScript compiler.");
@@ -162,6 +182,23 @@ export function auditDiffAntiEvasion(
         if (WEAK_ASSERT.test(ev.code)) testAddedWeakAsserts.set(ev.file, (testAddedWeakAsserts.get(ev.file) ?? 0) + 1);
       }
     } else {
+      if (isLawArtifact && /(?:"id"\s*:|^\s*(?:law|theorem)\s+\w+)/.test(ev.raw)) {
+        lawsDelCount.set(ev.file, (lawsDelCount.get(ev.file) ?? 0) + 1);
+      }
+      if (lower.endsWith("package.json") && /"check"\s*:\s*"/.test(ev.raw)) {
+        const delSteps = ev.raw.split("&&").length;
+        const addSteps = addedCheckStepsByFile.get(ev.file) ?? 0;
+        if (addSteps < delSteps) {
+          pushDiff(findings, ev.file, ev.line, "diff-ci-safety-gate-removed", "Dropped verification step(s) from package.json 'check' script in diff.", "Keep all verification steps in the 'check' script.");
+        }
+      }
+      if (isWorkflow && /^  [a-zA-Z0-9_-]+:\s*$/.test(ev.raw)) {
+        const jobKey = ev.raw.trim();
+        const readdedJob = events.some((o) => o.kind === "add" && o.file === ev.file && o.raw.trim() === jobKey);
+        if (!readdedJob) {
+          pushDiff(findings, ev.file, ev.line, "diff-ci-safety-gate-removed", `Removed CI job '${jobKey.slice(0, -1)}' from ${ev.file} in diff.`, "Keep all verification jobs active in CI workflows.");
+        }
+      }
       if (/tsconfig(?:\.[^/]+)?\.json$/i.test(lower) && /"(?:strict|strictNullChecks|noImplicitAny|exactOptionalPropertyTypes)"\s*:\s*true/.test(ev.raw)) {
         const readded = events.some((o) => o.kind === "add" && o.file === ev.file && /"(?:strict|strictNullChecks|noImplicitAny|exactOptionalPropertyTypes)"\s*:\s*true/.test(o.raw));
         if (!readded) pushDiff(findings, ev.file, ev.line, "diff-config-strictness-downgrade", "Removed TypeScript strictness flag from tsconfig in diff.", "Keep TypeScript strict compiler flags enabled.");
@@ -223,6 +260,17 @@ export function auditDiffAntiEvasion(
       pushDiff(findings, file, 1, "diff-config-strictness-downgrade", `Removed ${delCount - addCount} CODEOWNERS protection rule(s) in ${file}.`, "Keep CODEOWNERS control-plane ownership intact.");
     }
   }
+  for (const [file, delCount] of lawsDelCount.entries()) {
+    const addCount = lawsAddCount.get(file) ?? 0;
+    if (delCount > addCount) {
+      pushDiff(findings, file, 1, "diff-config-strictness-downgrade", `Removed ${delCount - addCount} declared law(s) from ${file}.`, "Keep declared laws intact; never prune laws to make checks pass.");
+    }
+  }
+  for (const file of fileHasDel) {
+    if (!fileHasAdd.has(file) && /(?:^|\/)\.verification\/(?:control-plan\.json|rungs\.json|invariants\.json|laws\/[^/]+)$/i.test(file)) {
+      pushDiff(findings, file, 1, "diff-config-strictness-downgrade", `Deleted verification artifact '${file}' in diff.`, `Restore '${file}' instead of deleting verification control-plane artifacts.`);
+    }
+  }
   for (const [file, delInfo] of testDeletedAsserts.entries()) {
     const addedCount = testAddedAsserts.get(file) ?? 0;
     const weakAdded = testAddedWeakAsserts.get(file) ?? 0;
@@ -253,17 +301,44 @@ function collectReferencedScriptsAndFiles(commands: readonly string[], pkgScript
         }
       }
     }
-    for (const m of cmd.matchAll(/\b(?:node|bun)\s+(scripts\/[^\s"']+\.[cm]?[jt]s)/g)) {
+    for (const m of cmd.matchAll(/\b(?:node|bun)\s+(?:\.\/)?(scripts\/[^\s"']+\.[cm]?[jt]s)/g)) {
       if (m[1]) localScripts.add(m[1]);
     }
   }
   return { scripts, localScripts };
 }
 
+const MONOTONIC_UPGRADE_FLAGS = new Set([
+  "--max-mutants",
+  "--min-kill-rate",
+  "--threshold-efficacy",
+  "--timeout",
+]);
+
+function isStrictCommandWeakening(baseCmd: string, headCmd: string): boolean {
+  if (headCmd === baseCmd) return false;
+  const baseTokens = baseCmd.trim().split(/\s+/).filter(Boolean);
+  const headTokens = headCmd.trim().split(/\s+/).filter(Boolean);
+  const headSet = new Set(headTokens);
+  for (let i = 0; i < baseTokens.length; i++) {
+    const tok = baseTokens[i] ?? "";
+    if (headSet.has(tok)) continue;
+    const prev = i > 0 ? (baseTokens[i - 1] ?? "") : "";
+    if (MONOTONIC_UPGRADE_FLAGS.has(prev)) {
+      const hIdx = headTokens.indexOf(prev);
+      const baseNum = Number(tok);
+      const headNum = hIdx >= 0 ? Number(headTokens[hIdx + 1]) : Number.NaN;
+      if (Number.isFinite(baseNum) && Number.isFinite(headNum) && headNum >= baseNum) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 export function auditManifestDowngrade(
   repoRoot: string,
   baseRef: string,
-  options: { failClosedOnMissingBase?: boolean } = {},
+  options: { failClosedOnMissingBase?: boolean; downgradeOnly?: boolean } = {},
 ): Finding[] {
   const makeErr = (id: string, file: string, msg: string): Finding => ({
     id: `DIFF:manifest:${id}`, rule: "diff-manifest-downgrade", category: "cheat", rung: "R0", severity: "error", file, line: 1, message: msg,
@@ -302,15 +377,23 @@ export function auditManifestDowngrade(
       const headEntry = head.rungs?.[rung as RungId];
       if (!headEntry) { findings.push(makeErr(`drop-${rung}`, ".verification/rungs.json", `Removed rung ${rung} from .verification/rungs.json vs ${baseRef}.`)); continue; }
       if (baseEntry.required !== false && headEntry.required === false) findings.push(makeErr(`req-${rung}`, ".verification/rungs.json", `Downgraded rung ${rung} required=true -> false vs ${baseRef}.`));
-      if (headEntry.command !== baseEntry.command) findings.push(makeErr(`cmd-${rung}`, ".verification/rungs.json", `Modified rung ${rung} verification command vs ${baseRef}.`));
+      const cmdChanged = options.downgradeOnly ? isStrictCommandWeakening(baseEntry.command, headEntry.command) : headEntry.command !== baseEntry.command;
+      if (cmdChanged) findings.push(makeErr(`cmd-${rung}`, ".verification/rungs.json", `Modified rung ${rung} verification command vs ${baseRef}.`));
       if (baseEntry.canary?.enabled && !headEntry.canary?.enabled) findings.push(makeErr(`canary-off-${rung}`, ".verification/rungs.json", `Disabled planted-fault canary on rung ${rung} vs ${baseRef}.`));
       if (baseEntry.canary?.enabled && headEntry.canary?.enabled) {
         if ((headEntry.canary.minKillRate ?? 0.8) < (baseEntry.canary.minKillRate ?? 0.8)) findings.push(makeErr(`canary-rate-${rung}`, ".verification/rungs.json", `Lowered canary minKillRate on ${rung} vs ${baseRef}.`));
         if ((headEntry.canary.maxMutants ?? 6) < (baseEntry.canary.maxMutants ?? 6)) findings.push(makeErr(`canary-mut-${rung}`, ".verification/rungs.json", `Lowered canary maxMutants on ${rung} vs ${baseRef}.`));
-        if ((headEntry.canary.testCommand ?? "") !== (baseEntry.canary.testCommand ?? "")) findings.push(makeErr(`canary-cmd-${rung}`, ".verification/rungs.json", `Modified canary.testCommand on ${rung} vs ${baseRef}.`));
+        const cBase = baseEntry.canary.testCommand ?? "";
+        const cHead = headEntry.canary.testCommand ?? "";
+        const canaryCmdChanged = options.downgradeOnly ? isStrictCommandWeakening(cBase, cHead) : cHead !== cBase;
+        if (canaryCmdChanged) findings.push(makeErr(`canary-cmd-${rung}`, ".verification/rungs.json", `Modified canary.testCommand on ${rung} vs ${baseRef}.`));
+        const baseTargets = new Set(baseEntry.canary.targets ?? []);
         const headTargets = new Set(headEntry.canary.targets ?? []);
-        for (const t of baseEntry.canary.targets ?? []) {
+        for (const t of baseTargets) {
           if (!headTargets.has(t)) findings.push(makeErr(`canary-target-${rung}-${t}`, ".verification/rungs.json", `Removed canary target '${t}' on ${rung} vs ${baseRef}.`));
+        }
+        if (!options.downgradeOnly && headTargets.size > baseTargets.size) {
+          findings.push(makeErr(`canary-dilute-${rung}`, ".verification/rungs.json", `Added unreviewed canary target(s) on ${rung} vs ${baseRef} (risks diluting per-file mutation coverage).`));
         }
       }
     }
@@ -328,14 +411,17 @@ export function auditManifestDowngrade(
         const headScripts = headPkg.scripts ?? {};
         const refs = collectReferencedScriptsAndFiles(baseCmds, baseScripts);
         for (const sName of refs.scripts) {
-          if (headScripts[sName] !== baseScripts[sName]) {
+          const changed = options.downgradeOnly
+            ? isStrictCommandWeakening(baseScripts[sName] ?? "", headScripts[sName] ?? "")
+            : headScripts[sName] !== baseScripts[sName];
+          if (changed) {
             findings.push(makeErr(`pkg-script-${sName}`, "package.json", `Modified rung-referenced package.json script '${sName}' vs ${baseRef}.`));
           }
         }
         for (const relScript of refs.localScripts) {
           const baseSc = spawnSync("git", ["-C", repoRoot, "show", `${baseRef}:${relScript}`], { encoding: "utf8" });
           const headScPath = path.join(repoRoot, relScript);
-          if (baseSc.status === 0 && (!fs.existsSync(headScPath) || fs.readFileSync(headScPath, "utf8") !== baseSc.stdout)) {
+          if (baseSc.status === 0 && (!fs.existsSync(headScPath) || (!options.downgradeOnly && fs.readFileSync(headScPath, "utf8") !== baseSc.stdout))) {
             findings.push(makeErr(`gate-script-${relScript}`, relScript, `Modified or deleted rung-referenced gate script '${relScript}' vs ${baseRef}.`));
           }
         }

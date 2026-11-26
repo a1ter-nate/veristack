@@ -74,6 +74,8 @@ function inspectVarUsageAfter(after: string, varName: string): { isGuarded: bool
         /\bif\s*\(\s*!?\s*$/.test(beforeSlice) ||
         /(?:&&|\|\|)\s*!?\s*$/.test(beforeSlice) ||
         /\b(?:is|has)[A-Z][A-Za-z0-9_]*\s*\(\s*$/.test(beforeSlice) ||
+        /\b(?:invariant|assert|assertDefined|assertNotNull|expectDefined|check)\s*\(\s*$/.test(beforeSlice) ||
+        /\btypeof\s+$/.test(beforeSlice) ||
         /^\s*(?:&&|\?(?!\?|\.))/.test(afterSlice) ||
         (/!\s*$/.test(beforeSlice) && /^\s*\|\|/.test(afterSlice))
       ) {
@@ -183,22 +185,27 @@ function mineRouteAuthBeliefs(files: readonly ScannedFile[], findings: Finding[]
   const routeGroups = new Map<string, ScannedFile[]>();
   for (const file of files) {
     const dir = path.posix.dirname(file.rel);
-    if (!ROUTE_DIR_RE.test(dir)) continue;
     const base = path.posix.basename(file.rel, path.posix.extname(file.rel));
-    if (PUBLIC_ROUTE_FILE.test(base)) continue;
-    const list = routeGroups.get(dir) ?? [];
+    const appApiMatch = /^((?:.*\/)?app\/api)\/[^/]+$/i.exec(dir);
+    const groupKey = appApiMatch?.[1] && base === "route" ? appApiMatch[1] : dir;
+    if (!ROUTE_DIR_RE.test(groupKey)) continue;
+    const segName = appApiMatch?.[1] && base === "route" ? path.posix.basename(dir) : base;
+    if (PUBLIC_ROUTE_FILE.test(segName)) continue;
+    const list = routeGroups.get(groupKey) ?? [];
     list.push(file);
-    routeGroups.set(dir, list);
+    routeGroups.set(groupKey, list);
   }
 
   for (const [dir, group] of routeGroups.entries()) {
     if (group.length < 4) continue;
     const tokenPresence = new Map<string, Set<string>>();
+    const anyAuthFiles = new Set<string>();
     for (const file of group) {
       const masked = maskCode(file.content, file.language);
       for (const m of masked.matchAll(AUTH_GUARD_TOKEN)) {
         const tok = m[1] ?? "";
         if (!tok) continue;
+        anyAuthFiles.add(file.rel);
         const set = tokenPresence.get(tok) ?? new Set<string>();
         set.add(file.rel);
         tokenPresence.set(tok, set);
@@ -215,8 +222,8 @@ function mineRouteAuthBeliefs(files: readonly ScannedFile[], findings: Finding[]
     }
     if (!dominantToken) continue;
 
-    const missing = group.filter((f) => !dominantFiles.has(f.rel));
-    if (!isStatisticallyDeviant(dominantFiles.size, missing.length)) continue;
+    const missing = group.filter((f) => !anyAuthFiles.has(f.rel));
+    if (!isStatisticallyDeviant(anyAuthFiles.size, missing.length)) continue;
 
     for (const outlier of missing) {
       push(

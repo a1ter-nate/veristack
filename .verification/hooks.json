@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "tier": "immediate",
+  "harnesses": [
+    "claude",
+    "codex",
+    "cursor"
+  ]
+}

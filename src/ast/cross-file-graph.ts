@@ -107,9 +107,13 @@ function analyzeTsCrossFileGraph(repo: DiscoveredRepo, findings: Finding[]): voi
         }
       }
       if ((stmt.type === "ExportAllDeclaration" || stmt.type === "ExportNamedDeclaration") && stmt.exportKind !== "type" && isAstNode(stmt.source) && typeof stmt.source.value === "string") {
-        const resolved = resolveImport(file.rel, stmt.source.value, allPaths);
-        if (resolved && resolved !== file.rel) {
-          edges.push({ target: resolved, line: lineOf(file.content, stmt.start ?? 0) });
+        const specs = Array.isArray(stmt.specifiers) ? stmt.specifiers : [];
+        const allTypeExportSpecs = stmt.type === "ExportNamedDeclaration" && specs.length > 0 && specs.every((s) => isAstNode(s) && s.exportKind === "type");
+        if (!allTypeExportSpecs) {
+          const resolved = resolveImport(file.rel, stmt.source.value, allPaths);
+          if (resolved && resolved !== file.rel) {
+            edges.push({ target: resolved, line: lineOf(file.content, stmt.start ?? 0) });
+          }
         }
       }
 

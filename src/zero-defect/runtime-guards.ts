@@ -423,6 +423,9 @@ export function analyzeRuntimeGuards(file: ScannedFile): Finding[] {
     if (/\b(?:AbortController|signal\.aborted|controller\.abort|requestId|reqId|generation|genRef|seqRef|runId|latestRef|versionRef)\b/.test(body)) {
       continue;
     }
+    if (/\blet\s+(?:cancelled|canceled|ignore|ignored|active|mounted|isCurrent|disposed)\s*=\s*(?:false|true)\b/.test(body) && /\breturn\s*\(\s*\)\s*=>/.test(body)) {
+      continue;
+    }
     push(
       findings, file, raw, start, "async-effect-stale-guard", "R3", "warn",
       "Async useEffect updates state after await without AbortController or a monotonic generation guard (stale-response race).",

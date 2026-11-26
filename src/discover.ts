@@ -91,27 +91,29 @@ export function detectLanguage(rel: string): Language | undefined {
   return undefined;
 }
 
-function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStart: number; bodyEnd: number }> {
+export function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStart: number; bodyEnd: number }> {
   const spans: Array<{ attrs: string; bodyStart: number; bodyEnd: number }> = [];
-  let i = 0;
-  while (i < raw.length) {
-    if (raw.startsWith("<!--", i)) {
-      const end = raw.indexOf("-->", i + 4);
-      if (end < 0) break;
-      i = end + 3;
-      continue;
-    }
+  for (let i = 0; i < raw.length; ) {
+    if (raw.startsWith("<!--", i)) { const e = raw.indexOf("-->", i + 4); if (e < 0) break; i = e + 3; continue; }
     if (raw[i] === "<" && /^<script\b/i.test(raw.slice(i, i + 8))) {
-      const gt = raw.indexOf(">", i + 7);
-      if (gt < 0) break;
-      const attrs = raw.slice(i + 7, gt);
-      const closeMatch = /<\/script\s*>/i.exec(raw.slice(gt + 1));
-      if (!closeMatch || closeMatch.index === undefined) break;
-      const bodyStart = gt + 1;
-      const bodyEnd = bodyStart + closeMatch.index;
-      spans.push({ attrs, bodyStart, bodyEnd });
-      i = bodyEnd + closeMatch[0].length;
-      continue;
+      const gt = raw.indexOf(">", i + 7); if (gt < 0) break;
+      const attrs = raw.slice(i + 7, gt); const bodyStart = gt + 1;
+      let j = bodyStart; let q = ""; let bodyEnd = -1; let closeLen = 0;
+      while (j < raw.length) {
+        const ch = raw[j] ?? ""; const nx = raw[j + 1] ?? "";
+        if (!q) {
+          if (ch === "/" && nx === "/") { while (j < raw.length && raw[j] !== "\n") j += 1; continue; }
+          if (ch === "/" && nx === "*") { const e = raw.indexOf("*/", j + 2); j = e < 0 ? raw.length : e + 2; continue; }
+          if (ch === '"' || ch === "'" || ch === "`") { q = ch; j += 1; continue; }
+          if (ch === "<" && nx === "/") {
+            const cm = /^<\/script\s*>/i.exec(raw.slice(j, j + 16));
+            if (cm) { bodyEnd = j; closeLen = cm[0].length; break; }
+          }
+          j += 1;
+        } else { if (ch === "\\") { j += 2; continue; } if (ch === q) q = ""; j += 1; }
+      }
+      if (bodyEnd < 0) break;
+      spans.push({ attrs, bodyStart, bodyEnd }); i = bodyEnd + closeLen; continue;
     }
     i += 1;
   }

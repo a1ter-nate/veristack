@@ -28,7 +28,7 @@
       "id": "csharp-order-lifecycle-fscheck-laws",
       "invariant": "C# OrderLifecycle state machine and Roslyn analyzer invariants hold.",
       "witnessRef": "templates/csharp-reference/OrderLifecycle.Tests/OrderFormalProofTests.cs",
-      "verifyArgs": ["dotnet", "test", "templates/csharp-reference/OrderLifecycle.slnx", "--no-restore"]
+      "verifyArgs": ["dotnet", "test", "templates/csharp-reference/OrderLifecycle.slnx"]
     },
     {
       "id": "ts-zero-defect-invariants-and-anti-evasion",

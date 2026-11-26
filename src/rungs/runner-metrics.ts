@@ -1,10 +1,17 @@
-import { extractToolHead } from "./command-audit.ts";
+import { extractToolHead, parseAndValidateCommandArgv } from "./command-audit.ts";
+import type { RungId } from "../types.ts";
 
 const TEST_RUNNER_HEADS = new Set([
   "vitest", "jest", "mocha", "ava", "pytest", "phpunit", "rspec", "unittest",
   "bun test", "node --test", "dotnet test", "cargo test", "cargo nextest", "go test",
   "playwright", "cypress",
 ]);
+
+export function hasTestRunnerCommand(rung: RungId | "canary", command: string, repoRoot?: string): boolean {
+  const parsed = parseAndValidateCommandArgv(rung, command, repoRoot);
+  if (parsed.error) return false;
+  return [...detectRunnerHeads(parsed.steps)].some((h) => TEST_RUNNER_HEADS.has(h));
+}
 
 export function stripAnsi(text: string): string {
   let out = "";
@@ -61,13 +68,19 @@ export function parseRunnerTestCounts(
     if (p.found) { passed += p.sum; failed += f.sum; matched = true; }
   }
   if (heads.has("cargo nextest")) {
-    const m = /Summary\s+\[[^\]]+\]\s+(\d+)\s+tests?\s+run:\s+(\d+)\s+passed(?:,\s*(\d+)\s+failed)?/i.exec(output);
+    const m = /Summary\s+\[[^\]]+\]\s+(\d+)\s+tests?\s+run:\s+(\d+)\s+passed(?:\s*\([^)]*\))?(?:,\s*(\d+)\s+failed)?/i.exec(output);
     if (m?.[2]) { passed += Number(m[2]); failed += Number(m[3] ?? 0); matched = true; }
   }
   if (heads.has("bun test")) {
-    const p = sumMatches(output, /^\s*(\d+)\s+pass$/gm);
-    const f = sumMatches(output, /^\s*(\d+)\s+fail$/gm);
-    if (p.found || f.found) { passed += p.sum; failed += f.sum; matched = true; }
+    const tail = output.split(/\r?\n/).slice(-12).join("\n");
+    const ranLine = /Ran\s+(\d+)\s+tests?\s+across\s+\d+\s+files?/i.exec(tail);
+    const p = /^\s*(\d+)\s+pass$/m.exec(tail);
+    const f = /^\s*(\d+)\s+fail$/m.exec(tail);
+    if (ranLine && (p || f)) {
+      passed += Number(p?.[1] ?? 0); failed += Number(f?.[1] ?? 0); matched = true;
+    } else if (p || f) {
+      passed += Number(p?.[1] ?? 0); failed += Number(f?.[1] ?? 0); matched = true;
+    }
   }
   if (heads.has("node --test")) {
     const p = sumMatches(output, /^\s*(?:ℹ|#)\s*pass\s+(\d+)\s*$/gm);
@@ -80,7 +93,7 @@ export function parseRunnerTestCounts(
     if (p.found || f.found) { passed += p.sum; failed += f.sum; matched = true; }
   }
   if (heads.has("pytest")) {
-    const summaryLines = output.split(/\r?\n/).filter((l) => /^=+\s+.*(?:passed|failed|error).*=+$|^\s*\d+\s+(?:passed|failed)\b.*\bin\s+\d/i.test(l.trim()));
+    const summaryLines = output.split(/\r?\n/).filter((l) => /^=+\s+.*(?:passed|failed|error).*=+$|^\s*\d+\s+(?:passed|failed|errors?)\b.*\bin\s+\d/i.test(l.trim()));
     const scope = summaryLines.join("\n");
     const p = sumMatches(scope, /\b(\d+)\s+passed\b/gi);
     const f = sumMatches(scope, /\b(\d+)\s+(?:failed|errors?)\b/gi);
@@ -104,11 +117,21 @@ export function parseRunnerTestCounts(
     }
   }
   if (heads.has("dotnet test")) {
-    const p = sumMatches(output, /\bPassed:\s*(\d+)/gi);
-    const f = sumMatches(output, /\bFailed:\s*(\d+)/gi);
+    const p = sumMatches(output, /\b(?:Passed|succeeded):\s*(\d+)/gi);
+    const f = sumMatches(output, /\b(?:Failed|failed):\s*(\d+)/gi);
     if (p.found || f.found) { passed += p.sum; failed += f.sum; matched = true; }
   }
   if (heads.has("go test")) {
+    let jsonPass = 0; let jsonFail = 0;
+    for (const line of output.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t.startsWith("{") || !t.endsWith("}")) continue;
+      try {
+        const ev = JSON.parse(t) as { Action?: string; Test?: string };
+        if (ev.Test && ev.Action === "pass") jsonPass += 1;
+        else if (ev.Test && ev.Action === "fail") jsonFail += 1;
+      } catch { continue; }
+    }
     const goVerbose = (output.match(/^---\s+PASS:/gm) ?? []).length;
     const goVerboseFail = (output.match(/^---\s+FAIL:/gm) ?? []).length;
     let goPkg = 0;
@@ -116,7 +139,9 @@ export function parseRunnerTestCounts(
       if (/^ok\s+\S+/.test(line) && !/\[no tests to run\]/i.test(line)) goPkg += 1;
     }
     const goFail = (output.match(/^FAIL\s+\S+/gm) ?? []).length;
-    if (goVerbose > 0 || goPkg > 0 || goFail > 0 || goVerboseFail > 0) {
+    if (jsonPass > 0 || jsonFail > 0) {
+      passed += jsonPass; failed += jsonFail; matched = true;
+    } else if (goVerbose > 0 || goPkg > 0 || goFail > 0 || goVerboseFail > 0) {
       passed += goVerbose > 0 ? goVerbose : goPkg;
       failed += Math.max(goFail, goVerboseFail);
       matched = true;
@@ -146,9 +171,15 @@ export function parseRunnerTestCounts(
       matched = true;
     }
   }
-  if (heads.has("playwright") || heads.has("cypress")) {
-    const p = sumMatches(output, /\b(\d+)\s+passed\b/gi);
-    const f = sumMatches(output, /\b(\d+)\s+failed\b/gi);
+  if (heads.has("playwright")) {
+    const tail = output.split(/\r?\n/).slice(-15).join("\n");
+    const p = sumMatches(tail, /^\s*(\d+)\s+passed\s*\(/gm);
+    const f = sumMatches(tail, /^\s*(\d+)\s+failed\b/gm);
+    if (p.found || f.found) { passed += p.sum; failed += f.sum; matched = true; }
+  }
+  if (heads.has("cypress")) {
+    const p = sumMatches(output, /^\s*(\d+)\s+passing\b|\bPassing:\s*(\d+)/gm);
+    const f = sumMatches(output, /^\s*(\d+)\s+failing\b|\bFailing:\s*(\d+)/gm);
     if (p.found || f.found) { passed += p.sum; failed += f.sum; matched = true; }
   }
   return { passed, failed, matched, hasTestRunner };

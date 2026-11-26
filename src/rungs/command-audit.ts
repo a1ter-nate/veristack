@@ -3,6 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RungId } from "../types.ts";
+import { auditRunnerConfigs, scrubChildEnv } from "./config-audit.ts";
+
+export { scrubChildEnv };
 
 const SHELL_META_UNQUOTED = /[;|><$`(){}\n\r~]/;
 const FORBIDDEN_VERBS = new Set([
@@ -37,7 +40,11 @@ const PATH_VALUE_FLAGS = s(
   "--output", "--coverprofile", "--corpus", "--replay", "--baseline", "-s", "-t",
 );
 const REPORTER_VALUE_FLAGS = s("--reporter", "--reporters", "--test-reporter", "-f", "--format");
-const BUILTIN_REPORTER_NAME = /^[a-z][a-z0-9_,-]*$/i;
+const BUILTIN_REPORTERS = s(
+  "default", "verbose", "dot", "json", "junit", "tap", "spec", "nyan", "min", "list",
+  "line", "html", "github-actions", "trx", "console", "basic", "hanging-process", "blob",
+  "stylish", "compact", "unix", "checkstyle", "sarif", "progress", "documentation", "lcov",
+);
 
 const RUNNER_SCHEMAS: Record<string, RunnerFlagSchema> = {
   oxlint: { boolFlags: s("--deny-warnings", "--quiet", "--fix-suggestions", "--type-aware"), valueFlags: s("-c", "--config", "-f", "--format", "-D") },
@@ -121,21 +128,14 @@ const ALLOWED_TOOL_PREFIXES: Record<RungId | "canary", readonly RegExp[]> = {
   canary: [/^(?:vitest|jest|mocha|ava|pytest|phpunit|rspec|xunit|nunit|ctest|unittest)$/, /^(?:bun\s+test|node\s+--test|dotnet\s+test|cargo\s+(?:test|nextest)|go\s+test|(?:bun|node)\s+\S+\.(?:test|spec)\.[cm]?[jt]sx?)$/],
 };
 
-const ALLOWED_VSTACK_SUBCMDS = s(
-  "scan", "verify", "run-rung", "canary", "perimeter", "crap", "oracle-check",
-  "no-comments", "state-machines", "diff-cheats", "formal-sync", "laws", "bench", "big-o", "spc",
-);
-const VSTACK_REQUIRES_FAIL = s("canary", "formal-sync", "laws", "bench", "no-comments", "state-machines", "perimeter", "crap", "diff-cheats", "big-o", "spc");
-
-export function scrubChildEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const clean: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(baseEnv)) {
-    if (v === undefined || k === "VSTACK_RECEIPT_KEY" || k.startsWith("VSTACK_") || k === "GITHUB_TOKEN" || k === "GH_TOKEN" || k === "NPM_TOKEN" || k === "NODE_AUTH_TOKEN" || k.startsWith("ACTIONS_ID_TOKEN_") || k === "ACTIONS_RUNTIME_TOKEN" || k === "FORCE_COLOR" || k === "CLICOLOR_FORCE") continue;
-    clean[k] = v;
-  }
-  clean.NO_COLOR = "1";
-  return clean;
-}
+const ALLOWED_VSTACK_BY_RUNG: Record<RungId | "canary", ReadonlySet<string>> = {
+  R0: s("no-comments", "state-machines", "perimeter", "doctor", "bench", "diff-cheats"),
+  R1: s("state-machines", "diff-cheats", "no-comments"), R2: s("canary", "oracle-check"),
+  R3: s("formal-sync", "laws", "oracle-check"), R4: s("formal-sync", "oracle-check"),
+  R5: s("canary", "formal-sync", "laws", "crap", "oracle-check"), R6: s("big-o", "spc"),
+  R7: s("oracle-check"), R8: s("spc"), canary: s("canary"),
+};
+const VSTACK_REQUIRES_FAIL = s("canary", "formal-sync", "laws", "bench", "no-comments", "state-machines", "perimeter", "crap", "diff-cheats", "big-o", "spc", "doctor");
 
 function stripShellComment(line: string): string {
   let inSingle = false; let inDouble = false;
@@ -229,33 +229,17 @@ function readPackageScripts(dir?: string): Record<string, string> {
 
 function isPathInsideRepo(candidate: string, repoRoot: string): boolean {
   const absRoot = (() => { try { return fs.realpathSync(path.resolve(repoRoot)); } catch { return path.resolve(repoRoot); } })();
-  const res = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(absRoot, candidate);
+  const raw = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(absRoot, candidate);
+  let res = raw;
+  try { res = fs.realpathSync(raw); } catch {
+    try { res = path.join(fs.realpathSync(path.dirname(raw)), path.basename(raw)); } catch { res = raw; }
+  }
   return res === absRoot || res.startsWith(`${absRoot}${path.sep}`);
 }
 
 function isOwnVeristackBin(repoRoot: string, relBin: string): boolean {
   try { return fs.realpathSync(path.join(repoRoot, relBin)) === fs.realpathSync(path.join(VERISTACK_ROOT_REALPATH, relBin)); }
   catch { return false; }
-}
-
-function auditBunfigToml(repoRoot: string): string | null {
-  const bunfig = path.join(repoRoot, "bunfig.toml");
-  if (!fs.existsSync(bunfig)) return null;
-  try {
-    let section = "";
-    for (const line of fs.readFileSync(bunfig, "utf8").split(/\r?\n/)) {
-      const cleaned = line.replace(/#.*$/, "").trim();
-      if (!cleaned) continue;
-      const sec = /^\[([^\]]+)\]$/.exec(cleaned);
-      if (sec?.[1]) { section = sec[1].trim().replace(/^["']|["']$/g, "").toLowerCase(); continue; }
-      const kv = /^["']?([A-Za-z0-9_.-]+)["']?\s*=/.exec(cleaned);
-      if (!kv?.[1]) continue;
-      const key = kv[1].toLowerCase();
-      if (key === "preload" || key.endsWith(".preload")) return "bunfig.toml declares 'preload', which can intercept test runners.";
-      if ((section === "test" && key === "root") || key === "test.root") return "bunfig.toml overrides [test].root, which can redirect test discovery.";
-    }
-    return null;
-  } catch { return "unreadable bunfig.toml."; }
 }
 
 export function extractToolHead(tokens: readonly string[], repoRoot?: string): { head: string; toolArgs: string[]; error?: string } {
@@ -280,16 +264,20 @@ export function extractToolHead(tokens: readonly string[], repoRoot?: string): {
   if (low0 === "bun" && tokens[1] === "--cwd" && tokens[2] && tokens[3]) {
     if (repoRoot && !isPathInsideRepo(tokens[2], repoRoot)) return { head: "", toolArgs: [], error: `--cwd '${tokens[2]}' escapes repo root` };
     const sub = tokens[3].toLowerCase();
-    return { head: `bun ${sub}`, toolArgs: tokens.slice(4) };
+    if (sub === "test") return { head: "", toolArgs: [], error: "bun --cwd <dir> test invokes <dir>/package.json script 'test' (use 'bun test <dir>' or expand script)" };
+    return extractToolHead([t0, ...tokens.slice(3)], repoRoot);
   }
   if (low0 === "pnpm" && (tokens[1] === "--filter" || tokens[1] === "-F") && tokens[2] && tokens[3]) {
     const sub = tokens[3].toLowerCase();
-    return { head: sub === "exec" && tokens[4] ? tokens[4].toLowerCase() : sub, toolArgs: tokens.slice(sub === "exec" ? 5 : 4) };
+    if (sub !== "exec" || !tokens[4]) {
+      return { head: "", toolArgs: [], error: `pnpm ${tokens[1]} requires 'exec <tool>' or an expanded workspace script` };
+    }
+    return extractToolHead(tokens.slice(4), repoRoot);
   }
   if ((low0 === "pnpm" || low0 === "yarn") && (tokens[1] ?? "").toLowerCase() === "exec") {
     const bin = (tokens[2] ?? "").toLowerCase();
     if (!bin || bin.includes("/") || bin.includes("\\") || FORBIDDEN_VERBS.has(bin)) return { head: "", toolArgs: [], error: `disallowed exec target '${bin}'` };
-    return { head: bin, toolArgs: tokens.slice(3) };
+    return extractToolHead(tokens.slice(2), repoRoot);
   }
   if ((low0 === "uv" || low0 === "poetry" || low0 === "pipenv") && (tokens[1] ?? "").toLowerCase() === "run") {
     let i = 2;
@@ -307,7 +295,7 @@ export function extractToolHead(tokens: readonly string[], repoRoot?: string): {
     }
     const bin = (tokens[i] ?? "").toLowerCase();
     if (!bin || bin.includes("/") || bin.includes("\\") || FORBIDDEN_VERBS.has(bin)) return { head: "", toolArgs: [], error: `disallowed ${low0} run target '${bin}'` };
-    return { head: bin, toolArgs: tokens.slice(i + 1) };
+    return extractToolHead(tokens.slice(i), repoRoot);
   }
   if ((low0 === "python" || low0 === "python3") && tokens[1] === "-m" && tokens[2]) return { head: tokens[2].toLowerCase(), toolArgs: tokens.slice(3) };
   if (low0 === "cargo" && (tokens[1] ?? "").startsWith("+") && tokens[2]) return { head: `cargo ${tokens[2].toLowerCase()}`, toolArgs: tokens.slice(3) };
@@ -370,12 +358,17 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
     if (schema.valueFlags.has(flagName)) {
       const val = inlineVal ?? toolArgs[i + 1];
       if (!val || (inlineVal === undefined && val.startsWith("-"))) return `flag '${flagName}' on '${head}' requires a value`;
-      if (REPORTER_VALUE_FLAGS.has(flagName) && /^(?:vitest|jest|mocha|eslint|playwright|cypress|node --test|bun test)$/.test(head) && !BUILTIN_REPORTER_NAME.test(val)) return `disallowed reporter '${val}' on '${head}' (built-in reporters only)`;
-      if (PATH_VALUE_FLAGS.has(flagName) && !isDotnet && !(head.startsWith("cargo ") && flagName === "-p") && !(head === "unittest" && flagName === "-p") && repoRoot && (val.startsWith("/") || val.includes("..")) && !isPathInsideRepo(val, repoRoot)) return `path flag '${flagName}=${val}' on '${head}' escapes repo root`;
+      if (REPORTER_VALUE_FLAGS.has(flagName) && /^(?:vitest|jest|mocha|eslint|playwright|cypress|node --test|bun test)$/.test(head)) {
+        const repParts = val.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+        if (repParts.length === 0 || repParts.some((r) => !BUILTIN_REPORTERS.has(r))) return `disallowed reporter '${val}' on '${head}' (built-in reporters only)`;
+      }
+      if (PATH_VALUE_FLAGS.has(flagName) && !(isDotnet && (flagName === "-c" || flagName === "--configuration")) && !(head.startsWith("cargo ") && flagName === "-p") && !(head === "unittest" && flagName === "-p") && repoRoot && !isPathInsideRepo(val, repoRoot)) return `path flag '${flagName}=${val}' on '${head}' escapes repo root`;
       if (head === "go test" && flagName === "-count" && !(Number(val) >= 1)) return `go test -count must be >= 1 (got '${val}')`;
       if (head === "bun test" && flagName === "--rerun-each" && !(Number(val) >= 1)) return `bun test --rerun-each must be >= 1 (got '${val}')`;
       if (head === "eslint" && flagName === "--max-warnings" && !(Number(val) === 0)) return `eslint --max-warnings must be 0 (got '${val}')`;
       if (head === "pytest" && flagName === "--cov-fail-under" && !(Number(val) >= 1)) return `pytest --cov-fail-under must be >= 1 (got '${val}')`;
+      if (head === "gremlins" && flagName === "--threshold-efficacy" && !(Number(val) >= 75)) return `gremlins --threshold-efficacy must be >= 75 (got '${val}')`;
+      if (schemaKey === "vstack" && flagName === "--max-mutants" && !(Number(val) >= 4)) return `--max-mutants must be >= 4 (got '${val}')`;
       if (schemaKey === "vstack" && flagName === "--min-kill-rate" && !(Number(val) >= 0.75)) return `--min-kill-rate must be >= 0.75 (got '${val}')`;
       if (schemaKey === "vstack" && flagName === "--max-crap" && !(Number(val) > 0 && Number(val) <= 30)) return `--max-crap must be in (0, 30] (got '${val}')`;
       if (schemaKey === "vstack" && flagName === "--max-time-exp" && !(Number(val) > 0 && Number(val) <= 1.8)) return `--max-time-exp must be in (0, 1.8] (got '${val}')`;
@@ -393,11 +386,11 @@ export function parseAndValidateCommandArgv(
   repoRoot?: string,
 ): { steps: string[][]; error?: string } {
   if (repoRoot) {
-    const bunfigErr = auditBunfigToml(repoRoot);
-    if (bunfigErr) return { steps: [], error: `Rung ${rung}: ${bunfigErr}` };
+    const cfgErr = auditRunnerConfigs(repoRoot);
+    if (cfgErr) return { steps: [], error: `Rung ${rung}: ${cfgErr}` };
   }
   const scripts = readPackageScripts(repoRoot);
-  const expand = (cmd: string, visiting: Set<string>): { steps: string[][]; error?: string } => {
+  const expand = (cmd: string, visiting: Set<string>, cwdDir = repoRoot): { steps: string[][]; error?: string } => {
     const split = splitAndChainStrict(cmd.trim());
     if (split.error) return { steps: [], error: split.error };
     if (split.parts.length === 0) return { steps: [], error: "empty command" };
@@ -407,23 +400,35 @@ export function parseAndValidateCommandArgv(
       const low1 = (seg[1] ?? "").toLowerCase();
       let scriptName: string | undefined;
       let extraArgs: string[] = [];
-      if ((low0 === "bun" || low0 === "npm" || low0 === "pnpm" || low0 === "yarn") && low1 === "run" && seg[2]) {
+      let targetDir = cwdDir;
+      let targetScripts = cwdDir === repoRoot ? scripts : readPackageScripts(cwdDir);
+      if (low0 === "bun" && seg[1] === "--cwd" && seg[2] && seg[3]) {
+        if (repoRoot && !isPathInsideRepo(seg[2], repoRoot)) return { steps: [], error: `--cwd '${seg[2]}' escapes repo root` };
+        const subDir = repoRoot ? path.resolve(repoRoot, seg[2]) : seg[2];
+        const subCfgErr = auditRunnerConfigs(subDir);
+        if (subCfgErr) return { steps: [], error: subCfgErr };
+        const subScripts = readPackageScripts(subDir);
+        const subCmd = seg[3].toLowerCase();
+        if (subCmd === "run" && seg[4]) { scriptName = seg[4]; extraArgs = seg.slice(5); targetDir = subDir; targetScripts = subScripts; }
+        else if (subCmd === "test" && subScripts.test) { scriptName = "test"; extraArgs = seg.slice(4); targetDir = subDir; targetScripts = subScripts; }
+      } else if ((low0 === "bun" || low0 === "npm" || low0 === "pnpm" || low0 === "yarn") && low1 === "run" && seg[2]) {
         scriptName = seg[2]; extraArgs = seg.slice(3);
       } else if ((low0 === "npm" || low0 === "pnpm" || low0 === "yarn") && low1 === "test") {
         scriptName = "test"; extraArgs = seg.slice(2);
-      } else if ((low0 === "pnpm" || low0 === "yarn") && seg[1] && scripts[seg[1]]) {
+      } else if ((low0 === "pnpm" || low0 === "yarn") && seg[1] && targetScripts[seg[1]]) {
         scriptName = seg[1]; extraArgs = seg.slice(2);
       }
       if (scriptName) {
         if (extraArgs.length > 0) return { steps: [], error: `trailing args on script '${scriptName}' are forbidden` };
-        const body = scripts[scriptName];
+        const body = targetScripts[scriptName];
         if (!body) return { steps: [], error: `unknown package.json script '${scriptName}'` };
-        if (visiting.has(scriptName)) return { steps: [], error: `cyclic package.json script '${scriptName}'` };
-        const nextVisiting = new Set(visiting); nextVisiting.add(scriptName);
+        const visitKey = `${targetDir ?? ""}:${scriptName}`;
+        if (visiting.has(visitKey)) return { steps: [], error: `cyclic package.json script '${scriptName}'` };
+        const nextVisiting = new Set(visiting); nextVisiting.add(visitKey);
         for (const hook of [`pre${scriptName}`, scriptName, `post${scriptName}`]) {
-          const hookBody = hook === scriptName ? body : scripts[hook];
+          const hookBody = hook === scriptName ? body : targetScripts[hook];
           if (!hookBody) continue;
-          const sub = expand(hookBody, nextVisiting);
+          const sub = expand(hookBody, nextVisiting, targetDir);
           if (sub.error) return { steps: [], error: hook === scriptName ? sub.error : `lifecycle hook '${hook}': ${sub.error}` };
           out.push(...sub.steps);
         }
@@ -449,7 +454,7 @@ export function parseAndValidateCommandArgv(
     if (argErr) return { steps: [], error: `Rung ${rung}: ${argErr}` };
     if (head === "vstack" || head === "node bin/vstack.mjs" || head === "bun src/cli.ts") {
       const sub = (toolArgs[0] ?? "").toLowerCase();
-      if (!ALLOWED_VSTACK_SUBCMDS.has(sub)) return { steps: [], error: `Rung ${rung}: disallowed vstack subcommand '${sub}'.` };
+      if (!ALLOWED_VSTACK_BY_RUNG[rung].has(sub)) return { steps: [], error: `Rung ${rung}: disallowed vstack subcommand '${sub}' for ${rung}.` };
       if (VSTACK_REQUIRES_FAIL.has(sub) && !toolArgs.includes("--fail")) return { steps: [], error: `Rung ${rung}: vstack ${sub} must include --fail.` };
     }
     if (head === "pytest" && rung === "R6" && !toolArgs.includes("--benchmark-only") && !toolArgs.includes("--benchmark-enable")) {

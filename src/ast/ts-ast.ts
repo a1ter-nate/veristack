@@ -28,8 +28,40 @@ export function walkAst(node: AstNode, visit: (current: AstNode, parent: AstNode
   }
 }
 
+export function hasPathologicalNesting(source: string): boolean {
+  if (source.length > 2_097_152) return true;
+  let depth = 0;
+  let unaryRun = 0;
+  let bsRun = 0;
+  for (let i = 0; i < source.length; i++) {
+    const c = source.charCodeAt(i);
+    if (c === 40 || c === 91 || c === 123) {
+      depth += 1;
+      if (depth > 128) return true;
+      unaryRun = 0;
+      bsRun = 0;
+    } else if (c === 41 || c === 93 || c === 125) {
+      if (depth > 0) depth -= 1;
+      unaryRun = 0;
+      bsRun = 0;
+    } else if (c === 33 || c === 126 || c === 43 || c === 45) {
+      unaryRun += 1;
+      if (unaryRun > 128) return true;
+      bsRun = 0;
+    } else if (c === 92) {
+      bsRun += 1;
+      if (bsRun > 256) return true;
+    } else if (c !== 32 && c !== 9 && c !== 10 && c !== 13) {
+      unaryRun = 0;
+      bsRun = 0;
+    }
+  }
+  return false;
+}
+
 export function parseTsAst(file: ScannedFile): AstNode | null {
   if (file.language !== "typescript" && file.language !== "javascript") return null;
+  if (hasPathologicalNesting(file.content)) return null;
   try {
     const res = parseSync(file.rel, file.content);
     if (res.errors.length > 0 || !isAstNode(res.program)) return null;

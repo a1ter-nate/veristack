@@ -41,7 +41,8 @@ function isSymmetricBoundMath(callText: string): boolean {
   const open = callText.indexOf("(");
   const comma = callText.indexOf(",", open + 1);
   if (open < 0 || comma < 0) return false;
-  const firstArg = callText.slice(open + 1, comma);
+  const firstArg = callText.slice(open + 1, comma).trim();
+  if (/^-?\d+(?:\.\d+)?$/.test(firstArg)) return true;
   const isMin = /\bMath\.(?:min|Min)\b/.test(callText.slice(0, open));
   return isMin
     ? /(?:min|Min|floor|Floor)/.test(firstArg)
@@ -179,6 +180,13 @@ function scanRustOss(file: ScannedFile, raw: string, _masked: string, findings: 
   }
 
   for (const m of prodMasked.matchAll(RUST_SELECT_NON_CANCEL)) {
+    const matchText = m[0];
+    const lastArrow = matchText.lastIndexOf("=>");
+    const lastEq = matchText.lastIndexOf("=", lastArrow >= 0 ? lastArrow - 1 : matchText.length);
+    if (lastArrow >= 0 && lastArrow > lastEq) {
+      const afterArrow = matchText.slice(lastArrow + 2);
+      if (/\.\s*(?:read_exact|read_to_end|read_to_string|write_all|send_all)\s*\(/.test(afterArrow)) continue;
+    }
     push(
       findings, file.rel, lineOf(raw, m.index ?? 0), "rust-select-non-cancel-safe", "R1", "error",
       "Non-cancel-safe async I/O method called inside select! arm — cancelling mid-operation drops buffered data or corrupts framing.",
@@ -211,26 +219,22 @@ function scanRustOss(file: ScannedFile, raw: string, _masked: string, findings: 
   }
 
   for (const m of prodMasked.matchAll(/\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;\n]+\.(?:lock|write)\s*\(\s*\)/g)) {
-    const guardName = m[1] ?? "";
-    const idx = m.index ?? 0;
-    const after = prodMasked.slice(idx + m[0].length, idx + m[0].length + 280);
+    const guardName = m[1] ?? ""; const idx = m.index ?? 0;
+    const rawAfter = prodMasked.slice(idx + m[0].length, idx + m[0].length + 280);
+    let scopeEnd = rawAfter.length; let bDepth = 0;
+    for (let k = 0; k < rawAfter.length; k++) {
+      if (rawAfter[k] === "{") bDepth += 1;
+      else if (rawAfter[k] === "}" && --bDepth < 0) { scopeEnd = k; break; }
+    }
+    const after = rawAfter.slice(0, scopeEnd);
     const dropMatch = /\bdrop\s*\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)/.exec(after);
     if (!dropMatch || dropMatch[1] === guardName) continue;
     const dropGuardIdx = after.indexOf(`drop(${guardName})`);
     if (dropGuardIdx >= 0 && dropGuardIdx < (dropMatch.index ?? 0)) continue;
-    push(
-      findings, file.rel, lineOf(raw, idx + m[0].length + (dropMatch.index ?? 0)), "rust-drop-under-lock-guard", "R1", "warn",
-      `Dropping '${dropMatch[1]}' while lock guard '${guardName}' is still held risks re-entrant deadlocks if Drop re-acquires the lock.`,
-      `Drop '${guardName}' (or move '${dropMatch[1]}' out of the lock scope) before dropping callbacks/handles/wakers.`,
-    );
+    push(findings, file.rel, lineOf(raw, idx + m[0].length + (dropMatch.index ?? 0)), "rust-drop-under-lock-guard", "R1", "warn", `Dropping '${dropMatch[1]}' while lock guard '${guardName}' is still held risks re-entrant deadlocks if Drop re-acquires the lock.`, `Drop '${guardName}' (or move '${dropMatch[1]}' out of the lock scope) before dropping callbacks/handles/wakers.`);
   }
-
   for (const m of prodMasked.matchAll(RUST_HASHMAP_ENVS)) {
-    push(
-      findings, file.rel, lineOf(raw, m.index ?? 0), "rust-hashmap-deterministic-order", "R1", "warn",
-      "Passing a HashMap into Command::envs produces non-deterministic iteration order across runs.",
-      "Use BTreeMap for deterministic ordering when emitting env vars, CLI args, or serialized snapshots.",
-    );
+    push(findings, file.rel, lineOf(raw, m.index ?? 0), "rust-hashmap-deterministic-order", "R1", "warn", "Passing a HashMap into Command::envs produces non-deterministic iteration order across runs.", "Use BTreeMap for deterministic ordering when emitting env vars, CLI args, or serialized snapshots.");
   }
 }
 
@@ -252,8 +256,10 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
     if (CS_EF_CONTEXT.test(masked)) {
       for (const m of masked.matchAll(CS_UNORDERED_SKIP)) {
         const idx = m.index ?? 0;
-        const winBefore = masked.slice(Math.max(0, idx - 220), idx);
-        const winAfter = masked.slice(idx, idx + 120);
+        const rawBefore = masked.slice(Math.max(0, idx - 220), idx);
+        const stmtStart = Math.max(rawBefore.lastIndexOf(";"), rawBefore.lastIndexOf("{"), rawBefore.lastIndexOf("}"));
+        const winBefore = stmtStart >= 0 ? rawBefore.slice(stmtStart + 1) : rawBefore;
+        const winAfter = masked.slice(idx, idx + 120).split(/[;{}]/)[0] ?? "";
         if (/\.\s*OrderBy(?:Descending)?\s*\(/.test(winBefore)) continue;
         if (!/(?:_db|db|ctx|context|Set\s*<|AsNoTracking|IQueryable|Include\s*\(|ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync)/i.test(`${winBefore}${winAfter}`)) continue;
         push(
@@ -289,8 +295,11 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
       const tail = masked.slice(idx, idx + 500);
       if (/\.Do\s*\(\s*func\b/i.test(tail) || /\bonce\.Do\s*\(/i.test(m[0])) continue;
       const lineStart = raw.lastIndexOf("\n", idx) + 1;
-      if (/^\s*return\b/.test(masked.slice(lineStart, idx))) continue;
+      const linePrefix = masked.slice(lineStart, idx);
+      if (/^\s*return\b/.test(linePrefix)) continue;
       if (/\.Body\.Close\s*\(/.test(tail)) continue;
+      const varMatch = /\b([A-Za-z_]\w*)\s*,\s*[A-Za-z_]\w*\s*:?=\s*$/.exec(linePrefix);
+      if (varMatch?.[1] && (tail.includes(`return ${varMatch[1]},`) || tail.includes(`return ${varMatch[1]} `) || tail.includes(`return ${varMatch[1]}\n`))) continue;
       push(
         findings, file.rel, lineOf(raw, idx), "go-unclosed-http-body", "R1", "error",
         "HTTP client call does not close resp.Body, leaking sockets and exhausting keep-alive pools.",

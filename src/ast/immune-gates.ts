@@ -14,8 +14,9 @@ interface ChokePointRule {
 const HEX_40 = /^[0-9a-f]{40}$/i;
 const VALID_CHOKE_LANGS = new Set(["typescript", "javascript", "csharp", "python", "rust", "go"]);
 const FETCH_TO_SHELL =
-  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-[A-Za-z]+\s+)*)?(?:sh|bash|zsh|node|python3?|perl|ruby|tee\b[^\n]*\|\s*(?:sh|bash))|\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b|\b(?:sh|bash|eval)\s+(?:-c\s+)?["']?\$\(\s*(?:curl|wget)\b/i;
-const DOWNLOAD_TO_FILE = /\b(?:curl\b[^\n]*(?:-o|--output)\s+([^\s;|&]+)|wget\b[^\n]*(?:-O|--output-document=?)\s*([^\s;|&]+))/i;
+  /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-[A-Za-z]+\s+)*)?(?:env\s+)?(?:(?:\/[\w.-]+)*\/)?(?:sh|bash|zsh|dash|ksh|node|python3?|perl|ruby|tee\b[^\n]*\|\s*(?:(?:\/[\w.-]+)*\/)?(?:sh|bash))|\b(?:bash|sh|zsh|source|\.)\s+<\(\s*(?:curl|wget)\b|\b(?:sh|bash|eval)\s+(?:-c\s+)?["']?\$\(\s*(?:curl|wget)\b/i;
+const DOWNLOAD_TO_FILE =
+  /\b(?:curl\b[^\n]*(?:-[A-Za-z]*o|--output)(?:=|\s+)([^\s;|&]+)|wget\b[^\n]*(?:-[A-Za-z]*O|--output-document)(?:=|\s+)([^\s;|&]+)|(?:curl|wget)\b[^\n]*>\s*([^\s;|&]+))/i;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -53,8 +54,10 @@ function loadChokePoints(repo: DiscoveredRepo, findings: Finding[]): ChokePointR
         Array.isArray(raw.allowPaths) &&
         raw.allowPaths.some((p) => {
           if (typeof p !== "string") return true;
-          const clean = p.trim().replace(/^\/+/, "");
-          return clean === "" || clean === "*" || clean === "**" || clean.length < 4 || (!clean.includes("/") && !clean.includes("."));
+          const clean = p.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+          const parts = clean.split("/").filter(Boolean);
+          const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(clean);
+          return clean === "" || clean.includes("*") || clean.length < 5 || (parts.length < 2 && !hasExt);
         })
       ) {
         push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} rule '${raw.pattern}' has an overly broad or invalid allowPaths entry.`, "Scope allowPaths to the exact choke-point wrapper file (e.g. 'src/db/client.ts').");
@@ -168,7 +171,7 @@ function auditRunScriptSupplyChain(file: ScannedFile, lines: readonly string[], 
   }
   if (buf) joinedLines.push(buf);
   const downloadedFiles = new Set<string>();
-  const hasChecksumVerify = /\b(?:sha256sum|shasum|openssl\s+dgst|gpg\s+--verify)\b/i.test(runScript);
+  const hasChecksumVerify = /\b(?:sha256sum\s+(?:-[A-Za-z]*c|--check)|shasum\s+-a\s+256\s+(?:-[A-Za-z]*c|--check)|sha512sum\s+(?:-[A-Za-z]*c|--check)|gpg\s+--verify)\b/i.test(runScript);
   for (const line of joinedLines) {
     if (/^\s*#/.test(line)) continue;
     if (FETCH_TO_SHELL.test(line)) {
@@ -176,13 +179,13 @@ function auditRunScriptSupplyChain(file: ScannedFile, lines: readonly string[], 
       continue;
     }
     const dl = DOWNLOAD_TO_FILE.exec(line);
-    const dlTarget = (dl?.[1] ?? dl?.[2] ?? "").replace(/^["']|["']$/g, "");
-    if (dlTarget) downloadedFiles.add(dlTarget);
+    const dlTarget = (dl?.[1] ?? dl?.[2] ?? dl?.[3] ?? "").replace(/^["']|["']$/g, "");
+    if (dlTarget && dlTarget !== "/dev/null") downloadedFiles.add(dlTarget);
     if (!hasChecksumVerify && downloadedFiles.size > 0) {
       for (const f of downloadedFiles) {
-        if (!line.includes(f) || /\b(?:curl|wget|rm)\b/.test(line)) continue;
-        if (/\b(?:sh|bash|zsh|node|python3?|chmod\s+\+x)\b/.test(line) || line.includes(`./${f}`)) {
-          push(findings, file.rel, findLineForNeedle(lines, f), "ci-curl-pipe-shell", "R0", "error", `Workflow downloads and executes '${f}' without checksum/signature verification.`, "Verify sha256sum before executing downloaded scripts or use a SHA-pinned action.");
+        if (!line.includes(f) || /^\s*(?:curl|wget|rm)\b/.test(line)) continue;
+        if (/\b(?:(?:\/[\w.-]+)*\/)?(?:sh|bash|zsh|dash|node|python3?|perl|ruby|source)\b|\bchmod\s+\+x\b/.test(line) || line.includes(`./${f}`)) {
+          push(findings, file.rel, findLineForNeedle(lines, f), "ci-curl-pipe-shell", "R0", "error", `Workflow downloads and executes '${f}' without verified checksum ('sha256sum -c' / 'gpg --verify').`, "Verify sha256sum -c against a pinned digest before executing downloaded scripts.");
         }
       }
     }

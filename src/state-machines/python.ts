@@ -7,7 +7,7 @@ const LIFECYCLE_BOOL_NAME =
 const STATE_DISCRIMINANT = /^(?:status|state|phase|stage|mode)$/;
 const CONFIG_TYPE_SUFFIX = /(?:Options|Config|Configuration|Settings|Flags|Args|Params|Props|Input|Query|Filter)$/;
 const CANONICAL_TRANSITION = /^(?:transition|reduce|apply_event|next_state|step|step_state|handle_event|__init__)$/;
-const PY_MATCH_TARGET = /^(?:(?:self\.)?[a-zA-Z_][a-zA-Z0-9_.]*\.)?(?:status|state|phase|stage|kind)$/;
+const PY_MATCH_TARGET = /^(?:(?:self\.)?[a-zA-Z_][a-zA-Z0-9_.]*\.)?_?(?:status|state|phase|stage|kind)$/;
 
 function indentOf(line: string): number {
   let count = 0;

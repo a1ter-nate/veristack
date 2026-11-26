@@ -97,6 +97,8 @@ test("Arch-2: typed positive argv grammar blocks spoofed veristack, external pat
     assert.equal(parseAndValidateCommandArgv("R2", "bun test --rerun-each=3 ./tests/", dir).error, undefined);
     assert.equal(parseAndValidateCommandArgv("R1", "tsc -b --skipLibCheck", dir).error, undefined);
     assert.equal(parseAndValidateCommandArgv("R2", "cargo test --features extra -- --nocapture", dir).error, undefined);
+    fs.mkdirSync(path.join(dir, "packages", "a"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "packages", "a", "package.json"), JSON.stringify({ scripts: { test: "bun test" } }));
     assert.equal(parseAndValidateCommandArgv("R2", "bun --cwd packages/a test", dir).error, undefined);
     assert.equal(parseAndValidateCommandArgv("R2", "pytest -n auto --cov-fail-under=80 -ra", dir).error, undefined);
     assert.equal(parseAndValidateCommandArgv("R0", "oxlint --type-aware -D correctness src", dir).error, undefined);

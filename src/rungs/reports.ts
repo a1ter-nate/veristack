@@ -272,7 +272,7 @@ function parseStructuredReports(
       if (isFreshFile(abs, rel, minM, maxM, snap)) { const score = parseStrykerJson(fs.readFileSync(abs, "utf8")); if (score !== undefined) { result.mutationScore = score; break; } }
     }
   }
-  if (!rung || rung === "R2" || rung === "R3" || rung === "R4") {
+  if (!rung || rung === "R2" || rung === "R3" || rung === "R4" || rung === "R7") {
     for (const rel of ["junit.xml", "test-results/junit.xml", "TestResults/results.trx", ".verification/junit.xml", ".verification/reports/junit.xml"]) {
       const abs = path.join(repoRoot, rel);
       if (isFreshFile(abs, rel, minM, maxM, snap)) {
@@ -425,7 +425,7 @@ export function evaluateCrapForCoverageFile(repoRoot: string, coveragePath: stri
   if (!Number.isFinite(maxAllowed) || maxAllowed <= 0) {
     throw new Error(`Invalid --max-crap threshold '${String(maxAllowed)}'; must be a positive finite number.`);
   }
-  const absRoot = path.resolve(repoRoot);
+  const absRoot = (() => { try { return fs.realpathSync(path.resolve(repoRoot)); } catch { return path.resolve(repoRoot); } })();
   const absCov = path.isAbsolute(coveragePath) ? coveragePath : path.join(absRoot, coveragePath);
   const raw = fs.readFileSync(absCov, "utf8");
   const detailed = raw.trimStart().startsWith("<") ? parseCoberturaDetailed(raw, absRoot) : parseLcovDetailed(raw, absRoot);

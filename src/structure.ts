@@ -73,7 +73,8 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
       dirSourceFiles.set(dir, list);
     }
 
-    if (file.language && !file.isTest && !isGenerated && file.lines > WARN_FILE_LINES) {
+    const isStub = /\.d\.[cm]?ts$|\.pyi$/i.test(file.rel);
+    if (file.language && !file.isTest && !isGenerated && !isStub && file.lines > WARN_FILE_LINES) {
       const isHard = file.lines > HARD_FILE_LINES;
       findings.push({
         id: `ST:long-file:${file.rel}`,
@@ -88,7 +89,7 @@ export function analyzeStructure(repo: DiscoveredRepo): Finding[] {
       });
     }
 
-    if ((file.language === "typescript" || file.language === "javascript") && !file.isTest && !isGenerated) {
+    if ((file.language === "typescript" || file.language === "javascript") && !file.isTest && !isGenerated && !isStub) {
       const codeOnly = maskCode(file.content, file.language);
       const exports = codeOnly.match(EXPORT_DECL);
       if (exports && exports.length > MAX_EXPORTS) {

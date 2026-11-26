@@ -207,6 +207,8 @@ function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): F
     const body = prodMasked.slice(openIdx + 1, closeIdx);
     let hasDomainEnumPattern = false;
     let hasSilentWildcard = false;
+    let allArmsBool = true;
+    let armCount = 0;
     let depth = 0;
     let armStart = 0;
 
@@ -219,6 +221,8 @@ function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): F
       } else if (depth === 0 && ch === "=" && body[i + 1] === ">") {
         const pattern = body.slice(armStart, i).replace(/^[\s,]+/, "").trim();
         const rhsTail = body.slice(i + 2, i + 40).trim();
+        armCount += 1;
+        if (!/^(?:true|false)\b/.test(rhsTail)) allArmsBool = false;
         if (pattern === "_" && !/^(?:unreachable!|panic!)/.test(rhsTail)) {
           hasSilentWildcard = true;
         }
@@ -232,7 +236,7 @@ function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): F
       }
     }
 
-    if (!hasDomainEnumPattern || !hasSilentWildcard) continue;
+    if (!hasDomainEnumPattern || !hasSilentWildcard || (armCount > 0 && allArmsBool)) continue;
 
     const line = lineOf(file.content, match.index ?? 0);
     if (seenLines.has(line)) continue;
