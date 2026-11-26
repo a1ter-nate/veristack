@@ -324,9 +324,13 @@ function loadGitTrackedDirs(root: string): Set<string> {
   return trackedDirs;
 }
 
+const WORKSPACE_BUILD_DIR = /^(?:apps|packages|services|crates|libs)\/[^/]+\/(?:dist|build|coverage|target|obj|\.next|\.nuxt|\.output|\.svelte-kit|\.vite|\.turbo|\.cache|\.stryker-tmp|TestResults|StrykerOutput|__pycache__|\.venv|venv)$/i;
+const HELPER_SCRIPT_ROOT = /^\.(?:github|agents|claude|cursor|codex|husky)\//i;
+
 function shouldSkipDirectory(rel: string, name: string, trackedDirs: ReadonlySet<string>): boolean {
   if (name === ".git" || name === "node_modules") return true;
   if (rel === ".verification/receipts") return true;
+  if (WORKSPACE_BUILD_DIR.test(rel) && !trackedDirs.has(rel)) return true;
   if (SOURCE_TREE_ROOT.test(rel)) return false;
   if (name === "bin" && /(?:^|\/)(?:obj|bin)$/.test(rel) && !trackedDirs.has(rel)) {
     if (rel === "bin") return false;
@@ -472,7 +476,8 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
   }
 
   const languageSet = new Set<Language>();
-  for (const file of files) if (file.language && isHostRepoFile(file.rel)) languageSet.add(file.language);
+  for (const file of files) if (file.language && isHostRepoFile(file.rel) && !HELPER_SCRIPT_ROOT.test(file.rel)) languageSet.add(file.language);
+  if (languageSet.size === 0) for (const file of files) if (file.language && isHostRepoFile(file.rel)) languageSet.add(file.language);
   if (languageSet.size === 0) for (const file of files) if (file.language) languageSet.add(file.language);
   const languages = [...languageSet].sort();
   const observedArchetype = inferArchetypeFromFiles(files, allRelPaths);

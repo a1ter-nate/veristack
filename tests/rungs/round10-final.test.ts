@@ -213,3 +213,59 @@ test("round10 final: sanitizeShellBlock conditionals/pipes, pnpm -F {...}..., Na
     assert.equal(perim.passed, true);
   });
 });
+
+test("round10 calibration: monorepo workspace build-dir skip, helper script language exclusion, scheduled R8 canaries, benign GITHUB_ENV, and retention cutoffs", () => {
+  withTempDir((dir) => {
+    initGit(dir);
+    fs.mkdirSync(path.join(dir, "apps", "api", "src"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "apps", "api", "dist"), { recursive: true });
+    fs.mkdirSync(path.join(dir, ".github", "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(dir, ".github", "workflows"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "apps", "api", "scripts", "canary"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "tsconfig.json"), '{"compilerOptions":{"strict":true}}\n');
+    fs.writeFileSync(path.join(dir, "apps", "api", "package.json"), '{"name":"api","dependencies":{"express":"^5.0.0"}}\n');
+    fs.writeFileSync(path.join(dir, "apps", "api", "src", "cutoff.ts"), "const RETENTION_MS = 86400000;\nexport function cutoff(): number { return Date.now() - RETENTION_MS; }\n");
+    fs.writeFileSync(path.join(dir, "apps", "api", "src", "cutoff.test.ts"), 'import { test, expect } from "vitest";\ntest("c", () => expect(1).toBe(1));\n');
+    fs.writeFileSync(path.join(dir, "apps", "api", "dist", "cutoff.js"), "// generated comment\nexport function cutoff() { return 1; }\n");
+    fs.writeFileSync(path.join(dir, ".github", "scripts", "helper.py"), "print('ci helper')\n");
+    fs.writeFileSync(path.join(dir, "apps", "api", "scripts", "canary", "run.mjs"), "export const ok = true;\n");
+    fs.writeFileSync(path.join(dir, ".github", "workflows", "pr.yml"), [
+      "on: [pull_request]",
+      "jobs:",
+      "  changes:",
+      "    if: github.event_name != 'pull_request' || github.actor != 'bot'",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo ok",
+      "  test:",
+      "    needs: changes",
+      "    if: needs.changes.outputs.api == 'true'",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo 'CONCURRENCY=4' >> \"$GITHUB_ENV\"",
+      "      - run: vitest run",
+    ].join("\n"));
+    fs.writeFileSync(path.join(dir, ".github", "workflows", "production-canaries.yml"), [
+      "on:",
+      "  schedule:",
+      "    - cron: '17 * * * *'",
+      "jobs:",
+      "  canary:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: node apps/api/scripts/canary/run.mjs",
+    ].join("\n"));
+    runGitClean(dir, ["add", "tsconfig.json", "apps/api/package.json", "apps/api/src/cutoff.ts", "apps/api/src/cutoff.test.ts", ".github", "apps/api/scripts/canary/run.mjs"]);
+    runGitClean(dir, ["commit", "-q", "-m", "init"]);
+
+    const report = scanRepo(dir);
+    assert.equal(report.languages.includes("python"), false);
+    assert.equal(report.findings.some((f) => f.file.includes("apps/api/dist/")), false);
+    assert.equal(report.findings.some((f) => f.rule === "cdc-wall-clock-duration"), false);
+    const r2 = report.rungs.find((r) => r.rung === "R2");
+    const r8 = report.rungs.find((r) => r.rung === "R8");
+    assert.equal(r2?.executedInCi, true);
+    assert.equal(r8?.executedInCi, true);
+    assert.equal(r8?.coverageGrade, "well-covered");
+  });
+});

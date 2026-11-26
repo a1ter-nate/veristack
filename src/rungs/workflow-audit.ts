@@ -32,7 +32,12 @@ function isUnconditionalIf(cond: unknown): boolean {
   if (typeof cond === "boolean") return cond === true;
   if (typeof cond !== "string") return false;
   const norm = cond.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
-  return norm === "true" || norm === "success()" || norm === "always()";
+  if (norm === "true" || norm === "success()" || norm === "always()") return true;
+  if (/\b(?:false|failure\s*\(|cancelled\s*\(|workflow_dispatch|skip)\b/.test(norm)) return false;
+  if (/^matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]+['"](?:\s*&&\s*matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]+['"])*$/.test(norm)) return true;
+  if (/^needs\.[a-z0-9_-]+\.outputs\.[a-z0-9_-]+\s*==\s*['"]true['"]/.test(norm)) return true;
+  if (/^github\.event_name\s*!=\s*['"]pull_request['"]\s*\|\|/.test(norm)) return true;
+  return false;
 }
 
 function isContinueOnError(val: unknown): boolean {
@@ -141,10 +146,15 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
   const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
   const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
   const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?=$|_))/i;
-  const GITHUB_ENV_POISON = /\bGITHUB_(?:ENV|PATH)\b/i;
+  const BAD_ENV_INLINE = /\b(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?:_[A-Z0-9_]+)?)\s*=/i;
+  const isPoisoningGithubEnv = (runText: string): boolean => {
+    if (/\bGITHUB_PATH\b/i.test(runText)) return true;
+    if (!/\bGITHUB_ENV\b/i.test(runText)) return false;
+    return BAD_ENV_INLINE.test(runText) || /\b(?:eval|base64|xxd)\b|\$[A-Za-z_]\w*=/.test(runText);
+  };
   const hasPoisonedEnv = (envObj: unknown): boolean => isRecord(envObj) && Object.keys(envObj).some((k) => BAD_ENV_KEY.test(k));
-  const isLocalActionSafe = (usesVal: string): boolean => {
-    if (!allFiles || allFiles.length === 0) return false;
+  const isLocalActionSafe = (usesVal: string, depth = 0): boolean => {
+    if (depth > 2 || !allFiles || allFiles.length === 0) return false;
     const base = usesVal.trim().replace(/^\.\//, "").replace(/\/+$/, "");
     const actionFile = allFiles.find((f) => f.rel === `${base}/action.yml` || f.rel === `${base}/action.yaml` || f.rel === base);
     if (!actionFile) return false;
@@ -154,8 +164,8 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
       for (const s of aDoc.runs.steps) {
         if (!isRecord(s)) continue;
         if (hasPoisonedEnv(s.env)) return false;
-        if (typeof s.run === "string" && GITHUB_ENV_POISON.test(s.run)) return false;
-        if (typeof s.uses === "string" && s.uses.trim().startsWith("./")) return false;
+        if (typeof s.run === "string" && isPoisoningGithubEnv(s.run)) return false;
+        if (typeof s.uses === "string" && s.uses.trim().startsWith("./") && !isLocalActionSafe(s.uses, depth + 1)) return false;
       }
       return true;
     } catch { return false; }
@@ -171,7 +181,7 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
     for (const step of steps) {
       if (!isRecord(step)) continue;
       if (typeof step.uses === "string" && step.uses.trim().startsWith("./") && !isLocalActionSafe(step.uses)) { jobEnvPoisoned = true; continue; }
-      if (typeof step.run === "string" && GITHUB_ENV_POISON.test(step.run)) { jobEnvPoisoned = true; continue; }
+      if (typeof step.run === "string" && isPoisoningGithubEnv(step.run)) { jobEnvPoisoned = true; continue; }
       if (jobEnvPoisoned || hasPoisonedEnv(step.env)) continue;
       if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
       if (!isAllowedShell(step.shell ?? jobShell)) continue;

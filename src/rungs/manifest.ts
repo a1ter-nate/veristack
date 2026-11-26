@@ -238,7 +238,7 @@ export function discoverWorkspaces(
     }
     const dir = path.posix.dirname(norm);
     if (dir === "." || dir === "" || seen.has(dir)) continue;
-    if (/(?:^|\/)(?:node_modules|fixtures|testdata|__fixtures__|test|tests|lint)(?:\/|$)/i.test(dir)) continue;
+    if (/(?:^|\/)(?:node_modules|fixtures|testdata|__fixtures__|test|tests|lint)(?:\/|$)|^tools\/(?:oxlint|eslint|lint)(?:\/|$)/i.test(dir)) continue;
     if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests|specs?)$/i.test(dir)) continue;
     if (base === "Cargo.toml" && /^\s*\[workspace\]/m.test(file.content) && !/^\s*\[package\]/m.test(file.content)) continue;
     if (base.endsWith(".csproj") && (/<IsTestProject>\s*true\s*<\/IsTestProject>/i.test(file.content) || /Microsoft\.NET\.Test\.Sdk|PackageReference\s+Include="(?:xunit|NUnit|MSTest\.TestFramework)"/i.test(file.content))) continue;

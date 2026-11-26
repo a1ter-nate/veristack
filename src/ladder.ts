@@ -174,8 +174,13 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
       : 100;
 
   if (workspaces.length > 0) {
-    const wsCeiling = Math.min(...workspaces.map((w) => w.score));
-    overallCoverageScore = Math.min(overallCoverageScore, wsCeiling);
+    const minWs = Math.min(...workspaces.map((w) => w.score));
+    if (minWs === 0) {
+      overallCoverageScore = 0;
+    } else {
+      const avgWs = Math.round(workspaces.reduce((sum, w) => sum + w.score, 0) / workspaces.length);
+      overallCoverageScore = Math.min(overallCoverageScore, Math.round((overallCoverageScore + avgWs) / 2));
+    }
   }
 
   return {

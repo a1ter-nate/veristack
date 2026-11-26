@@ -238,6 +238,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
 
     if (cdcRegex) {
       for (const match of masked.matchAll(cdcRegex)) {
+        if (/(?:retention|ttl|window|max_?age|lookback|stale|grace|cooldown|expir|cutoff|days?_?ms|hours?_?ms|minutes?_?ms|seconds?_?ms|interval_?ms)/i.test(match[0])) continue;
         const line = lineOf(raw, match.index ?? 0);
         findings.push({
           id: `ZD:cdc-clock:${file.rel}:${line}`,

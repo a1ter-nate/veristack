@@ -260,7 +260,8 @@ export function buildRungStatuses(
   });
 
   const r5NeedVisual = isFront || repo.archetype === "fullstack";
-  const r5Exec = isExecuted("R5", ci.runsMutationOrFormal && (s.hasMutationTool || s.hasFormalTool || s.hasVisualTool));
+  const r5HasFormalOrExplore = s.hasFormalTool || s.hasBombadil;
+  const r5Exec = isExecuted("R5", ci.runsMutationOrFormal && (s.hasMutationTool || r5HasFormalOrExplore || s.hasVisualTool));
   const r5MutationScore = r5Exec.receipt?.metrics?.mutationScore;
   const r5MutationScoreOk = r5MutationScore === undefined || r5MutationScore >= 70;
   const r5ReceiptRanMutation =
@@ -273,13 +274,14 @@ export function buildRungStatuses(
   if (r5HasMutation) r5Evidence.push(r5Exec.receipt?.canary?.passed || r2Exec.receipt?.canary?.passed ? "planted-fault mutation" : "mutation tool");
   else r5Gaps.push("Add real mutation testing (Stryker / mutmut / cargo-mutants / vstack canary)");
   if (s.hasFormalTool) r5Evidence.push("formal verification");
+  else if (s.hasBombadil) r5Evidence.push("autonomous property exploration (Bombadil)");
   else r5Gaps.push("Add non-empty R5 formal spec/model check (Bend 2 / Quint / TLA+ / Z3 / Stateright / Kani)");
   if (s.hasVisualTool) r5Evidence.push("visual regression");
   else if (r5NeedVisual) r5Gaps.push("Add visual regression (/ui-diff, Chromatic, Percy, or Playwright screenshots)");
 
   const r5Checks: RungCheck[] = [
     { id: "r5-mutation", label: "Real mutation / planted-fault proof", weight: 35, passed: r5HasMutation, executed: r5Exec.executed, detail: r5HasMutation ? "present" : "missing" },
-    { id: "r5-formal", label: "Formal spec / model check", weight: r5NeedVisual ? 20 : 35, passed: s.hasFormalTool, executed: r5Exec.executed, detail: s.hasFormalTool ? "present" : "missing" },
+    { id: "r5-formal", label: "Formal spec / model check", weight: r5NeedVisual ? 20 : 35, passed: r5HasFormalOrExplore, executed: r5Exec.executed, detail: r5HasFormalOrExplore ? "present" : "missing" },
     ...(r5NeedVisual
       ? [{ id: "r5-visual", label: "Visual regression", weight: 15, passed: s.hasVisualTool, executed: r5Exec.executed, detail: s.hasVisualTool ? "present" : "missing" }]
       : []),
