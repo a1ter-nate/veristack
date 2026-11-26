@@ -14,7 +14,7 @@ const AUTHZ_RAW_PATH_MATCH =
 
 const SQL_SELECT_LIMIT_NO_ORDER =
   /\bSELECT\b[^;]{0,420}?\bFROM\b[^;]{0,360}?\b(?:LIMIT\s+[1-9]\d*|OFFSET\s+[1-9]\d*|FETCH\s+(?:FIRST|NEXT)\s+[1-9]\d*)/gi;
-const SQL_EQ_NULL = /\b(?:WHERE|AND|OR|HAVING|ON)\b[^;\n]{0,160}?(?:=|!=|<>)\s*NULL\b/gi;
+const SQL_EQ_NULL = /\b(?:WHERE|AND|OR|HAVING|ON(?!\s+CONFLICT\b))\b[^;\n]{0,160}?(?:=|!=|<>)\s*NULL\b/gi;
 const SQL_NOT_IN_SUBQUERY = /\bNOT\s+IN\s*\(\s*SELECT\s+[A-Za-z_][A-Za-z0-9_.]*\b[^)]{0,220}\)/gi;
 
 const RUST_LET_UNDERSCORE_LOCK =

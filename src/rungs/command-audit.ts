@@ -64,7 +64,7 @@ const RUNNER_SCHEMAS: Record<string, RunnerFlagSchema> = {
   pytest: { boolFlags: s("-q", "-v", "-vv", "-x", "-ra", "--strict-markers", "--benchmark-only", "--benchmark-enable"), valueFlags: s("--junitxml", "--cov", "--cov-report", "--cov-fail-under", "--tb", "--timeout", "--maxfail", "--benchmark-min-rounds", "-n") },
   phpunit: { boolFlags: s("--stop-on-failure"), valueFlags: s("--log-junit") },
   rspec: { boolFlags: s("--fail-fast"), valueFlags: s("-f", "--format", "-o", "--out") },
-  unittest: { boolFlags: s("discover", "-v", "-f"), valueFlags: s("-s", "-p", "-t") },
+  unittest: { boolFlags: s("discover", "-v", "-f"), valueFlags: s("-s", "-t") },
   "bun test": { boolFlags: s("--bail", "--coverage"), valueFlags: s("--timeout", "--reporter", "--reporter-outfile", "--concurrency", "--rerun-each") },
   "bun build": { boolFlags: s("--minify", "--sourcemap"), valueFlags: s("--outfile", "--outdir", "--target", "--external", "--format") },
   "node --test": { boolFlags: s("--experimental-test-coverage"), valueFlags: s("--test-reporter", "--test-reporter-destination", "--test-timeout") },
@@ -169,7 +169,7 @@ export function sanitizeShellBlock(runScript: string): string[] {
     if (/^set\s+-o\s+pipefail\b/.test(trimmed)) { pipefail = true; continue; }
     if (/^(?:exit(?:\s+\d+)?|exec\b)/.test(trimmed)) break;
     if (setPlusE) continue;
-    if (/^(?:elif\s+|else\b|then\b|alias\s+|\$\{\{|!(\s|$)|[A-Za-z0-9_*?|]+\))/.test(trimmed) || /^(?:echo|printf|true|sleep|:)(?:\s|;|$)/.test(trimmed) || /^false(?:\s|&&|\|\||;|$)/.test(trimmed) || /^\.\/vstack\b/.test(trimmed) || /\|\|/.test(trimmed) || /;\s*(?:true|echo|printf|:|exit)(?:\s|$)/.test(trimmed) || /(?:^|[^&])&\s*$/.test(trimmed) || /&&\s*(?:echo|printf|true|:)(?:\s|$)/.test(trimmed) || (!pipefail && /\|\s*(?:tee|cat|true|head|tail|grep|awk|sed)\b/.test(trimmed)) || /\s(?:--help|-h|--version|-V|--list-tests)(?:\s|$)/.test(trimmed)) continue;
+    if (/^(?:elif\s+|else\b|then\b|alias\s+|\$\{\{|!(\s|$)|[A-Za-z0-9_*?|]+\))/.test(trimmed) || /^(?:echo|printf|true|sleep|:)(?:\s|;|$)/.test(trimmed) || /^false(?:\s|&&|\|\||;|$)/.test(trimmed) || /^\.\/vstack\b/.test(trimmed) || /\|\|/.test(trimmed) || /;\s*(?:true|echo|printf|:|exit)(?:\s|$)/.test(trimmed) || /(?:^|[^&>])&(?!&|>)/.test(trimmed) || /&&\s*(?:echo|printf|true|:)(?:\s|$)/.test(trimmed) || (!pipefail && /\|\s*(?:tee|cat|true|head|tail|grep|awk|sed)\b/.test(trimmed)) || /\s(?:--help|-h|--version|-V|--list-tests)(?:\s|$)/.test(trimmed)) continue;
     active.push(trimmed);
   }
   return active;
@@ -250,9 +250,10 @@ export function extractToolHead(tokens: readonly string[], repoRoot?: string): {
     return extractToolHead([t0, ...tokens.slice(3)], repoRoot);
   }
   if (low0 === "pnpm" && (tokens[1] === "--filter" || tokens[1] === "-F") && tokens[2] && tokens[3]) {
-    const f = tokens[2];
+    const rawF = tokens[2];
+    const f = /^\{(.+)\}$/.exec(rawF)?.[1] ?? rawF;
     if (repoRoot) {
-      if ((f.startsWith(".") || f.startsWith("/") || f.includes("..")) && !isPathInsideRepo(f, repoRoot)) return { head: "", toolArgs: [], error: `pnpm ${tokens[1]} '${f}' escapes repo root` };
+      if ((f.startsWith(".") || f.startsWith("/") || f.includes("..")) && !isPathInsideRepo(f, repoRoot)) return { head: "", toolArgs: [], error: `pnpm ${tokens[1]} '${rawF}' escapes repo root` };
       const cDir = path.resolve(repoRoot, f);
       if (fs.existsSync(cDir) && fs.statSync(cDir).isDirectory()) { const cfgErr = auditRunnerConfigs(repoRoot, [cDir]); if (cfgErr) return { head: "", toolArgs: [], error: cfgErr }; }
     }
@@ -332,8 +333,9 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
     if (tok === "--") return schema.doubleDashMode ? validateDoubleDashArgs(schema.doubleDashMode, toolArgs.slice(i + 1)) : `argument separator '--' is forbidden on '${head}'`;
     if (!tok.startsWith("-")) {
       if (head === "hyperfine") { const nested = parseAndValidateCommandArgv(rung, tok, repoRoot); if (nested.error) return `hyperfine command '${tok}' rejected: ${nested.error}`; continue; }
-      if (repoRoot && (tok.startsWith("/") || tok.includes("..")) && !isPathInsideRepo(tok, repoRoot)) return `positional path '${tok}' on '${head}' escapes repo root`;
-      if (repoRoot && isPathInsideRepo(tok, repoRoot)) { const rp = path.resolve(repoRoot, tok); if (fs.existsSync(rp)) extraAuditDirs.push(fs.statSync(rp).isFile() ? path.dirname(rp) : rp); }
+      const cleanTok = tok.split("::")[0]?.replace(/\/\.\.\.$/, "") ?? tok;
+      if (repoRoot && (cleanTok.startsWith("/") || cleanTok.includes("..")) && !isPathInsideRepo(cleanTok, repoRoot)) return `positional path '${tok}' on '${head}' escapes repo root`;
+      if (repoRoot && cleanTok && isPathInsideRepo(cleanTok, repoRoot)) { const rp = path.resolve(repoRoot, cleanTok); if (fs.existsSync(rp)) extraAuditDirs.push(fs.statSync(rp).isFile() ? path.dirname(rp) : rp); }
       continue;
     }
     const eqIdx = tok.indexOf("="); const colonIdx = isDotnet ? tok.indexOf(":") : -1;
@@ -463,19 +465,15 @@ export function parseAndValidateCommandArgv(
       if (VSTACK_REQUIRES_FAIL.has(sub) && !toolArgs.includes("--fail")) return { steps: [], error: `Rung ${rung}: vstack ${sub} must include --fail.` };
     }
     if (head === "pytest" && rung === "R6" && !toolArgs.includes("--benchmark-only") && !toolArgs.includes("--benchmark-enable")) return { steps: [], error: "Rung R6: pytest must run with --benchmark-only or --benchmark-enable." };
+    if (head === "pytest" && rung !== "R6" && (toolArgs.includes("--benchmark-only") || toolArgs.includes("--benchmark-enable"))) return { steps: [], error: `Rung ${rung}: pytest --benchmark-only/--benchmark-enable is only allowed in R6.` };
+    if (head === "dotnet test" && rung === "canary" && toolArgs.includes("--no-build")) return { steps: [], error: "Rung canary: dotnet test --no-build skips recompiling mutated/restored source." };
     if (rung === "R1" && /^(?:tsc|tsgo|mypy|pyright|basedpyright|cargo\s+(?:check|clippy)|dotnet\s+build|go\s+(?:vet|build))$/.test(head)) hasR1Typecheck = true;
   }
   if (rung === "R1" && !hasR1Typecheck) return { steps: [], error: `Rung R1 command '${command}' must run a real typechecker/compiler.` };
   return { steps: expanded.steps, stepCwds: expanded.cwds };
 }
 
-export function runArgvChain(
-  steps: readonly string[][],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  timeoutMs: number,
-  stepCwds?: readonly string[],
-): { status: number; stdout: string; stderr: string; signal: NodeJS.Signals | null; error?: Error } {
+export function runArgvChain(steps: readonly string[][], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number, stepCwds?: readonly string[]): { status: number; stdout: string; stderr: string; signal: NodeJS.Signals | null; error?: Error } {
   if (steps.length === 0) return { status: 1, stdout: "", stderr: "empty argv chain", signal: null };
   let stdout = ""; let stderr = "";
   for (let idx = 0; idx < steps.length; idx++) {

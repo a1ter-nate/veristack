@@ -243,7 +243,7 @@ export function insertSemanticNoOp(rel: string, source: string, variant: number)
         }
         return null;
       };
-      if (variant % 2 === 1) {
+      if (variant % 3 === 1) {
         const wrapped = walkFind((rec) => {
           if (rec.type !== "ReturnStatement" || !rec.argument || typeof rec.argument !== "object") return null;
           const arg = rec.argument as Record<string, unknown>;
@@ -252,6 +252,16 @@ export function insertSemanticNoOp(rel: string, source: string, variant: number)
           return parseSync(rel, c).errors.length === 0 ? c : null;
         });
         if (wrapped) return wrapped;
+      }
+      if (variant % 3 === 2) {
+        const boolCond = walkFind((rec) => {
+          if (rec.type !== "IfStatement" || !rec.test || typeof rec.test !== "object") return null;
+          const t = rec.test as Record<string, unknown>;
+          if (typeof t.start !== "number" || typeof t.end !== "number") return null;
+          const c = `${source.slice(0, t.start)}Boolean(${source.slice(t.start, t.end)})${source.slice(t.end)}`;
+          return parseSync(rel, c).errors.length === 0 ? c : null;
+        });
+        if (boolCond) return boolCond;
       }
       const inFn = walkFind((rec) => {
         if ((rec.type === "FunctionDeclaration" || rec.type === "FunctionExpression" || rec.type === "ArrowFunctionExpression") && rec.body && typeof rec.body === "object") {
@@ -269,13 +279,18 @@ export function insertSemanticNoOp(rel: string, source: string, variant: number)
   }
   if (rel.endsWith(".py")) {
     const lines = source.split("\n");
-    let i = 0; let inTriple: string | null = null; let inFuture = false;
+    let i = 0; let inTriple: string | null = null; let inFutureParen = false; let inFutureBs = false;
     while (i < lines.length) {
       const l = (lines[i] ?? "").trim();
       if (inTriple) { if (l.includes(inTriple)) inTriple = null; i += 1; continue; }
-      if (inFuture) { if (l.includes(")") || !l.endsWith("\\")) inFuture = false; i += 1; continue; }
+      if (inFutureParen) { if (l.includes(")")) inFutureParen = false; i += 1; continue; }
+      if (inFutureBs) { if (!l.endsWith("\\")) inFutureBs = false; i += 1; continue; }
       if (l === "" || l.startsWith("#")) { i += 1; continue; }
-      if (l.startsWith("from __future__ import")) { if ((l.includes("(") && !l.includes(")")) || l.endsWith("\\")) inFuture = true; i += 1; continue; }
+      if (l.startsWith("from __future__ import")) {
+        if (l.includes("(") && !l.includes(")")) inFutureParen = true;
+        else if (l.endsWith("\\")) inFutureBs = true;
+        i += 1; continue;
+      }
       const ds = /^(?:[rRbBuUfF]{0,2})("""|''')/.exec(l);
       if (ds?.[1]) { if (!l.slice(ds[0].length).includes(ds[1])) inTriple = ds[1]; i += 1; continue; }
       if (/^(?:[rRbBuUfF]{0,2})(?:"[^"\n]*"|'[^'\n]*')$/.test(l)) { i += 1; continue; }
@@ -451,10 +466,9 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
   });
   type Task = { kind: "noop"; variant: number; targetRel: string } | { kind: "mutant"; mutant: MutantCandidate };
   const pickNoOpTarget = (idx: number): string => uniqueTargetFiles[(runSeed + idx) % uniqueTargetFiles.length] ?? uniqueTargetFiles[0] ?? "";
-  const tasks: Task[] = [{ kind: "noop", variant: 0, targetRel: pickNoOpTarget(0) }, ...(candidates.length >= 2 ? [{ kind: "noop" as const, variant: 1, targetRel: pickNoOpTarget(1) }] : []), ...candidates.map((mutant) => ({ kind: "mutant" as const, mutant }))];
-  const shuffledTasks = seededShuffle(tasks, runSeed ^ 0x9e3779b9);
+  const tasks: Task[] = [{ kind: "noop", variant: runSeed % 3, targetRel: pickNoOpTarget(0) }, ...(candidates.length >= 2 ? [{ kind: "noop" as const, variant: (runSeed + 1) % 3, targetRel: pickNoOpTarget(1) }] : []), ...candidates.map((mutant) => ({ kind: "mutant" as const, mutant }))];
   let killed = 0; let invalidKills = 0; const survivors: PlantedFaultSurvivor[] = [];
-  for (const task of shuffledTasks) {
+  for (const task of seededShuffle(tasks, runSeed ^ 0x9e3779b9)) {
     if (task.kind === "noop") { if (!runNoOpCheck(task.variant, task.targetRel)) return failReport(candidates.length, candidates.length); continue; }
     const mutant = task.mutant;
     const origSource = fs.readFileSync(path.join(absRoot, mutant.file), "utf8");
@@ -464,23 +478,20 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
       if (!safeWriteSandboxText(sb, mutant.file, mutatedSource)) { invalidKills += 1; return; }
       const mutStart = performance.now();
       const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, taskTimeoutMs, parsedCmd.stepCwds));
-      const elapsedMs = performance.now() - mutStart;
       const cleanCombined = stripAnsi(`${res.stdout}\n${res.stderr}`);
-      const timedOut = (res.signal === "SIGTERM" || (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") && elapsedMs >= taskTimeoutMs * 0.8;
+      const timedOut = (res.signal === "SIGTERM" || (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") && (performance.now() - mutStart) >= taskTimeoutMs * 0.8;
       if (timedOut) killed += 1;
       else if (res.signal === "SIGTERM" || res.error) invalidKills += 1;
       else if (res.status !== 0) {
         const parsedCounts = parseRunnerTestCounts(cleanCombined, parsedCmd.steps);
         const runnerReportedFail = parsedCounts.matched && parsedCounts.failed > 0;
-        const crashLines = cleanCombined.split(/\r?\n/).filter((l) => !/^\s*(?:Expected|Received|Actual|[-+]\s)/.test(l)).join("\n");
-        const hasCrash = COMPILE_OR_RUNTIME_CRASH.test(crashLines) && !(runnerReportedFail && parsedCounts.passed > 0);
+        const crashLines = cleanCombined.split(/\r?\n/).filter((l) => !/^\s*(?:Expected|Received|Actual|[-+]\s|AssertionError|expect\(|assert\.)/.test(l)).join("\n");
+        const hasCrash = COMPILE_OR_RUNTIME_CRASH.test(crashLines) && !(runnerReportedFail && /\b(?:AssertionError|AssertionFailed|Expected\s+values|assertion\s+`?left)\b/.test(cleanCombined));
         if (hasCrash || (!runnerReportedFail && !STRICT_TEST_FAILURE.test(cleanCombined))) invalidKills += 1;
         else killed += 1;
       } else survivors.push({ file: mutant.file, line: mutant.line, operator: mutant.operator, original: mutant.original, mutated: mutant.mutated });
     });
   }
-
   const killRate = Number((killed / candidates.length).toFixed(4));
-  const passed = killed > 0 && invalidKills === 0 && killRate >= minKillRate;
-  return { totalMutants: candidates.length, killedMutants: killed, survivedMutants: survivors.length, invalidKills, killRate, minKillRate, passed, survivors };
+  return { totalMutants: candidates.length, killedMutants: killed, survivedMutants: survivors.length, invalidKills, killRate, minKillRate, passed: killed > 0 && invalidKills === 0 && killRate >= minKillRate, survivors };
 }

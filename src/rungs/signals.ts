@@ -96,7 +96,7 @@ function buildActivePrCiText(files: readonly ScannedFile[]): {
 
   for (const wf of workflows) {
     if (wf.rel.startsWith(".github/workflows/")) {
-      const info = parseGitHubWorkflow(wf);
+      const info = parseGitHubWorkflow(wf, files);
       if (!info.isPrBlocking || info.activeCommands.length === 0) continue;
       activeWorkflowFiles.push(wf.rel);
       chunks.push(...info.activeCommands);

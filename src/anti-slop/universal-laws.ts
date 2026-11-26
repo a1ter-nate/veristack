@@ -96,21 +96,16 @@ function countSwitchArms(body: string, lang: ScannedFile["language"]): number {
   return 0;
 }
 
-function stripLineAndBlockComments(raw: string, lang: ScannedFile["language"]): string {
-  const re = lang === "python" ? /#[^\r\n]*/g : /\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g;
-  return raw.replace(re, (m) => m.replace(/[^\r\n]/g, " "));
-}
-
 export function analyzeUniversalBendLaws(file: ScannedFile): Finding[] {
   if (!file.language || file.isTest) return [];
   const findings: Finding[] = [];
   const raw = file.content;
   const code = maskCode(raw, file.language, true);
-  const uncommented = stripLineAndBlockComments(raw, file.language);
 
   const resurrectRe = file.language === "rust" ? RUST_MATCH_TERMINAL_RESURRECT : TERMINAL_CASE_RESURRECT;
-  for (const m of uncommented.matchAll(resurrectRe)) {
-    if (file.language === "rust" && code[m.index ?? 0] === " ") continue;
+  for (const m of raw.matchAll(resurrectRe)) {
+    const idx = m.index ?? 0;
+    if (code[idx] === " ") continue;
     pushLaw(
       findings,
       file,

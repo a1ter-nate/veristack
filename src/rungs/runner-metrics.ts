@@ -134,7 +134,7 @@ export function parseRunnerTestCounts(
     if (p.found || f.found) { passed += p.sum; failed += f.sum; matched = true; }
   }
   if (heads.has("pytest")) {
-    const summaryLines = output.split(/\r?\n/).filter((l) => /^=+\s+.*(?:passed|failed|error|no tests ran).*=+$|^\s*(?:\d+\s+(?:passed|failed|errors?)\b.*\bin\s+\d|no tests ran\b)/i.test(l.trim()));
+    const summaryLines = output.split(/\r?\n/).filter((l) => /^=+\s+.*(?:passed|failed|error|skipped|deselected|xfailed|xpassed|no tests ran).*=+$|^\s*(?:\d+\s+(?:passed|failed|errors?|skipped|deselected|xfailed|xpassed)\b.*\bin\s+\d|no tests ran\b)/i.test(l.trim()));
     const lastSummary = summaryLines[summaryLines.length - 1] ?? "";
     if (/no tests ran/i.test(lastSummary)) {
       matched = true;
@@ -142,6 +142,7 @@ export function parseRunnerTestCounts(
       const p = sumMatches(lastSummary, /\b(\d+)\s+passed\b/gi);
       const f = sumMatches(lastSummary, /\b(\d+)\s+(?:failed|errors?)\b/gi);
       if (p.found || f.found) { passed += p.sum; failed += f.sum; matched = true; }
+      else if (/\b(?:skipped|deselected|xfailed|xpassed)\b/i.test(lastSummary)) matched = true;
     }
   }
   if (heads.has("unittest")) {

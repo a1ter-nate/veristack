@@ -11,8 +11,9 @@ const srcCli = path.join(rootDir, "src", "cli.ts");
 function failClosedStartup(msg) {
   if (process.argv[2] === "hook") {
     const sub = process.argv[3];
+    const hEq = process.argv.find((a) => a.startsWith("--harness="));
     const hIdx = process.argv.indexOf("--harness");
-    const harness = hIdx >= 0 ? process.argv[hIdx + 1] : "claude";
+    const harness = hEq ? hEq.slice("--harness=".length) : hIdx >= 0 ? process.argv[hIdx + 1] : "claude";
     const errMsg = `Veristack hook failed closed on startup error: ${msg}`;
     if (sub === "pre-edit") {
       console.error(errMsg);

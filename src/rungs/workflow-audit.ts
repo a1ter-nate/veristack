@@ -99,7 +99,7 @@ function extractTriggers(onField: unknown): { triggers: string[]; isPrBlocking: 
   return { triggers: [...new Set(triggers)], isPrBlocking };
 }
 
-export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
+export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly ScannedFile[]): ActiveWorkflowInfo {
   let doc: unknown;
   try {
     doc = YAML.parse(file.content);
@@ -140,9 +140,26 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
   const scopedCommands: Array<{ cwd: string; command: string }> = [];
   const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
   const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
-  const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|NODE_OPTIONS|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG_)/i;
+  const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?=$|_))/i;
   const GITHUB_ENV_POISON = /\bGITHUB_(?:ENV|PATH)\b/i;
   const hasPoisonedEnv = (envObj: unknown): boolean => isRecord(envObj) && Object.keys(envObj).some((k) => BAD_ENV_KEY.test(k));
+  const isLocalActionSafe = (usesVal: string): boolean => {
+    if (!allFiles || allFiles.length === 0) return false;
+    const base = usesVal.trim().replace(/^\.\//, "").replace(/\/+$/, "");
+    const actionFile = allFiles.find((f) => f.rel === `${base}/action.yml` || f.rel === `${base}/action.yaml` || f.rel === base);
+    if (!actionFile) return false;
+    try {
+      const aDoc = YAML.parse(actionFile.content);
+      if (!isRecord(aDoc) || !isRecord(aDoc.runs) || !Array.isArray(aDoc.runs.steps)) return false;
+      for (const s of aDoc.runs.steps) {
+        if (!isRecord(s)) continue;
+        if (hasPoisonedEnv(s.env)) return false;
+        if (typeof s.run === "string" && GITHUB_ENV_POISON.test(s.run)) return false;
+        if (typeof s.uses === "string" && s.uses.trim().startsWith("./")) return false;
+      }
+      return true;
+    } catch { return false; }
+  };
   const wfPoisoned = hasPoisonedEnv(doc.env);
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
     if (deadJobSet.has(jobId) || !isRecord(jobVal)) continue;
@@ -152,10 +169,10 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
     const steps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
     let jobEnvPoisoned = false;
     for (const step of steps) {
-      if (!isRecord(step) || hasPoisonedEnv(step.env)) continue;
-      if (typeof step.uses === "string" && step.uses.trim().startsWith("./")) { jobEnvPoisoned = true; continue; }
+      if (!isRecord(step)) continue;
+      if (typeof step.uses === "string" && step.uses.trim().startsWith("./") && !isLocalActionSafe(step.uses)) { jobEnvPoisoned = true; continue; }
       if (typeof step.run === "string" && GITHUB_ENV_POISON.test(step.run)) { jobEnvPoisoned = true; continue; }
-      if (jobEnvPoisoned) continue;
+      if (jobEnvPoisoned || hasPoisonedEnv(step.env)) continue;
       if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
       if (!isAllowedShell(step.shell ?? jobShell)) continue;
       const rawWd = step["working-directory"] ?? jobWorkDir;

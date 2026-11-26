@@ -6,16 +6,17 @@ import { hasPathologicalNesting } from "../ast/ts-ast.ts";
 import { scanGitDiffCheats } from "../ci-auditor.ts";
 import { runGitClean } from "../rungs/config-audit.ts";
 import type { Finding } from "../types.ts";
+import { auditManifestDowngrade } from "../zero-defect/anti-evasion.ts";
 import { type CheckFileTier, scanSingleFile } from "./check-file.ts";
 
 export type HookEventKind = "post-edit" | "pre-edit" | "stop";
 export type HookHarness = "claude" | "codex" | "cursor" | "copilot" | "grok";
 export interface HookProjectConfig { enabled: boolean; tier: CheckFileTier; auditLog?: string; harnesses: HookHarness[]; }
-interface SessionState { touchedFiles: string[]; reportedKeys: string[]; }
+interface SessionState { touchedFiles: string[]; reportedKeys: string[]; anchorBaseSha?: string; }
 export interface HookExecutionResult { exitCode: number; stdout: string; stderr?: string; findings: Finding[]; }
 
 const PROTECTED_CONTROL_PLANE =
-  /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|\.gitignore|\.gitattributes|\.npmrc|\.mcp\.json|Makefile|bun\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|bunfig\.toml|conftest\.py|sitecustomize\.py|usercustomize\.py|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook(?:-local)?\.ya?ml|CODEOWNERS|package\.json|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|mypy\.ini|pyrightconfig\.json|biome\.jsonc?|\.?ruff\.toml|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|control-plan\.json|escapes\.json|invariants\.json|chokepoints\.json|(?:vitest|vite|jest|playwright|cypress|eslint|stryker)\.config\.[cm]?[jt]s|jest\.config\.json|\.eslintrc(?:\.[^/]+)?|stryker-config\.json|mutants\.toml)$|(?:^|\/)(?:\.verification\/|\.git\/|\.husky\/|\.cargo\/|node_modules\/|bin\/vstack\.mjs$|dist\/|scripts\/|src\/hooks\/|templates\/formal\/|examples\/[^/]+\/manifest\.json$|\.claude\/|\.cursor\/|\.codex\/|\.github\/|\.grok\/|docs\/CODEOWNERS$)/i;
+  /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|\.gitignore|\.gitattributes|\.npmrc|\.mcp\.json|Makefile|bun\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|bunfig\.toml|conftest\.py|sitecustomize\.py|usercustomize\.py|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook(?:-local)?\.ya?ml|CODEOWNERS|package\.json|pyproject\.toml|pytest\.ini|\.pytest\.toml|pytest\.toml|setup\.cfg|tox\.ini|mypy\.ini|pyrightconfig\.json|biome\.jsonc?|\.?ruff\.toml|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|rungs\.json|behavior-changes\.json|control-plan\.json|escapes\.json|invariants\.json|chokepoints\.json|(?:vitest|vite|jest|playwright|cypress|eslint|stryker)\.config\.[cm]?[jt]s|jest\.config\.json|\.eslintrc(?:\.[^/]+)?|stryker-config\.json|mutants\.toml)$|(?:^|\/)(?:\.verification\/|\.git\/|\.husky\/|\.cargo\/|node_modules\/|bin\/vstack\.mjs$|dist\/|scripts\/|src\/hooks\/|templates\/formal\/|examples\/[^/]+\/manifest\.json$|\.claude\/|\.cursor\/|\.codex\/|\.github\/|\.grok\/|docs\/CODEOWNERS$)/i;
 
 const importClosureCache = new Map<string, ReadonlySet<string>>();
 
@@ -131,10 +132,19 @@ function readSessionState(statePath: string): SessionState {
     return {
       touchedFiles: Array.isArray(parsed.touchedFiles) ? parsed.touchedFiles.filter((x): x is string => typeof x === "string") : [],
       reportedKeys: Array.isArray(parsed.reportedKeys) ? parsed.reportedKeys.filter((x): x is string => typeof x === "string") : [],
+      anchorBaseSha: typeof parsed.anchorBaseSha === "string" && parsed.anchorBaseSha.trim() ? parsed.anchorBaseSha.trim() : undefined,
     };
   } catch {
     return { touchedFiles: [], reportedKeys: [] };
   }
+}
+
+function resolveCurrentAnchorSha(repoRoot: string): string | undefined {
+  for (const cand of ["origin/main", "origin/master", "HEAD"]) {
+    const r = runGitClean(repoRoot, ["rev-parse", "--verify", `${cand}^{commit}`]);
+    if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+  }
+  return undefined;
 }
 
 function writeSessionState(statePath: string, state: SessionState): void {
@@ -263,8 +273,8 @@ function formatPreEditDeny(harness: HookHarness, count: number, msg: string): { 
 }
 
 function checkBashCommandTamper(cmd: string, repoRoot: string, baseDir: string): Finding | null {
-  if (/\bgit\s+(?:remote\s+(?:remove|rm|rename|set-url)|update-ref|checkout\b|restore\b|reset\b|config\s+(?:--local\s+)?(?:core\.(?:attributesFile|hooksPath)|diff\.noprefix|remote\.origin\.url)|update-index\s+--(?:assume-unchanged|skip-worktree))\b/i.test(cmd)) {
-    return { id: "HOOK:bash-git-tamper", rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: ".git", line: 1, message: "Direct agent git control-plane tampering command is blocked.", fix: "Do not tamper with git remotes, refs, config, index flags, or checkout/restore protected files." };
+  if (/\bgit\s+(?:remote\s+(?:remove|rm|rename|set-url)|update-ref|replace\b|apply\b|checkout\b|restore\b|reset\b|switch\s+--orphan|fetch\b[^\n;|&]*refs\/remotes\/|config\s+(?:--local\s+)?(?:core\.(?:attributesFile|hooksPath)|diff\.noprefix|remote\.origin\.url)|update-index\s+--(?:assume-unchanged|skip-worktree))\b/i.test(cmd)) {
+    return { id: "HOOK:bash-git-tamper", rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: ".git", line: 1, message: "Direct agent git control-plane tampering command is blocked.", fix: "Do not tamper with git remotes, refs, config, index flags, or checkout/restore/apply protected files." };
   }
   const cdDirs: string[] = [baseDir];
   for (const cm of cmd.matchAll(/\bcd\s+["']?([^\s"'|;&]+)["']?/g)) {
@@ -428,26 +438,21 @@ export function executeHookEvent(
   if (event === "post-edit") {
     const edited = extractEditedPaths(payload);
     const findings: Finding[] = [...findDirtyControlPlaneFindings(repoRoot)];
-    if (edited.length > 0) {
-      const state = readSessionState(statePath);
-      const touchedSet = new Set(state.touchedFiles);
-      for (const filePath of edited) {
-        const abs = safeRealpath(path.isAbsolute(filePath) ? filePath : path.resolve(baseDir, filePath));
-        if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
-        const res = scanSingleFile(abs, { repoRoot, tier, strict: true });
-        touchedSet.add(res.file);
-        findings.push(...res.findings);
-      }
-      writeSessionState(statePath, { touchedFiles: [...touchedSet], reportedKeys: state.reportedKeys });
+    const state = readSessionState(statePath);
+    const anchorBaseSha = state.anchorBaseSha ?? resolveCurrentAnchorSha(repoRoot);
+    const touchedSet = new Set(state.touchedFiles);
+    for (const filePath of edited) {
+      const abs = safeRealpath(path.isAbsolute(filePath) ? filePath : path.resolve(baseDir, filePath));
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
+      const res = scanSingleFile(abs, { repoRoot, tier, strict: true });
+      touchedSet.add(res.file);
+      findings.push(...res.findings);
     }
+    writeSessionState(statePath, { touchedFiles: [...touchedSet], reportedKeys: state.reportedKeys, ...(anchorBaseSha ? { anchorBaseSha } : {}) });
     appendAuditLog(repoRoot, config.auditLog, { event, harness, files: edited, findings: findings.length });
     if (findings.length === 0 || harness === "grok") return { exitCode: 0, stdout: "", findings };
     const msg = formatReminder(`Veristack detected ${findings.length} issue(s) on your edit — fix before continuing:`, findings);
-    return {
-      exitCode: 0,
-      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: msg } }),
-      findings,
-    };
+    return { exitCode: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: msg } }), findings };
   }
 
   if (payload.reason === "shutdown") return { exitCode: 0, stdout: "", findings: [] };
@@ -458,37 +463,33 @@ export function executeHookEvent(
   for (const rel of candidateFiles) {
     const abs = path.resolve(repoRoot, rel);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
-    const res = scanSingleFile(abs, { repoRoot, tier: "all", strict: true });
-    findings.push(...res.findings);
+    findings.push(...scanSingleFile(abs, { repoRoot, tier: "all", strict: true }).findings);
   }
-  const stopBaseRef = (() => {
-    for (const cand of ["origin/main", "origin/master"]) {
-      if (runGitClean(repoRoot, ["rev-parse", "--verify", `${cand}^{commit}`]).status === 0) return cand;
-    }
-    return "HEAD";
-  })();
+  const hasOriginBase = ["origin/main", "origin/master"].some((c) => runGitClean(repoRoot, ["rev-parse", "--verify", `${c}^{commit}`]).status === 0);
+  const stopBaseRef = state.anchorBaseSha ?? resolveCurrentAnchorSha(repoRoot) ?? "HEAD";
   for (const cheat of scanGitDiffCheats(repoRoot, stopBaseRef)) findings.push(cheat);
+  if (!hasOriginBase) {
+    const hist = runGitClean(repoRoot, ["log", "--max-count=3", "--format=%H", "--", ".verification/rungs.json", "package.json", ".gitattributes"]);
+    const latest = hist.status === 0 ? (hist.stdout.trim().split(/\r?\n/)[0] ?? "") : "";
+    if (latest && runGitClean(repoRoot, ["rev-parse", "--verify", `${latest}~1^{commit}`]).status === 0) {
+      findings.push(...auditManifestDowngrade(repoRoot, `${latest}~1`, { downgradeOnly: true }));
+    }
+  }
   for (const mf of [".verification/hooks.json", ".claude/settings.local.json", ".codex/hooks.json", ".cursor/hooks.json"]) {
     if (!fs.existsSync(path.join(repoRoot, mf)) && runGitClean(repoRoot, ["cat-file", "-e", `${stopBaseRef}:${mf}`]).status === 0) {
       findings.push({ id: `HOOK:deleted:${mf}`, rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: mf, line: 1, message: `Protected hook manifest '${mf}' was deleted compared to ${stopBaseRef}.`, fix: `Restore '${mf}' or run 'vstack hooks on'.` });
     }
   }
   if (isHooksConfigTamperedToDisabled(repoRoot)) {
-    const cfgPath = path.join(repoRoot, ".verification", "hooks.json");
     try {
-      const rawCfg = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
-      if (rawCfg.enabled === false) {
+      if ((JSON.parse(fs.readFileSync(path.join(repoRoot, ".verification", "hooks.json"), "utf8")) as Record<string, unknown>).enabled === false) {
         findings.push({ id: "HOOK:tampered:.verification/hooks.json", rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: ".verification/hooks.json", line: 1, message: "Agent disabled Veristack hooks by setting enabled: false in .verification/hooks.json.", fix: "Restore enabled: true in .verification/hooks.json." });
       }
     } catch { void 0; }
   }
-  if (findings.length === 0) {
-    try { if (fs.existsSync(statePath)) fs.unlinkSync(statePath); } catch { void 0; }
-  }
+  if (findings.length === 0) try { if (fs.existsSync(statePath)) fs.unlinkSync(statePath); } catch { void 0; }
   appendAuditLog(repoRoot, config.auditLog, { event, harness, touched: candidateFiles.size, findings: findings.length });
   if (findings.length === 0) return { exitCode: 0, stdout: "", findings: [] };
-
   const msg = formatReminder(`Veristack deep stop-pass found ${findings.length} unaddressed issue(s):`, findings);
-  if (harness === "grok") return { exitCode: 0, stdout: JSON.stringify({ additionalContext: msg }), findings };
-  return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason: msg }), findings };
+  return { exitCode: 0, stdout: JSON.stringify(harness === "grok" ? { additionalContext: msg } : { decision: "block", reason: msg }), findings };
 }

@@ -59,7 +59,7 @@ function extractBalancedBlock(code: string, openBraceIdx: number): string {
 
 function scanSqlRls(file: ScannedFile, findings: Finding[]): void {
   const raw = file.content;
-  const masked = raw.replace(/--[^\n]*/g, (m) => " ".repeat(m.length)).replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+  const masked = maskCode(raw, "sql", true);
 
   for (const m of masked.matchAll(SQL_CREATE_POLICY)) {
     const idx = m.index ?? 0;

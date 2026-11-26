@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { canStartJsRegex } from "./anti-slop/lexical-mask.ts";
 import { runGitClean } from "./rungs/config-audit.ts";
 import { inferArchetypeFromFiles, isHostRepoFile, loadRungManifest } from "./rungs/manifest.ts";
 import { extractSignals } from "./rungs/signals.ts";
@@ -85,27 +86,30 @@ export function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStar
       }
       if (gt < 0) break;
       const attrs = raw.slice(i + 7, gt); const bodyStart = gt + 1;
-      let j = bodyStart; let q = ""; let bodyEnd = -1; let closeLen = 0;
+      let j = bodyStart; let q = ""; let bodyEnd = -1; let closeLen = 0; const tplStack: number[] = [];
       while (j < raw.length) {
         const ch = raw[j] ?? ""; const nx = raw[j + 1] ?? "";
         if (!q) {
+          if (tplStack.length > 0) {
+            const top = tplStack[tplStack.length - 1] ?? 0;
+            if (ch === "{") { tplStack[tplStack.length - 1] = top + 1; j += 1; continue; }
+            if (ch === "}") {
+              if (top === 0) { tplStack.pop(); q = "`"; j += 1; continue; }
+              tplStack[tplStack.length - 1] = top - 1; j += 1; continue;
+            }
+          }
           if (ch === "/" && nx === "/") { while (j < raw.length && raw[j] !== "\n") j += 1; continue; }
           if (ch === "/" && nx === "*") { const e = raw.indexOf("*/", j + 2); j = e < 0 ? raw.length : e + 2; continue; }
-          if (ch === "/" && nx !== "/" && nx !== "*") {
-            let p = j - 1;
-            while (p >= bodyStart && /\s/.test(raw[p] ?? "")) p -= 1;
-            const prevCh = p >= bodyStart ? (raw[p] ?? "") : "";
-            if (!prevCh || "=({[,;:!?&|+-*~%^".includes(prevCh)) {
-              let rj = j + 1; let inCls = false; let ok = false;
-              while (rj < raw.length && raw[rj] !== "\n" && raw[rj] !== "\r") {
-                if (raw[rj] === "\\") { rj += 2; continue; }
-                if (raw[rj] === "[") inCls = true;
-                else if (raw[rj] === "]") inCls = false;
-                else if (raw[rj] === "/" && !inCls) { ok = true; break; }
-                rj += 1;
-              }
-              if (ok) { j = rj + 1; continue; }
+          if (ch === "/" && nx !== "/" && nx !== "*" && canStartJsRegex(raw, j)) {
+            let rj = j + 1; let inCls = false; let ok = false;
+            while (rj < raw.length && raw[rj] !== "\n" && raw[rj] !== "\r") {
+              if (raw[rj] === "\\") { rj += 2; continue; }
+              if (raw[rj] === "[") inCls = true;
+              else if (raw[rj] === "]") inCls = false;
+              else if (raw[rj] === "/" && !inCls) { ok = true; break; }
+              rj += 1;
             }
+            if (ok) { j = rj + 1; continue; }
           }
           if (ch === '"' || ch === "'" || ch === "`") { q = ch; j += 1; continue; }
           if (ch === "<" && nx === "/") {
@@ -113,7 +117,12 @@ export function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStar
             if (cm) { bodyEnd = j; closeLen = cm[0].length; break; }
           }
           j += 1;
-        } else { if (ch === "\\") { j += 2; continue; } if (ch === q) q = ""; j += 1; }
+        } else {
+          if (ch === "\\") { j += 2; continue; }
+          if (q === "`" && ch === "$" && nx === "{") { q = ""; tplStack.push(0); j += 2; continue; }
+          if (ch === q) q = "";
+          j += 1;
+        }
       }
       if (bodyEnd < 0) break;
       spans.push({ attrs, bodyStart, bodyEnd }); i = bodyEnd + closeLen; continue;
@@ -462,32 +471,12 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
   }
 
   const languageSet = new Set<Language>();
-  for (const file of files) {
-    if (file.language && isHostRepoFile(file.rel)) languageSet.add(file.language);
-  }
-  if (languageSet.size === 0) {
-    for (const file of files) {
-      if (file.language) languageSet.add(file.language);
-    }
-  }
+  for (const file of files) if (file.language && isHostRepoFile(file.rel)) languageSet.add(file.language);
+  if (languageSet.size === 0) for (const file of files) if (file.language) languageSet.add(file.language);
   const languages = [...languageSet].sort();
-
   const observedArchetype = inferArchetypeFromFiles(files, allRelPaths);
   const loadedManifest = loadRungManifest(root);
   const archetype = loadedManifest.manifest?.archetype ?? observedArchetype;
   const { signals, ci } = extractSignals(files, allRelPaths, languages);
-
-  return {
-    root,
-    files,
-    allRelPaths,
-    languages,
-    archetype,
-    observedArchetype,
-    manifest: loadedManifest.manifest,
-    manifestError: loadedManifest.error,
-    scopeExclusions,
-    signals,
-    ci,
-  };
+  return { root, files, allRelPaths, languages, archetype, observedArchetype, manifest: loadedManifest.manifest, manifestError: loadedManifest.error, scopeExclusions, signals, ci };
 }

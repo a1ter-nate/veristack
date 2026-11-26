@@ -180,7 +180,13 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
         const isGit = runGitClean(repo.root, ["rev-parse", "--git-dir"]).status === 0;
         if (isGit) {
           const hasOrigin = runGitClean(repo.root, ["remote", "get-url", "origin"]).status === 0;
-          for (const candidate of ["origin/main", "origin/master", "origin/HEAD"]) {
+          const candidates = [
+            ...(process.env.GITHUB_BASE_REF ? [`origin/${process.env.GITHUB_BASE_REF}`] : []),
+            "origin/main",
+            "origin/master",
+            "origin/HEAD",
+          ];
+          for (const candidate of candidates) {
             const baseSha = runGitClean(repo.root, ["rev-parse", "--verify", `${candidate}^{commit}`]);
             if (baseSha.status === 0) {
               const mb = runGitClean(repo.root, ["merge-base", "HEAD", candidate]);
@@ -203,7 +209,16 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
       if (baseToCheck) {
         const downgrades = auditManifestDowngrade(repo.root, baseToCheck, { failClosedOnMissingBase: failClosed });
         if (!explicitBase && !hasTrustedOriginBase) {
-          const manifestHist = runGitClean(repo.root, ["log", "--format=%H", "--", ".verification/rungs.json", "package.json", ".gitattributes"]);
+          const histPaths = [".verification/rungs.json", "package.json", ".gitattributes"];
+          const manifestFile = `${repo.root}/.verification/rungs.json`;
+          if (fs.existsSync(manifestFile)) {
+            const rawM = fs.readFileSync(manifestFile, "utf8");
+            for (const m of rawM.matchAll(/(?:--cwd|--filter|-F)\s+["']?([^\s"']+)["']?/g)) {
+              const sub = (m[1] ?? "").replace(/^\.\//, "").replace(/\/+$/, "");
+              if (sub) histPaths.push(`${sub}/package.json`);
+            }
+          }
+          const manifestHist = runGitClean(repo.root, ["log", "--max-count=5", "--format=%H", "--", ...histPaths]);
           const touchedCommits = manifestHist.status === 0 ? manifestHist.stdout.trim().split(/\r?\n/).filter(Boolean) : [];
           const checkedRefs = new Set<string>();
           for (const sha of touchedCommits) {

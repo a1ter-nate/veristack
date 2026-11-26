@@ -109,6 +109,7 @@ function parseCommandMetrics(
   const parsedCounts = parseRunnerTestCounts(output, steps);
   const metrics: NonNullable<RungReceipt["metrics"]> = {};
   if (parsedCounts.hasTestRunner) {
+    const hasStructuredReporterFlag = steps.some((seg) => seg.some((tok) => /^(?:--junitxml|--logger|--reporter(?:s)?=junit|--test-reporter=junit)$/i.test(tok) || /^(?:junit|trx)$/i.test(tok)));
     if (parsedCounts.matched) {
       metrics.testsPassed =
         typeof structured.testsPassed === "number"
@@ -118,6 +119,9 @@ function parseCommandMetrics(
     } else if (typeof structured.testsFailed === "number" && structured.testsFailed > 0) {
       metrics.testsPassed = 0;
       metrics.testsFailed = structured.testsFailed;
+    } else if (hasStructuredReporterFlag && typeof structured.testsPassed === "number" && structured.testsPassed > 0) {
+      metrics.testsPassed = structured.testsPassed;
+      metrics.testsFailed = structured.testsFailed ?? 0;
     }
   } else {
     if (typeof structured.testsPassed === "number") metrics.testsPassed = structured.testsPassed;

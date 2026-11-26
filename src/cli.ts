@@ -335,8 +335,8 @@ async function run(): Promise<number> {
   }
 
   if (cmd === "mcdc") {
-    const expr = rest.find((a) => !a.startsWith("-"));
-    if (!expr) throw new Error('vstack mcdc requires a boolean expression, e.g. vstack mcdc "a || (b && !c)".');
+    const expr = firstPositional(rest);
+    if (!expr || expr === ".") throw new Error('vstack mcdc requires a boolean expression, e.g. vstack mcdc "a || (b && !c)".');
     const result = generateMcdcVectors(expr);
     if (asJson) {
       console.log(JSON.stringify(result, null, 2));
@@ -354,8 +354,8 @@ async function run(): Promise<number> {
   }
 
   if (cmd === "spc") {
-    const metricsPath = rest.find((a) => !a.startsWith("-"));
-    if (!metricsPath) throw new Error("vstack spc requires a JSON metrics file ({ metric, upperSpecLimit, values }).");
+    const metricsPath = firstPositional(rest);
+    if (!metricsPath || metricsPath === ".") throw new Error("vstack spc requires a JSON metrics file ({ metric, upperSpecLimit, values }).");
     const parsed = JSON.parse(fs.readFileSync(metricsPath, "utf8")) as {
       metric: string;
       upperSpecLimit: number;
@@ -373,8 +373,8 @@ async function run(): Promise<number> {
   }
 
   if (cmd === "big-o") {
-    const samplesPath = rest.find((a) => !a.startsWith("-"));
-    if (!samplesPath) {
+    const samplesPath = firstPositional(rest);
+    if (!samplesPath || samplesPath === ".") {
       throw new Error("vstack big-o requires a JSON samples file ({ samples: [{ n, timeMs, memoryBytes? }], maxTimeExponent? }).");
     }
     const parsed = JSON.parse(fs.readFileSync(samplesPath, "utf8")) as {

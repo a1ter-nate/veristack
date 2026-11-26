@@ -46,7 +46,7 @@ function isSymmetricBoundMath(callText: string): boolean {
   if (/^-?\d+(?:\.\d+)?$/.test(firstArg)) return true;
   const isMin = /\bMath\.(?:min|Min)\b/.test(callText.slice(0, open));
   if (isMin) return /(?:min|Min|floor|Floor)/.test(firstArg);
-  return /(?:max|Max|cap|Cap|ceiling|Ceiling)/.test(firstArg) || (/(?:max(?:Width|Height|Size|Len|Length|Depth|Mutants))/i.test(secondArg) && !/(?:req|requested|val|value|input|count|limit)/i.test(firstArg));
+  return /(?:max|Max|cap|Cap|ceiling|Ceiling)/.test(firstArg) || (/^(?:max|Max)[A-Z]/.test(secondArg) && !/(?:req|requested|val|value|input|limit|budget)/i.test(firstArg));
 }
 const CS_UNDISPOSED_NEW =
   /^[ \t]*(?!using\b|await\s+using\b|return\b)(?:var|[A-Za-z0-9_.<>]+)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*new\s+(?:SqlConnection|NpgsqlConnection|FileStream|StreamReader|StreamWriter|DbCommand|SqlCommand)\s*\(/gm;
@@ -319,10 +319,15 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
   }
 
   if (file.language === "go") {
+    const importsNetHttp = /"net\/http"/.test(raw);
     for (const m of masked.matchAll(GO_HTTP_CALL)) {
       const idx = m.index ?? 0;
       const tail = masked.slice(idx, idx + 500);
+      if (/\.Do\s*\(/.test(m[0]) && !importsNetHttp) continue;
       if (/\.Do\s*\(\s*func\b/i.test(tail) || /\bonce\.Do\s*\(/i.test(m[0])) continue;
+      const openIdx = masked.indexOf("(", idx);
+      const args = openIdx >= 0 ? extractBalancedParenArgs(masked, openIdx) : null;
+      if (/\.Do\s*\(/.test(m[0]) && args !== null && args.includes(",")) continue;
       const lineStart = raw.lastIndexOf("\n", idx) + 1;
       const linePrefix = masked.slice(lineStart, idx);
       if (/^\s*return\b/.test(linePrefix)) continue;

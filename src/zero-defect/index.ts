@@ -4,6 +4,7 @@ import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
 import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "../rungs/command-audit.ts";
 import { runGitClean } from "../rungs/config-audit.ts";
+import { parseRunnerTestCounts } from "../rungs/runner-metrics.ts";
 import type { Finding, RungId } from "../types.ts";
 import { auditFormalSync } from "./formal-sync.ts";
 import { auditLaws } from "./laws.ts";
@@ -316,19 +317,22 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
     throw new Error(`Invalid git baseRef "${baseRef}".`);
   }
   const root = path.resolve(repoPath);
-  const changed = runGitClean(root, ["status", "--porcelain"]);
+  const changed = runGitClean(root, ["status", "--porcelain", "-uall"]);
   const diffNames = runGitClean(root, ["diff", "--name-only", baseRef, "--"]);
 
   const candidates = new Set<string>();
   for (const line of `${changed.stdout ?? ""}\n${diffNames.stdout ?? ""}`.split(/\r?\n/)) {
     const cleaned = line.replace(/^[ MADRCU?!]{1,2}\s+/, "").trim();
     if (!cleaned) continue;
-    if (/(?:^|\/)(?:tests?|__tests__|spec)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.(?:py|rs|go)$|Tests?\.cs$/i.test(cleaned)) {
+    if (/(?:^|\/)(?:tests?|__tests__|spec)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.(?:py|rs|go)$|(?:^|\/)test_[^/]+\.py$|Tests?\.cs$/i.test(cleaned)) {
       candidates.add(cleaned);
     }
   }
 
-  const copiedTestFiles = [...candidates].filter((rel) => fs.existsSync(path.join(root, rel)));
+  const copiedTestFiles = [...candidates].filter((rel) => {
+    const p = path.join(root, rel);
+    return fs.existsSync(p) && fs.statSync(p).isFile();
+  });
   if (copiedTestFiles.length === 0) {
     return {
       passed: false,
@@ -376,14 +380,31 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
         reason: `Unsafe red-before-fix test command rejected: ${parsedCmd.error}`,
       };
     }
+    const srcNm = path.join(root, "node_modules");
+    const wtNm = path.join(resolvedWorktree, "node_modules");
+    if (fs.existsSync(srcNm) && !fs.existsSync(wtNm)) { try { fs.symlinkSync(srcNm, wtNm); } catch { void 0; } }
     const cleanEnv = scrubChildEnv();
-    const baseRun = runArgvChain(parsedCmd.steps, worktreeDir, cleanEnv, 120_000);
-    const headRun = runArgvChain(parsedCmd.steps, root, cleanEnv, 120_000);
+    const baseTmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-rbf-b-"));
+    const headTmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-rbf-h-"));
+    let baseRun: ReturnType<typeof runArgvChain>;
+    let headRun: ReturnType<typeof runArgvChain>;
+    try {
+      const mkEnv = (t: string): NodeJS.ProcessEnv => ({ ...cleanEnv, HOME: t, XDG_CONFIG_HOME: t, TMPDIR: t, TMP: t, TEMP: t });
+      baseRun = runArgvChain(parsedCmd.steps, worktreeDir, mkEnv(baseTmp), 120_000, parsedCmd.stepCwds);
+      headRun = runArgvChain(parsedCmd.steps, root, mkEnv(headTmp), 120_000, parsedCmd.stepCwds);
+    } finally {
+      fs.rmSync(baseTmp, { recursive: true, force: true });
+      fs.rmSync(headTmp, { recursive: true, force: true });
+    }
     const baseCode = baseRun.status ?? 1;
     const headCode = headRun.status ?? 1;
     const baseOut = `${baseRun.stdout ?? ""}\n${baseRun.stderr ?? ""}`;
-    const baseInvalidRed = Boolean(baseRun.signal === "SIGTERM" || baseRun.error || INVALID_RED_ERROR.test(baseOut));
-    const passed = baseCode !== 0 && !baseInvalidRed && headCode === 0;
+    const headOut = `${headRun.stdout ?? ""}\n${headRun.stderr ?? ""}`;
+    const headCounts = parseRunnerTestCounts(headOut, parsedCmd.steps);
+    const isDirectScript = parsedCmd.steps.every((s) => (s[0] === "bun" || s[0] === "node") && /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(s[1] ?? ""));
+    const headRanZero = headCounts.hasTestRunner && (isDirectScript ? (headCounts.matched && (headCounts.passed <= 0 || headCounts.failed > 0)) : (!headCounts.matched || headCounts.passed <= 0 || headCounts.failed > 0));
+    const baseInvalidRed = Boolean(baseRun.signal === "SIGTERM" || baseRun.error || INVALID_RED_ERROR.test(baseOut) || /\b(?:ModuleNotFoundError|cannot find package)\b/i.test(baseOut));
+    const passed = baseCode !== 0 && !baseInvalidRed && headCode === 0 && !headRanZero;
 
     return {
       passed,

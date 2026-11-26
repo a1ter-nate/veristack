@@ -172,7 +172,7 @@ function checkCsharpTypes(file: ScannedFile, masked: string): Finding[] {
 
     const isReadView = /(?:View|Projection|Summary|Response|Request)$/i.test(name);
     const isStringWireDto =
-      /(?:Dto|Row|Payload|ViewModel|Contract|Message|Event|Params|Options|Config|Settings|Spec)$/i.test(name) &&
+      /(?:Dto|Result|Row|Payload|ViewModel|Contract|Message|Event|Params|Options|Config|Settings|Spec)$/i.test(name) &&
       props.some((p) => p.name === discriminantName && /^string$/i.test(p.type.trim()));
     if (discriminantName && nullableSiblings.size >= 2 && !isStringWireDto && !isReadView) {
       const optList = [...nullableSiblings].slice(0, 5).join(", ");

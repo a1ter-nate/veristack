@@ -115,6 +115,7 @@ function parseCoberturaDetailed(content: string, repoRoot?: string): DetailedCov
   const cleaned = stripXmlNonStructure(content);
   const fileRate = new Map<string, number>();
   const lineHits = new Map<string, Map<number, number>>();
+  const branchHits = new Map<string, Map<number, { found: number; hit: number }>>();
   const sources: string[] = [];
   for (const sm of cleaned.matchAll(/<source>\s*([^<]+?)\s*<\/source>/gi)) {
     if (sm[1]) sources.push(sm[1].trim().replace(/\\/g, "/"));
@@ -162,6 +163,14 @@ function parseCoberturaDetailed(content: string, repoRoot?: string): DetailedCov
         lineCount += 1; if (hits > 0) lineHit += 1;
         const fmap = lineHits.get(file) ?? new Map<number, number>();
         fmap.set(num, (fmap.get(num) ?? 0) + hits); lineHits.set(file, fmap);
+        const cc = readXmlAttr(ltag.attrs, "condition-coverage");
+        const cm = cc ? /\((\d+)\/(\d+)\)/.exec(cc) : null;
+        if (cm?.[1] && cm?.[2]) {
+          const bmap = branchHits.get(file) ?? new Map<number, { found: number; hit: number }>();
+          const cur = bmap.get(num) ?? { found: 0, hit: 0 };
+          cur.hit += Number(cm[1]); cur.found += Number(cm[2]);
+          bmap.set(num, cur); branchHits.set(file, bmap);
+        }
       }
     }
     const rateRaw = readXmlAttr(tag.attrs, "line-rate");
@@ -171,7 +180,7 @@ function parseCoberturaDetailed(content: string, repoRoot?: string): DetailedCov
     const prev = fileRate.get(file);
     fileRate.set(file, prev === undefined ? clamped : Math.min(prev, clamped));
   }
-  return { fileRate, lineHits };
+  return { fileRate, lineHits, branchHits };
 }
 
 function parseCoberturaXml(content: string, repoRoot?: string): Map<string, number> {
@@ -241,20 +250,24 @@ function parseJunitOrTrx(content: string): { passed: number; failed: number; ski
     }
   }
   let depth = 0; let countedDepth = -1; let total = 0; let failed = 0; let skipped = 0; let matchedAny = false; let invalidAttr = false;
+  let nestedFailed = 0;
   for (const tag of scanXmlTags(cleaned, "testsuite")) {
     if (tag.closing) { depth = Math.max(0, depth - 1); if (countedDepth === depth) countedDepth = -1; continue; }
+    const [t, f, e, sk, dis] = [parseIntAttr(tag.attrs, "tests", true), parseIntAttr(tag.attrs, "failures"), parseIntAttr(tag.attrs, "errors"), parseIntAttr(tag.attrs, "skipped"), parseIntAttr(tag.attrs, "disabled")];
+    if (t !== null && (f === null || e === null || sk === null || dis === null)) { invalidAttr = true; break; }
     if (countedDepth < 0) {
-      const [t, f, e, sk, dis] = [parseIntAttr(tag.attrs, "tests", true), parseIntAttr(tag.attrs, "failures"), parseIntAttr(tag.attrs, "errors"), parseIntAttr(tag.attrs, "skipped"), parseIntAttr(tag.attrs, "disabled")];
       if (t !== null) {
-        if (f === null || e === null || sk === null || dis === null) { invalidAttr = true; break; }
-        matchedAny = true; total += t; failed += f + e; skipped += sk + dis;
+        matchedAny = true; total += t; failed += (f ?? 0) + (e ?? 0); skipped += (sk ?? 0) + (dis ?? 0);
         if (!tag.selfClosing && t > 0) countedDepth = depth;
       }
+    } else if (t !== null && ((f ?? 0) + (e ?? 0)) > 0) {
+      nestedFailed += (f ?? 0) + (e ?? 0);
     }
     if (!tag.selfClosing) depth += 1;
   }
   if (invalidAttr) return undefined;
-  if (matchedAny) return { passed: Math.max(0, total - failed - skipped), failed, skipped };
+  const effFailed = Math.max(failed, nestedFailed);
+  if (matchedAny) return { passed: Math.max(0, total - effFailed - skipped), failed: effFailed, skipped };
   const rootTag = scanXmlTags(cleaned, "testsuites")[0];
   if (rootTag && !rootTag.closing) {
     const a = rootTag.attrs;
@@ -452,18 +465,14 @@ export function computeCrapScore(cyclomaticComplexity: number, coverageFraction:
 }
 
 export function evaluateCrapForCoverageFile(repoRoot: string, coveragePath: string, maxAllowed = 30): CrapReport {
-  if (!Number.isFinite(maxAllowed) || maxAllowed <= 0) {
-    throw new Error(`Invalid --max-crap threshold '${String(maxAllowed)}'; must be a positive finite number.`);
-  }
+  if (!Number.isFinite(maxAllowed) || maxAllowed <= 0) throw new Error(`Invalid --max-crap threshold '${String(maxAllowed)}'; must be a positive finite number.`);
   const absRoot = (() => { try { return fs.realpathSync(path.resolve(repoRoot)); } catch { return path.resolve(repoRoot); } })();
   const absCov = path.isAbsolute(coveragePath) ? coveragePath : path.join(absRoot, coveragePath);
   const raw = fs.readFileSync(absCov, "utf8");
   const detailed = raw.trimStart().startsWith("<") ? parseCoberturaDetailed(raw, absRoot) : parseLcovDetailed(raw, absRoot);
   const offenders: CrapEntry[] = [];
   const coveredRelSet = new Set<string>();
-  let worstCrap = 0;
-  let evaluatedFiles = 0;
-
+  let worstCrap = 0; let evaluatedFiles = 0;
   for (const [fileRel] of detailed.fileRate.entries()) {
     const absFile = path.resolve(absRoot, fileRel);
     if ((absFile !== absRoot && !absFile.startsWith(`${absRoot}${path.sep}`)) || !fs.existsSync(absFile) || !fs.statSync(absFile).isFile()) continue;
@@ -481,13 +490,7 @@ export function evaluateCrapForCoverageFile(repoRoot: string, coveragePath: stri
     if (fileWorstCrap > worstCrap) worstCrap = fileWorstCrap;
     if (fileWorstCrap > maxAllowed) offenders.push({ file: path.relative(absRoot, absFile).split(path.sep).join("/"), cyclomaticComplexity: fileWorstCc, coveragePct: Number((fileWorstCov * 100).toFixed(1)), crapScore: fileWorstCrap });
   }
-
-  const repo = discoverRepo(absRoot);
-  const uncoveredRepoFiles = repo.files
-    .filter((f) => f.language && !f.isTest && !f.rel.endsWith(".d.ts") && !f.rel.endsWith(".pyi") && isHostRepoFile(f.rel) && !coveredRelSet.has(f.rel))
-    .map((f) => f.rel)
-    .sort();
-
+  const uncoveredRepoFiles = discoverRepo(absRoot).files.filter((f) => f.language && !f.isTest && !f.isStub && isHostRepoFile(f.rel) && !coveredRelSet.has(f.rel)).map((f) => f.rel).sort();
   offenders.sort((a, b) => b.crapScore - a.crapScore);
   return { maxAllowed, passed: evaluatedFiles > 0 && offenders.length === 0 && uncoveredRepoFiles.length === 0, worstCrap, offenders, evaluatedFiles, uncoveredRepoFiles };
 }

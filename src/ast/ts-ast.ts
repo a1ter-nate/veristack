@@ -71,7 +71,7 @@ export function parseTsAst(file: ScannedFile): AstNode | null {
   try {
     const res = parseSync(virtualName, file.content);
     if (res.errors.length === 0 && isAstNode(res.program)) return res.program;
-    if (/\.js$/i.test(virtualName) && /<[A-Za-z]/.test(file.content)) {
+    if (/\.(?:js|ts)$/i.test(virtualName) && /<[A-Za-z]/.test(file.content)) {
       const jsxRes = parseSync(`${virtualName}x`, file.content);
       if (jsxRes.errors.length === 0 && isAstNode(jsxRes.program)) return jsxRes.program;
     }

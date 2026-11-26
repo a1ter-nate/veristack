@@ -45,6 +45,11 @@ jobs:
         run: |
           bun run typecheck
           bun run lint:oxlint
+      - if: github.event_name == 'pull_request'
+        name: Fetch PR base ref before strict control-plane verification
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch --no-tags --depth=50 origin "$BASE_REF"
       - name: Build and run Veristack against itself (ephemeral-HMAC verify --strict & planted-fault canary)
         run: |
           bun run build
@@ -60,7 +65,6 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF"
           node bin/vstack.mjs diff-cheats . --base "origin/$BASE_REF" --fail
           node bin/vstack.mjs oracle-check . --base "origin/$BASE_REF" --test-cmd "bun test ./tests/ ./examples/typescript/clean/"
 
@@ -75,6 +79,10 @@ jobs:
         with:
           bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
+      - if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch --no-tags --depth=50 origin "$BASE_REF"
       - run: bun run check
 
   verify-csharp:

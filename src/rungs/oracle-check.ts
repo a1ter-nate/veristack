@@ -17,10 +17,10 @@ export interface TwoSidedOracleResult {
 }
 
 const ORACLE_CONFIG_SURFACE =
-  /(?:^|\/)(?:\.gitattributes|package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config(?:\.toml)?|\.config\/nextest\.toml|build\.rs|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|sitecustomize\.py|usercustomize\.py|conftest\.py|go\.mod|go\.work|babel\.config\.[^/]+|\.babelrc(?:\.[^/]+)?|\.swcrc|vitest\.workspace\.[cm]?[jt]s|(?:vitest|vite|jest|playwright|cypress|ava)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|phpunit\.xml(?:\.dist)?|\.rspec|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|global\.json|[^/]+\.csproj|[^/]+\.runsettings|\.env(?:\.[^/]+)?|\.verification\/rungs\.json|examples\/[^/]+\/manifest\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
+  /(?:^|\/)(?:\.gitattributes|package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config(?:\.toml)?|\.config\/nextest\.toml|build\.rs|pyproject\.toml|pytest\.ini|\.pytest\.toml|pytest\.toml|setup\.cfg|tox\.ini|sitecustomize\.py|usercustomize\.py|conftest\.py|pytest\.py|unittest\.py|go\.mod|go\.work|babel\.config\.[^/]+|\.babelrc(?:\.[^/]+)?|\.swcrc|vitest\.workspace\.[cm]?[jt]s|(?:vitest|vite|jest|playwright|cypress|ava)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|phpunit\.xml(?:\.dist)?|\.rspec|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|global\.json|[^/]+\.csproj|[^/]+\.runsettings|\.env(?:\.[^/]+)?|\.verification\/rungs\.json|examples\/[^/]+\/manifest\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
 
 const TEST_DIR_SURFACE =
-  /(?:^|\/)(?:tests|test|__tests__|spec|specs|testdata|fixtures|__fixtures__|golden|goldens|[^/]+\.(?:Tests|UnitTests|IntegrationTests|Specs))\//i;
+  /(?:^|\/)(?:tests|test|__tests__|test-utils|testing|spec|specs|testdata|fixtures|__fixtures__|mocks|__mocks__|stubs|helpers|support|golden|goldens|[^/]+\.(?:Tests|UnitTests|IntegrationTests|Specs))\//i;
 
 function isOracleSurface(rel: string): boolean {
   const norm = rel.replace(/\\/g, "/");
@@ -176,26 +176,8 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   const revCheck = runGitClean(root, ["rev-parse", "--verify", `${baseRef}^{commit}`]);
   if (revCheck.status !== 0) return fail(-1, -1, `git rev-parse failed for base ref '${baseRef}' — failing closed.`);
 
-  const parsedCmd = parseAndValidateCommandArgv("canary", testCmd, root);
-  if (parsedCmd.error) return fail(-1, -1, `Rejected oracle --test-cmd: ${parsedCmd.error}`);
-  const childEnv = scrubChildEnv();
-  const headHome = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oh-head-"));
-  let headRun: ReturnType<typeof runArgvChain>;
-  try {
-    headRun = runArgvChain(parsedCmd.steps, root, makeSandboxPythonEnv(childEnv, root, headHome), 120_000, parsedCmd.stepCwds);
-  } finally {
-    fs.rmSync(headHome, { recursive: true, force: true });
-  }
-  const headExit = headRun.status;
-  if (headExit !== 0) return fail(headExit, -1, `Head test suite fails (exit ${headExit}).`);
-  const headCounts = parseRunnerTestCounts(`${headRun.stdout}\n${headRun.stderr}`, parsedCmd.steps);
-  if (headCounts.hasTestRunner && (!headCounts.matched || headCounts.passed <= 0 || headCounts.failed > 0)) {
-    return fail(headExit, -1, `Head test suite executed 0 passing tests (matched=${headCounts.matched}, passed=${headCounts.passed}).`);
-  }
-
   const diffFiles = runGitClean(root, ["diff", "--no-renames", "--name-only", baseRef, "--"]);
-  if (diffFiles.status !== 0) return fail(headExit, -1, `git diff against '${baseRef}' failed — failing closed.`);
-
+  if (diffFiles.status !== 0) return fail(-1, -1, `git diff against '${baseRef}' failed — failing closed.`);
   const allDiffPaths = (diffFiles.stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const diffSet = new Set<string>(allDiffPaths.filter((s) => isOracleSurface(s)));
   const rustInlineCandidates = allDiffPaths.filter((s) => s.endsWith(".rs") && !diffSet.has(s));
@@ -207,6 +189,25 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   );
   for (const rel of listAllWorkingTreeOracleFiles(root)) {
     if (!trackedAtBase.has(rel)) diffSet.add(rel);
+  }
+
+  const parsedCmd = parseAndValidateCommandArgv("canary", testCmd, root);
+  if (parsedCmd.error) return fail(-1, -1, `Rejected oracle --test-cmd: ${parsedCmd.error}`);
+  const childEnv = scrubChildEnv();
+  const headSandboxDir = copyWorkingTreeToSandbox(root);
+  const headHome = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oh-head-"));
+  let headRun: ReturnType<typeof runArgvChain>;
+  try {
+    headRun = runArgvChain(parsedCmd.steps, headSandboxDir, makeSandboxPythonEnv(childEnv, headSandboxDir, headHome), 120_000, parsedCmd.stepCwds);
+  } finally {
+    fs.rmSync(headSandboxDir, { recursive: true, force: true });
+    fs.rmSync(headHome, { recursive: true, force: true });
+  }
+  const headExit = headRun.status;
+  if (headExit !== 0) return fail(headExit, -1, `Head test suite fails (exit ${headExit}).`);
+  const headCounts = parseRunnerTestCounts(`${headRun.stdout}\n${headRun.stderr}`, parsedCmd.steps);
+  if (headCounts.hasTestRunner && (!headCounts.matched || headCounts.passed <= 0 || headCounts.failed > 0)) {
+    return fail(headExit, -1, `Head test suite executed 0 passing tests (matched=${headCounts.matched}, passed=${headCounts.passed}).`);
   }
   const changedOracleFiles = [...diffSet].sort();
   const rustInlineSplices: Array<{ rel: string; spliced: string }> = [];

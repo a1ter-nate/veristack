@@ -1,4 +1,4 @@
-function canStartJsRegex(text: string, idx: number): boolean {
+export function canStartJsRegex(text: string, idx: number): boolean {
   if (idx > 0 && text[idx - 1] === "<") return false;
   let p = idx - 1;
   while (p >= 0 && /\s/.test(text[p] ?? "")) p -= 1;
@@ -26,7 +26,7 @@ function canStartJsRegex(text: string, idx: number): boolean {
   if (/[A-Za-z0-9_$]/.test(prev)) {
     let s = p;
     while (s > 0 && /[A-Za-z0-9_$]/.test(text[s - 1] ?? "")) s -= 1;
-    return /^(?:return|case|throw|yield|await|typeof|void|delete|in|of|new|else|do)$/.test(text.slice(s, p + 1));
+    return /^(?:return|case|default|throw|yield|await|typeof|void|delete|in|of|new|else|do)$/.test(text.slice(s, p + 1));
   }
   return false;
 }
@@ -57,7 +57,7 @@ export function scanLexical(text: string, stripComments: boolean, language?: str
   const out = [...text];
   const regexSpans: Array<{ start: number; end: number }> = [];
   const commentSpans: LexicalCommentSpan[] = [];
-  let quote = ""; let tripleQuote = ""; let tripleLen = 0; let tripleRaw = false; let tripleEscaped = false;
+  let quote = ""; let quoteInterpDepth = -1; let tripleQuote = ""; let tripleLen = 0; let tripleRaw = false; let tripleEscaped = false;
   let verbatimCSharp = false; let verbatimInterpDepth = 0; let rustRawHashes = -1; let sqlDollarTag = "";
   let escaped = false; let line = 1; let seenCode = false; let atBol = true;
   const tplBraceStack: number[] = [];
@@ -179,10 +179,15 @@ export function scanLexical(text: string, stripComments: boolean, language?: str
           }
         }
         if (ch === "'") {
+          const isPgEscape = i > 0 && (text[i - 1] === "E" || text[i - 1] === "e") && (i === 1 || !/[A-Za-z0-9_]/.test(text[i - 2] ?? ""));
           out[i] = " "; i += 1;
           while (i < text.length) {
             if (text[i] === "\n") line += 1;
             else if (text[i] !== "\r") out[i] = " ";
+            if (isPgEscape && text[i] === "\\" && i + 1 < text.length) {
+              if (text[i + 1] !== "\n" && text[i + 1] !== "\r") out[i + 1] = " ";
+              i += 2; continue;
+            }
             if (text[i] === "'") {
               if (text[i + 1] === "'") { out[i + 1] = " "; i += 2; continue; }
               break;
@@ -241,18 +246,42 @@ export function scanLexical(text: string, stripComments: boolean, language?: str
       }
       if (ch === '"' || ch === "'" || (ch === "`" && !isRust && !isCsharp)) {
         if (isRust && ch === "'" && (next === "_" || /[A-Za-z]/.test(next)) && (text[i + 2] ?? "") !== "'") continue;
-        quote = ch; out[i] = " ";
+        if (isJsLike && ch === "'" && i > 0 && /[A-Za-z]/.test(text[i - 1] ?? "") && /[A-Za-z]/.test(next)) continue;
+        const isCsharpInterp = isCsharp && ch === '"' && i > 0 && text[i - 1] === "$";
+        const isPyFString = isPython && (ch === '"' || ch === "'") && i > 0 && (text[i - 1] === "f" || text[i - 1] === "F" || (i > 1 && (text[i - 2] === "f" || text[i - 2] === "F") && /[rRbB]/.test(text[i - 1] ?? "")));
+        quote = ch; quoteInterpDepth = isCsharpInterp || isPyFString ? 0 : -1; out[i] = " ";
       }
       continue;
     }
-    if (ch === "\n" || ch === "\r") { escaped = false; if (quote !== "`") quote = ""; continue; }
+    if (ch === "\n" || ch === "\r") { escaped = false; if (quote !== "`") { quote = ""; quoteInterpDepth = -1; } continue; }
+    if (quoteInterpDepth >= 0 && !escaped) {
+      if (ch === "{") {
+        if (next === "{") { out[i] = " "; out[i + 1] = " "; i += 1; continue; }
+        out[i] = " "; quoteInterpDepth += 1; continue;
+      }
+      if (quoteInterpDepth > 0) {
+        out[i] = " ";
+        if (ch === "}") { quoteInterpDepth -= 1; continue; }
+        if (ch === '"' || ch === "'") {
+          const innerQ = ch; let k = i + 1;
+          while (k < text.length && text[k] !== "\n") {
+            if (text[k] !== "\r") out[k] = " ";
+            if (text[k] === "\\") { k += 2; continue; }
+            if (text[k] === innerQ) break;
+            k += 1;
+          }
+          i = Math.min(k, text.length - 1); continue;
+        }
+        continue;
+      }
+    }
     if (quote === "`" && isJsLike && !escaped && ch === "$" && next === "{") {
-      out[i] = " "; out[i + 1] = " "; i += 1; quote = ""; tplBraceStack.push(0); continue;
+      out[i] = " "; out[i + 1] = " "; i += 1; quote = ""; quoteInterpDepth = -1; tplBraceStack.push(0); continue;
     }
     out[i] = " ";
     if (escaped) { escaped = false; continue; }
     if (ch === "\\" && !(isGo && quote === "`")) { escaped = true; continue; }
-    if (ch === quote) quote = "";
+    if (ch === quote) { quote = ""; quoteInterpDepth = -1; }
   }
   return { masked: out.join(""), regexSpans, commentSpans };
 }
