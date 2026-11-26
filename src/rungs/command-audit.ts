@@ -169,7 +169,7 @@ export function sanitizeShellBlock(runScript: string): string[] {
     if (/^set\s+-o\s+pipefail\b/.test(trimmed)) { pipefail = true; continue; }
     if (/^(?:exit(?:\s+\d+)?|exec\b)/.test(trimmed)) break;
     if (setPlusE) continue;
-    if (/^(?:elif\s+|else\b|then\b|alias\s+|\$\{\{|!(\s|$)|[A-Za-z0-9_*?|]+\))/.test(trimmed) || /^(?:echo|printf|true|sleep|:)(?:\s|;|$)/.test(trimmed) || /^false(?:\s|&&|\|\||;|$)/.test(trimmed) || /^\.\/vstack\b/.test(trimmed) || /\|\|/.test(trimmed) || /;\s*(?:true|echo|printf|:|exit)(?:\s|$)/.test(trimmed) || /(?:^|[^&>])&(?!&|>)/.test(trimmed) || /&&\s*(?:echo|printf|true|:)(?:\s|$)/.test(trimmed) || (!pipefail && /\|\s*(?:tee|cat|true|head|tail|grep|awk|sed)\b/.test(trimmed)) || /\s(?:--help|-h|--version|-V|--list-tests)(?:\s|$)/.test(trimmed)) continue;
+    if (/^(?:elif\s+|else\b|then\b|alias\s+|\$\{\{|!(\s|$)|\[{1,2}\s+|test\s+|[A-Za-z0-9_*?|]+\))/.test(trimmed) || /^(?:echo|printf|true|sleep|:)(?:\s|;|$)/.test(trimmed) || /^false(?:\s|&&|\|\||;|$)/.test(trimmed) || /^\.\/vstack\b/.test(trimmed) || /\|\|/.test(trimmed) || /;\s*(?:true|echo|printf|:|exit)(?:\s|$)/.test(trimmed) || /(?:^|[^&>])&(?!&|>)/.test(trimmed) || /&&\s*(?:echo|printf|true|:)(?:\s|$)/.test(trimmed) || (!pipefail && /(?:^|[^|])\|(?!\|)/.test(trimmed)) || /\s(?:--help|-h|--version|-V|--list-tests)(?:\s|$)/.test(trimmed)) continue;
     active.push(trimmed);
   }
   return active;
@@ -251,7 +251,8 @@ export function extractToolHead(tokens: readonly string[], repoRoot?: string): {
   }
   if (low0 === "pnpm" && (tokens[1] === "--filter" || tokens[1] === "-F") && tokens[2] && tokens[3]) {
     const rawF = tokens[2];
-    const f = /^\{(.+)\}$/.exec(rawF)?.[1] ?? rawF;
+    const strippedF = rawF.replace(/^\.{3}|[\^]?\.{3}$/g, "");
+    const f = /^\{(.+)\}$/.exec(strippedF)?.[1] ?? strippedF;
     if (repoRoot) {
       if ((f.startsWith(".") || f.startsWith("/") || f.includes("..")) && !isPathInsideRepo(f, repoRoot)) return { head: "", toolArgs: [], error: `pnpm ${tokens[1]} '${rawF}' escapes repo root` };
       const cDir = path.resolve(repoRoot, f);

@@ -190,7 +190,12 @@ function auditPytestAddopts(rel: string, text: string): string | null {
     const eq = tok.indexOf("=");
     const flag = eq > 0 ? tok.slice(0, eq) : tok;
     if (SAFE_PYTEST_BOOL.has(tok) || (eq < 0 && SAFE_PYTEST_BOOL.has(flag))) continue;
-    if (SAFE_PYTEST_VALUE.has(flag)) { if (eq < 0) i += 1; continue; }
+    if (SAFE_PYTEST_VALUE.has(flag)) {
+      const val = eq > 0 ? tok.slice(eq + 1) : (tokens[i + 1] ?? "");
+      if (eq < 0) { if (!val || val.startsWith("-")) return `${rel} pytest addopts flag '${tok}' is missing a non-flag value.`; i += 1; }
+      if (flag === "--cov-fail-under" && (!Number.isFinite(Number(val)) || Number(val) < 1)) return `${rel} pytest addopts sets --cov-fail-under below 1 ('${val}').`;
+      continue;
+    }
     return `${rel} pytest addopts uses disallowed flag '${tok}' (positive pytest addopts allowlist).`;
   }
   return null;
@@ -261,6 +266,7 @@ function auditPytestFile(rel: string, raw: string, dir: string): string | null {
 
 const JS_TEST_CONFIG_FILES = [
   "vitest.config.ts", "vitest.config.mts", "vitest.config.js", "vitest.config.mjs", "vitest.config.cjs",
+  "vitest.workspace.ts", "vitest.workspace.mts", "vitest.workspace.js", "vitest.workspace.mjs", "vitest.workspace.cjs",
   "vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs",
   "jest.config.ts", "jest.config.js", "jest.config.mjs", "jest.config.cjs", "jest.config.json",
 ];
@@ -272,54 +278,59 @@ export const VERIFICATION_TOOLS = new Set([
 
 function auditJsTestConfig(rel: string, raw: string): string | null {
   if (/\bpassWithNoTests["']?\s*[:=]\s*true\b/i.test(raw)) return `${rel} sets passWithNoTests: true.`;
-  if (/\b(?:setupFiles|setupFilesAfterEnv|globalSetup)["']?\s*[:=]\s*[["'`]/i.test(raw)) return `${rel} declares setupFiles/globalSetup hook that can alter test runtime.`;
+  if (/\b(?:setupFiles|setupFilesAfterEnv|globalSetup|testRunner|moduleNameMapper)["']?\s*[:=]/i.test(raw)) return `${rel} declares setupFiles/globalSetup/testRunner/moduleNameMapper hook that can alter test runtime.`;
   if (/\b(?:testNamePattern|testMatch|testRegex|roots|rootDir|dir)["']?\s*[:=]\s*[["'`/]/i.test(raw)) return `${rel} overrides test discovery/matching via testNamePattern/testMatch/roots/dir.`;
   const ignoreMatch = /\btestPathIgnorePatterns["']?\s*[:=]\s*\[([^\]]*)\]/i.exec(raw);
   if (ignoreMatch?.[1]) {
     const items = [...ignoreMatch[1].matchAll(/["']([^"']+)["']/g)].map((m) => m[1] ?? "");
     if (items.some((it) => !/^\/?node_modules\/?$/.test(it.trim()))) return `${rel} ignores non-node_modules paths in testPathIgnorePatterns.`;
   }
-  if (/\binclude["']?\s*[:=]\s*\[[^\]]*\.(?:test|spec)\.[cm]?[jt]sx?/i.test(raw)) return `${rel} narrows test include to explicit test filename(s).`;
-  if (/\bexclude["']?\s*[:=]\s*\[[^\]]*["'](?:\*\*\/\*|\*\*\/tests?\/\*\*|tests?\/\*\*)["']/i.test(raw)) return `${rel} excludes test directories from execution.`;
+  if (/\binclude["']?\s*[:=]\s*\[[^\]]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|["']tests?\/[^*"']+["'])/i.test(raw)) return `${rel} narrows test include to explicit test path(s).`;
+  if (/\bexclude["']?\s*[:=]\s*\[[^\]]*["'](?:\*\*\/\*|[^"']*(?:tests?\/|\.(?:test|spec)\.[cm]?[jt]sx?))[^"']*["']/i.test(raw)) return `${rel} excludes test paths from execution.`;
   return null;
 }
 
-const LOCAL_SPEC_RE = /^(?:file:|link:|portal:|workspace:|\.\.?\/|\/|git\+|https?:)|\.tgz$/i;
+const LOCAL_SPEC_RE = /^(?:file:|link:|portal:|workspace:|\.\.?\/|\/|git\+|https?:|npm:|github:|gitlab:|bitbucket:|jsr:|[a-z0-9_.-]+\/[a-z0-9_.-]+(?:$|[#@]))|\.tgz$/i;
 
 function auditPackageToolShadowing(dir: string, rel: string, raw: string, absRoot: string): string | null {
   try {
     const pkg = JSON.parse(raw) as Record<string, unknown>;
-    for (const bagKey of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "overrides", "resolutions"]) {
-      const bag = pkg[bagKey];
-      if (!isRecord(bag)) continue;
+    const bags: Array<[string, Record<string, unknown>]> = [];
+    for (const bagKey of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "overrides", "resolutions", "patchedDependencies"]) {
+      if (isRecord(pkg[bagKey])) bags.push([bagKey, pkg[bagKey] as Record<string, unknown>]);
+    }
+    if (isRecord(pkg.pnpm)) {
+      if (isRecord(pkg.pnpm.overrides)) bags.push(["pnpm.overrides", pkg.pnpm.overrides as Record<string, unknown>]);
+      if (isRecord(pkg.pnpm.patchedDependencies)) bags.push(["pnpm.patchedDependencies", pkg.pnpm.patchedDependencies as Record<string, unknown>]);
+    }
+    const inspectBag = (bagKey: string, bag: Record<string, unknown>): string | null => {
       for (const [k, v] of Object.entries(bag)) {
+        const toolName = k.split("@")[0]?.toLowerCase() ?? k.toLowerCase();
+        if (isRecord(v)) { const nested = inspectBag(`${bagKey}.${k}`, v); if (nested) return nested; continue; }
         const val = typeof v === "string" ? v.trim() : "";
         if (!val) continue;
-        if (VERIFICATION_TOOLS.has(k.toLowerCase()) && LOCAL_SPEC_RE.test(val)) {
-          return `${rel} (${bagKey}) overrides verification tool '${k}' with non-registry spec '${val}'.`;
-        }
-        if (LOCAL_SPEC_RE.test(val)) {
+        if (bagKey.endsWith("patchedDependencies") && VERIFICATION_TOOLS.has(toolName)) return `${rel} (${bagKey}) patches verification tool '${k}'.`;
+        if (VERIFICATION_TOOLS.has(toolName) && LOCAL_SPEC_RE.test(val)) return `${rel} (${bagKey}) overrides verification tool '${k}' with untrusted/alias spec '${val}'.`;
+        if (/^(?:file:|link:|portal:|\.\.?\/|\/)|\.tgz$/i.test(val)) {
           const cleanLocal = val.replace(/^(?:file:|link:|portal:)/i, "");
           if (/\.tgz$/i.test(cleanLocal)) {
-            if (VERIFICATION_TOOLS.has(k.toLowerCase()) || /(?:typescript|tsc|vitest|jest|oxlint|eslint|vstack|veristack)/i.test(cleanLocal)) {
-              return `${rel} (${bagKey}) installs local verification-tool tarball '${val}'.`;
-            }
+            if (VERIFICATION_TOOLS.has(toolName) || /(?:typescript|tsc|vitest|jest|oxlint|eslint|vstack|veristack)/i.test(cleanLocal)) return `${rel} (${bagKey}) installs local verification-tool tarball '${val}'.`;
           } else {
             const subPkg = path.resolve(dir, cleanLocal, "package.json");
             if (fs.existsSync(subPkg) && fs.statSync(subPkg).isFile()) {
               try {
                 const subDoc = JSON.parse(fs.readFileSync(subPkg, "utf8")) as { bin?: string | Record<string, string> };
                 if (isRecord(subDoc.bin)) {
-                  for (const binName of Object.keys(subDoc.bin)) {
-                    if (VERIFICATION_TOOLS.has(binName.toLowerCase())) return `${rel} (${bagKey}) local package '${k}' shadows verification binary '${binName}'.`;
-                  }
+                  for (const binName of Object.keys(subDoc.bin)) if (VERIFICATION_TOOLS.has(binName.toLowerCase())) return `${rel} (${bagKey}) local package '${k}' shadows verification binary '${binName}'.`;
                 }
               } catch { void 0; }
             }
           }
         }
       }
-    }
+      return null;
+    };
+    for (const [bagKey, bag] of bags) { const err = inspectBag(bagKey, bag); if (err) return err; }
     if (isRecord(pkg.bin)) {
       const pkgName = typeof pkg.name === "string" ? pkg.name.toLowerCase() : "";
       for (const binName of Object.keys(pkg.bin)) {
@@ -328,10 +339,7 @@ function auditPackageToolShadowing(dir: string, rel: string, raw: string, absRoo
         if (VERIFICATION_TOOLS.has(low)) return `${rel} declares bin '${binName}' shadowing a verification tool.`;
       }
     }
-    if (isRecord(pkg.jest)) {
-      const err = auditJsTestConfig(`${rel}#jest`, JSON.stringify(pkg.jest));
-      if (err) return err;
-    }
+    if (isRecord(pkg.jest)) { const err = auditJsTestConfig(`${rel}#jest`, JSON.stringify(pkg.jest)); if (err) return err; }
     const nmBin = path.join(dir, "node_modules", ".bin");
     if (fs.existsSync(nmBin) && fs.statSync(nmBin).isDirectory()) {
       const realRoot = (() => { try { return fs.realpathSync(absRoot); } catch { return absRoot; } })();
@@ -341,9 +349,9 @@ function auditPackageToolShadowing(dir: string, rel: string, raw: string, absRoo
         if (!fs.existsSync(binEntry)) continue;
         try {
           const resolved = fs.realpathSync(binEntry);
-          const insideRepo = resolved === realRoot || resolved.startsWith(`${realRoot}${path.sep}`);
+          const insideRoot = resolved === realRoot || resolved.startsWith(`${realRoot}${path.sep}`);
           const insideNm = resolved === realNm || resolved.startsWith(`${realNm}${path.sep}`);
-          if (insideRepo && !insideNm) return `node_modules/.bin/${tool} resolves outside node_modules (${path.relative(realRoot, resolved)}).`;
+          if (insideRoot && !insideNm) return `node_modules/.bin/${tool} resolves outside node_modules (${path.relative(realRoot, resolved)}).`;
         } catch { continue; }
       }
     }
@@ -353,40 +361,34 @@ function auditPackageToolShadowing(dir: string, rel: string, raw: string, absRoo
 
 const PY_SHADOW_FILES = ["sitecustomize.py", "usercustomize.py", "pytest.py", "unittest.py", "mypy.py", "ruff.py", "mutmut.py", "vulture.py"];
 const PY_SHADOW_DIRS = ["pytest", "unittest", "mypy", "ruff", "mutmut", "vulture"];
-const CONFTEST_TAMPER = /\b(?:pytest_collection_modifyitems|pytest_ignore_collect|pytest_runtest_makereport|pytest_configure|pytest_sessionfinish|session\.exitstatus\s*=|items\.clear\s*\(|items\s*\[\s*:\s*\]\s*=)/m;
+const CONFTEST_TAMPER = /\b(?:pytest_collection(?:_modifyitems)?|pytest_ignore_collect|pytest_itemcollected|pytest_generate_tests|pytest_pyfunc_call|pytest_runtest_(?:protocol|setup|call|teardown|makereport)|pytest_runtestloop|pytest_configure|pytest_sessionfinish|pytest_plugins\s*=|session\.exitstatus\s*=|items\.clear\s*\(|items\s*\[\s*:\s*\]\s*=)/m;
 
 function auditPythonShadowing(dir: string): string | null {
   for (const checkDir of [dir, path.join(dir, "src")]) {
     if (!fs.existsSync(checkDir) || !fs.statSync(checkDir).isDirectory()) continue;
-    for (const f of PY_SHADOW_FILES) {
-      if (fs.existsSync(path.join(checkDir, f))) return `Python runtime/tool shadowing file '${f}' is forbidden.`;
-    }
-    for (const d of PY_SHADOW_DIRS) {
-      if (fs.existsSync(path.join(checkDir, d, "__init__.py"))) return `Python package '${d}/' shadows verification tool '${d}'.`;
-    }
-    for (const entry of fs.readdirSync(checkDir)) {
-      if (entry.endsWith(".pth")) return `Python .pth hook '${entry}' can inject startup code.`;
-    }
+    for (const f of PY_SHADOW_FILES) if (fs.existsSync(path.join(checkDir, f))) return `Python runtime/tool shadowing file '${f}' is forbidden.`;
+    for (const d of PY_SHADOW_DIRS) if (fs.existsSync(path.join(checkDir, d, "__init__.py"))) return `Python package '${d}/' shadows verification tool '${d}'.`;
+    for (const entry of fs.readdirSync(checkDir)) if (entry.endsWith(".pth")) return `Python .pth hook '${entry}' can inject startup code.`;
   }
   return null;
 }
 
 const WALK_SKIP = new Set([".git", "node_modules", "target", ".venv", "venv", "dist", "examples", "obj", "bin", "__pycache__"]);
+const CONFIG_TRIGGER_FILES = new Set(["conftest.py", ".pytest.toml", "pytest.toml", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", "Cargo.toml", "bunfig.toml", "package.json", ...JS_TEST_CONFIG_FILES]);
 
 function discoverRepoConfigDirs(absRoot: string): string[] {
   const dirs = new Set<string>([absRoot]);
   const walk = (cur: string, depth: number): void => {
-    if (depth > 3) return;
+    if (depth > 8) return;
     let entries: fs.Dirent[];
     try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
-      if (e.isSymbolicLink()) continue;
-      if (e.isDirectory()) {
-        if (WALK_SKIP.has(e.name)) continue;
-        walk(path.join(cur, e.name), depth + 1);
-      } else if (e.name === "conftest.py" || e.name === ".pytest.toml" || e.name === "pytest.ini" || e.name === "Cargo.toml" || e.name === "bunfig.toml") {
-        dirs.add(cur);
+      if (e.isSymbolicLink()) {
+        if (CONFIG_TRIGGER_FILES.has(e.name)) dirs.add(cur);
+        continue;
       }
+      if (e.isDirectory()) { if (!WALK_SKIP.has(e.name)) walk(path.join(cur, e.name), depth + 1); }
+      else if (CONFIG_TRIGGER_FILES.has(e.name)) dirs.add(cur);
     }
   };
   walk(absRoot, 0);

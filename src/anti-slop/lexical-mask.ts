@@ -26,6 +26,9 @@ export function canStartJsRegex(text: string, idx: number): boolean {
   if (/[A-Za-z0-9_$]/.test(prev)) {
     let s = p;
     while (s > 0 && /[A-Za-z0-9_$]/.test(text[s - 1] ?? "")) s -= 1;
+    let b = s - 1;
+    while (b >= 0 && /\s/.test(text[b] ?? "")) b -= 1;
+    if (b >= 0 && text[b] === ".") return false;
     return /^(?:return|case|default|throw|yield|await|typeof|void|delete|in|of|new|else|do)$/.test(text.slice(s, p + 1));
   }
   return false;

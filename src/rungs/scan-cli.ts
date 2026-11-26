@@ -209,17 +209,22 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
       if (baseToCheck) {
         const downgrades = auditManifestDowngrade(repo.root, baseToCheck, { failClosedOnMissingBase: failClosed });
         if (!explicitBase && !hasTrustedOriginBase) {
-          const histPaths = [".verification/rungs.json", "package.json", ".gitattributes"];
+          const histGroups: Array<[string[], number]> = [[ [".verification/rungs.json"], 10 ], [ ["package.json"], 10 ], [ [".gitattributes"], 5 ]];
           const manifestFile = `${repo.root}/.verification/rungs.json`;
           if (fs.existsSync(manifestFile)) {
             const rawM = fs.readFileSync(manifestFile, "utf8");
+            const subPkgs: string[] = [];
             for (const m of rawM.matchAll(/(?:--cwd|--filter|-F)\s+["']?([^\s"']+)["']?/g)) {
               const sub = (m[1] ?? "").replace(/^\.\//, "").replace(/\/+$/, "");
-              if (sub) histPaths.push(`${sub}/package.json`);
+              if (sub) subPkgs.push(`${sub}/package.json`);
             }
+            if (subPkgs.length > 0) histGroups.push([subPkgs, 10]);
           }
-          const manifestHist = runGitClean(repo.root, ["log", "--max-count=5", "--format=%H", "--", ...histPaths]);
-          const touchedCommits = manifestHist.status === 0 ? manifestHist.stdout.trim().split(/\r?\n/).filter(Boolean) : [];
+          const touchedCommits = new Set<string>();
+          for (const [paths, maxN] of histGroups) {
+            const mh = runGitClean(repo.root, ["log", `--max-count=${maxN}`, "--format=%H", "--", ...paths]);
+            if (mh.status === 0) for (const s of mh.stdout.trim().split(/\r?\n/).filter(Boolean)) touchedCommits.add(s);
+          }
           const checkedRefs = new Set<string>();
           for (const sha of touchedCommits) {
             for (const cand of [sha, `${sha}~1`]) {

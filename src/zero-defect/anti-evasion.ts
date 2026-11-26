@@ -125,7 +125,7 @@ export function auditDiffAntiEvasion(events: readonly DiffLineEvent[], _options:
         if (/^\s*if:\s*(?:false|\$\{\{\s*false\s*\}\})\s*$/i.test(ev.raw)) pushDiff(findings, ev.file, ev.line, "diff-ci-safety-gate-removed", "Disabled CI job/step with 'if: false' in diff.", "Remove 'if: false' so CI gates execute unconditionally.");
         if (/^\s*(?:-\s*)?run:\s*(?:echo\b|true\b|:\s*$)/i.test(ev.raw) && events.some((o) => o.kind === "del" && o.file === ev.file && /\b(?:test|pytest|vitest|jest|cargo|go\s+test|dotnet\s+test|bun\s+test|vstack)\b/i.test(o.raw))) pushDiff(findings, ev.file, ev.line, "diff-ci-safety-gate-removed", "Replaced CI test/verification step with a no-op echo/true command in diff.", "Restore the real test/verification step.");
       }
-      if (lower.endsWith("package.json") && /"(?:test|check|lint|typecheck|verify)[^"]*"\s*:\s*"\s*(?:true|:|echo\b|exit\s+0)/i.test(ev.raw)) pushDiff(findings, ev.file, ev.line, "diff-config-strictness-downgrade", "Replaced package.json verification script with a no-op command in diff.", "Keep real test/lint/typecheck commands in package.json scripts.");
+      if (lower.endsWith("package.json") && (/"(?:test|check|lint|typecheck|verify)[^"]*"\s*:\s*"\s*(?:true|:|echo\b|exit\s+0)/i.test(ev.raw) || /"(?:preinstall|install|postinstall|prepare|preprepare|postprepare|prepublish|prepublishOnly|prepack|postpack)"\s*:/i.test(ev.raw))) pushDiff(findings, ev.file, ev.line, "diff-config-strictness-downgrade", "Modified package.json verification or install lifecycle script in diff.", "Keep verification scripts real and never add unreviewed install/prepare lifecycle hooks.");
       if (STRICT_CONFIG_PATH.test(ev.file)) {
         if (/"(?:strict|strictNullChecks|noImplicitAny|exactOptionalPropertyTypes)"\s*:\s*false/.test(ev.raw)) pushDiff(findings, ev.file, ev.line, "diff-config-strictness-downgrade", "Downgraded TypeScript strictness flag to false in config diff.", "Keep TypeScript strict compiler flags enabled.");
         if (lower.endsWith(".gitattributes") && /(?:^|\s)(?:-diff|binary|diff=)/i.test(ev.raw) && !ev.raw.trim().startsWith("#")) pushDiff(findings, ev.file, ev.line, "diff-config-strictness-downgrade", `Added diff-suppressing .gitattributes rule ('${ev.raw.trim()}').`, "Do not disable git diff on source or test files via .gitattributes.");
@@ -276,7 +276,7 @@ function isStrictCommandWeakening(baseCmd: string, headCmd: string): boolean {
         const t = toks[i] ?? "";
         if (t.startsWith("-")) {
           const nxt = toks[i + 1];
-          if (nxt !== undefined && !nxt.startsWith("-") && (MONOTONIC_HIGHER_FLAGS.has(t) || MONOTONIC_LOWER_FLAGS.has(t) || t === "--targets" || t === "--test-cmd")) {
+          if (nxt !== undefined && !nxt.startsWith("-") && !TEST_PATH_ARG.test(nxt)) {
             flags.set(t, nxt); i += 1;
           } else flags.set(t, "1");
         } else pos.push(t);
@@ -311,12 +311,24 @@ function isStrictCommandWeakening(baseCmd: string, headCmd: string): boolean {
   return false;
 }
 
+const LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall", "prepare", "preprepare", "postprepare", "prepublish", "prepublishOnly", "prepack", "postpack"];
+const UNTRUSTED_SPEC_RE = /^(?:file:|link:|portal:|workspace:|\.\.?\/|\/|git\+|https?:|npm:|github:|gitlab:|bitbucket:|jsr:|[a-z0-9_.-]+\/[a-z0-9_.-]+(?:$|[#@]))|\.tgz$/i;
+
 function collectToolDeps(pkg: Record<string, unknown>): Map<string, string> {
   const out = new Map<string, string>();
-  for (const bagKey of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "overrides", "resolutions"]) {
-    const bag = pkg[bagKey];
-    if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
-    for (const [k, v] of Object.entries(bag as Record<string, unknown>)) if (VERIFICATION_TOOLS.has(k.toLowerCase()) && typeof v === "string") out.set(`${bagKey}:${k.toLowerCase()}`, v.trim());
+  const walkBag = (prefix: string, bag: unknown): void => {
+    if (!bag || typeof bag !== "object" || Array.isArray(bag)) return;
+    for (const [k, v] of Object.entries(bag as Record<string, unknown>)) {
+      const tool = k.split("@")[0]?.toLowerCase() ?? k.toLowerCase();
+      if (v && typeof v === "object" && !Array.isArray(v)) walkBag(`${prefix}.${k}`, v);
+      else if (VERIFICATION_TOOLS.has(tool) && typeof v === "string") out.set(`${prefix}:${tool}`, v.trim());
+    }
+  };
+  for (const bagKey of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "overrides", "resolutions", "patchedDependencies"]) walkBag(bagKey, pkg[bagKey]);
+  if (pkg.pnpm && typeof pkg.pnpm === "object" && !Array.isArray(pkg.pnpm)) {
+    const pnpm = pkg.pnpm as Record<string, unknown>;
+    walkBag("pnpm.overrides", pnpm.overrides);
+    walkBag("pnpm.patchedDependencies", pnpm.patchedDependencies);
   }
   return out;
 }
@@ -398,10 +410,18 @@ export function auditManifestDowngrade(repoRoot: string, baseRef: string, option
         for (const sName of collectReferencedScriptsAndFiles(baseCmds, baseScripts).scripts) {
           if (options.downgradeOnly ? isStrictCommandWeakening(baseScripts[sName] ?? "", headScripts[sName] ?? "") : headScripts[sName] !== baseScripts[sName]) findings.push(makeErr(`pkg-script-${sName}`, "package.json", `Modified rung-referenced package.json script '${sName}' vs ${baseRef}.`));
         }
+        for (const ls of LIFECYCLE_SCRIPTS) {
+          if (headScripts[ls] !== baseScripts[ls]) findings.push(makeErr(`pkg-lifecycle-${ls}`, "package.json", `Added or modified package.json lifecycle script '${ls}' vs ${baseRef} (pre-verify ACE risk).`));
+        }
         const baseTools = collectToolDeps(basePkg);
         const headTools = collectToolDeps(headPkg);
-        for (const [k, bVal] of baseTools.entries()) if (headTools.get(k) !== bVal && !options.downgradeOnly) findings.push(makeErr(`pkg-tool-${k}`, "package.json", `Modified verification tool dependency '${k}' in package.json vs ${baseRef}.`));
-        for (const [k, hVal] of headTools.entries()) if (!baseTools.has(k) && /^(?:file:|link:|portal:|workspace:|\.\.?\/|\/|git\+|https?:)|\.tgz$/i.test(hVal)) findings.push(makeErr(`pkg-tool-shadow-${k}`, "package.json", `Added non-registry verification tool dependency '${k}=${hVal}' in package.json vs ${baseRef}.`));
+        for (const [k, bVal] of baseTools.entries()) {
+          const hVal = headTools.get(k);
+          if (hVal !== bVal && (!options.downgradeOnly || (hVal !== undefined && UNTRUSTED_SPEC_RE.test(hVal)))) findings.push(makeErr(`pkg-tool-${k}`, "package.json", `Modified verification tool dependency '${k}' in package.json vs ${baseRef}.`));
+        }
+        for (const [k, hVal] of headTools.entries()) {
+          if (!baseTools.has(k) && (UNTRUSTED_SPEC_RE.test(hVal) || k.includes("patchedDependencies:"))) findings.push(makeErr(`pkg-tool-shadow-${k}`, "package.json", `Added untrusted/patched verification tool dependency '${k}=${hVal}' in package.json vs ${baseRef}.`));
+        }
       } catch { findings.push(makeErr("pkg-json-invalid", "package.json", "Modified package.json is not valid JSON.")); }
     }
     const allRefs = collectReferencedScriptsAndFiles(baseCmds, baseScripts);

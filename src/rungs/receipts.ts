@@ -109,7 +109,7 @@ function parseCommandMetrics(
   const parsedCounts = parseRunnerTestCounts(output, steps);
   const metrics: NonNullable<RungReceipt["metrics"]> = {};
   if (parsedCounts.hasTestRunner) {
-    const hasStructuredReporterFlag = steps.some((seg) => seg.some((tok) => /^(?:--junitxml|--logger|--reporter(?:s)?=junit|--test-reporter=junit)$/i.test(tok) || /^(?:junit|trx)$/i.test(tok)));
+    const hasStructuredReporterFlag = steps.some((seg) => seg.some((tok) => /^(?:--junitxml(?:=|$)|--logger(?:=|$)|--reporter(?:s)?=junit|--test-reporter=junit)$/i.test(tok) || /^(?:junit|trx)$/i.test(tok)));
     if (parsedCounts.matched) {
       metrics.testsPassed =
         typeof structured.testsPassed === "number"

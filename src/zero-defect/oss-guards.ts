@@ -170,8 +170,11 @@ function scanPythonOss(file: ScannedFile, raw: string, masked: string, findings:
 
   for (const m of raw.matchAll(PY_CASE_SENSITIVE_HEADER)) {
     const idx = m.index ?? 0;
-    if ((m[1] ?? "").includes(".lower")) continue;
+    const rhs = (m[1] ?? "").trim();
+    if (rhs.includes(".lower")) continue;
     const lineStart = raw.lastIndexOf("\n", idx) + 1;
+    const prior = raw.slice(Math.max(0, lineStart - 160), lineStart);
+    if (rhs && /^[A-Za-z_]\w*$/.test(rhs) && prior.includes(`${rhs} =`) && prior.includes(".lower()")) continue;
     if (/^\s*#/.test(raw.slice(lineStart, idx))) continue;
     if (masked[idx + (m[0]?.indexOf(" in ") ?? 0) + 1] === " ") continue;
     push(

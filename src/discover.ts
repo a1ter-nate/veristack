@@ -111,6 +111,7 @@ export function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStar
             }
             if (ok) { j = rj + 1; continue; }
           }
+          if (ch === "'" && j > bodyStart && /[A-Za-z]/.test(raw[j - 1] ?? "") && /[A-Za-z]/.test(nx)) { j += 1; continue; }
           if (ch === '"' || ch === "'" || ch === "`") { q = ch; j += 1; continue; }
           if (ch === "<" && nx === "/") {
             const cm = /^<\/script\s*>/i.exec(raw.slice(j, j + 16));

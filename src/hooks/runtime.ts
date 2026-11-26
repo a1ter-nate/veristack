@@ -16,7 +16,7 @@ interface SessionState { touchedFiles: string[]; reportedKeys: string[]; anchorB
 export interface HookExecutionResult { exitCode: number; stdout: string; stderr?: string; findings: Finding[]; }
 
 const PROTECTED_CONTROL_PLANE =
-  /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|\.gitignore|\.gitattributes|\.npmrc|\.mcp\.json|Makefile|bun\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|bunfig\.toml|conftest\.py|sitecustomize\.py|usercustomize\.py|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook(?:-local)?\.ya?ml|CODEOWNERS|package\.json|pyproject\.toml|pytest\.ini|\.pytest\.toml|pytest\.toml|setup\.cfg|tox\.ini|mypy\.ini|pyrightconfig\.json|biome\.jsonc?|\.?ruff\.toml|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|rungs\.json|behavior-changes\.json|control-plan\.json|escapes\.json|invariants\.json|chokepoints\.json|(?:vitest|vite|jest|playwright|cypress|eslint|stryker)\.config\.[cm]?[jt]s|jest\.config\.json|\.eslintrc(?:\.[^/]+)?|stryker-config\.json|mutants\.toml)$|(?:^|\/)(?:\.verification\/|\.git\/|\.husky\/|\.cargo\/|node_modules\/|bin\/vstack\.mjs$|dist\/|scripts\/|src\/hooks\/|templates\/formal\/|examples\/[^/]+\/manifest\.json$|\.claude\/|\.cursor\/|\.codex\/|\.github\/|\.grok\/|docs\/CODEOWNERS$)/i;
+  /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|\.gitignore|\.gitattributes|\.npmrc|\.mcp\.json|Makefile|bun\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|bunfig\.toml|conftest\.py|sitecustomize\.py|usercustomize\.py|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook(?:-local)?\.ya?ml|CODEOWNERS|package\.json|pyproject\.toml|pytest\.ini|\.pytest\.toml|pytest\.toml|setup\.cfg|tox\.ini|mypy\.ini|pyrightconfig\.json|biome\.jsonc?|\.?ruff\.toml|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|rungs\.json|behavior-changes\.json|control-plan\.json|escapes\.json|invariants\.json|chokepoints\.json|(?:vitest|vite|jest|playwright|cypress|eslint|stryker)\.config\.[cm]?[jt]s|jest\.config\.json|\.eslintrc(?:\.[^/]+)?|stryker-config\.json|mutants\.toml)$|(?:^|\/)(?:\.verification\/|\.git\/|\.husky\/|\.cargo\/|node_modules\/|bin\/vstack\.mjs$|dist\/|scripts\/|src\/hooks\/|templates\/formal\/|examples\/[^/]+\/manifest\.json$|\.claude\/|\.cursor\/|\.codex\/|\.github\/|\.grok\/|docs\/CODEOWNERS$|vstack-hook-sessions\/)/i;
 
 const importClosureCache = new Map<string, ReadonlySet<string>>();
 
@@ -273,30 +273,23 @@ function formatPreEditDeny(harness: HookHarness, count: number, msg: string): { 
 }
 
 function checkBashCommandTamper(cmd: string, repoRoot: string, baseDir: string): Finding | null {
-  if (/\bgit\s+(?:remote\s+(?:remove|rm|rename|set-url)|update-ref|replace\b|apply\b|checkout\b|restore\b|reset\b|switch\s+--orphan|fetch\b[^\n;|&]*refs\/remotes\/|config\s+(?:--local\s+)?(?:core\.(?:attributesFile|hooksPath)|diff\.noprefix|remote\.origin\.url)|update-index\s+--(?:assume-unchanged|skip-worktree))\b/i.test(cmd)) {
-    return { id: "HOOK:bash-git-tamper", rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: ".git", line: 1, message: "Direct agent git control-plane tampering command is blocked.", fix: "Do not tamper with git remotes, refs, config, index flags, or checkout/restore/apply protected files." };
+  const gitTamper = /\bgit(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S+|\s+\S+)|--no-pager|--bare|--literal-pathspecs|-p|--paginate|-P))*\s+(?:remote\s+(?:remove|rm|rename|set-url)|update-ref|replace\b|apply\b|checkout\b|restore\b|reset\b|switch\s+--orphan|commit\b[^\n;|&]*(?:--no-verify|\s-n\b)|fetch\b[^\n;|&]*refs\/remotes\/|config\s+(?:--local\s+)?(?:core\.(?:attributesFile|hooksPath)|diff\.noprefix|remote\.origin\.url)|update-index\s+--(?:assume-unchanged|skip-worktree))\b/i;
+  if (gitTamper.test(cmd) || /\bgit\s+[^\n;|&]*-c\s+["']?(?:core\.(?:attributesFile|hooksPath)|diff\.noprefix|remote\.origin\.url)=/i.test(cmd) || /\bvstack-hook-sessions\b/.test(cmd)) {
+    return { id: "HOOK:bash-git-tamper", rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: ".git", line: 1, message: "Direct agent git/session control-plane tampering command is blocked.", fix: "Do not tamper with git remotes, refs, config, index flags, --no-verify commits, or hook session state." };
   }
   const cdDirs: string[] = [baseDir];
-  for (const cm of cmd.matchAll(/\bcd\s+["']?([^\s"'|;&]+)["']?/g)) {
-    if (cm[1]) cdDirs.push(path.isAbsolute(cm[1]) ? cm[1] : path.resolve(baseDir, cm[1]));
-  }
+  for (const cm of cmd.matchAll(/\bcd\s+["']?([^\s"'|;&]+)["']?/g)) if (cm[1]) cdDirs.push(path.isAbsolute(cm[1]) ? cm[1] : path.resolve(baseDir, cm[1]));
   const targets: string[] = [];
-  for (const m of cmd.matchAll(/(?:>>?\s*|tee(?:\s+-a)?\s+|rm(?:\s+-[rf]+)?\s+|mv\s+|cp\s+|ln(?:\s+-[sf]+)?\s+|install\s+|truncate\s+|dd\s+[^\n|;&]*?of=|sed\s+-i[^\n|;&]*?\s+)["']?([^\s"'|;&]+)["']?/g)) {
-    if (m[1]) targets.push(m[1]);
-  }
+  for (const m of cmd.matchAll(/(?:>>?\s*|tee(?:\s+-a)?\s+|rm(?:\s+-[rf]+)?\s+|mv\s+|cp\s+|ln(?:\s+-[sf]+)?\s+|install\s+|truncate\s+|dd\s+[^\n|;&]*?of=|sed\s+-i[^\n|;&]*?\s+)["']?([^\s"'|;&]+)["']?/g)) if (m[1]) targets.push(m[1]);
   if (/\b(?:sed\s+-i|perl\s+-[a-z]*i|node\s+-e|bun\s+-e|python3?\s+-c|dd\s+|truncate\s+|install\s+|ln\s+|cp\s+|mv\s+|rm\s+|tee\s+|>>?)/i.test(cmd)) {
-    for (const m of cmd.matchAll(/["']?([A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+|\.verification\/[^\s"'|;&]+|\.claude\/[^\s"'|;&]+|\.codex\/[^\s"'|;&]+|\.cursor\/[^\s"'|;&]+|\.github\/[^\s"'|;&]+|\.gitattributes|\.gitignore|\.vstackignore|\.vstack\.json|CODEOWNERS)["']?/g)) {
-      if (m[1]) targets.push(m[1]);
-    }
+    for (const m of cmd.matchAll(/["']?([A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+|\.verification\/[^\s"'|;&]+|\.claude\/[^\s"'|;&]+|\.codex\/[^\s"'|;&]+|\.cursor\/[^\s"'|;&]+|\.github\/[^\s"'|;&]+|\.gitattributes|\.gitignore|\.vstackignore|\.vstack\.json|CODEOWNERS)["']?/g)) if (m[1]) targets.push(m[1]);
   }
   for (const t of targets) {
     if (t.startsWith("-")) continue;
     for (const dir of cdDirs) {
       const abs = safeRealpath(path.isAbsolute(t) ? t : path.resolve(dir, t));
       const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
-      if (isProtectedPath(repoRoot, rel)) {
-        return { id: `HOOK:bash-protected:${rel}`, rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1, message: `Shell command mutates protected control-plane file '${rel}'.`, fix: "Do not modify verification configs, manifests, hooks, or gate code via shell." };
-      }
+      if (isProtectedPath(repoRoot, rel)) return { id: `HOOK:bash-protected:${rel}`, rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1, message: `Shell command mutates protected control-plane file '${rel}'.`, fix: "Do not modify verification configs, manifests, hooks, or gate code via shell." };
     }
   }
   return null;
@@ -386,6 +379,11 @@ export function executeHookEvent(
   const statePath = sessionStatePath(repoRoot, sessionId);
 
   if (event === "pre-edit") {
+    const preState = readSessionState(statePath);
+    if (!preState.anchorBaseSha) {
+      const initAnchor = resolveCurrentAnchorSha(repoRoot);
+      if (initAnchor) writeSessionState(statePath, { ...preState, anchorBaseSha: initAnchor });
+    }
     const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
     const toolInput = isRecord(payload.tool_input) ? payload.tool_input : payload;
     if (toolName === "Bash" && typeof toolInput.command === "string") {
@@ -469,10 +467,12 @@ export function executeHookEvent(
   const stopBaseRef = state.anchorBaseSha ?? resolveCurrentAnchorSha(repoRoot) ?? "HEAD";
   for (const cheat of scanGitDiffCheats(repoRoot, stopBaseRef)) findings.push(cheat);
   if (!hasOriginBase) {
-    const hist = runGitClean(repoRoot, ["log", "--max-count=3", "--format=%H", "--", ".verification/rungs.json", "package.json", ".gitattributes"]);
-    const latest = hist.status === 0 ? (hist.stdout.trim().split(/\r?\n/)[0] ?? "") : "";
-    if (latest && runGitClean(repoRoot, ["rev-parse", "--verify", `${latest}~1^{commit}`]).status === 0) {
-      findings.push(...auditManifestDowngrade(repoRoot, `${latest}~1`, { downgradeOnly: true }));
+    const hist = runGitClean(repoRoot, ["log", "--max-count=5", "--format=%H", "--", ".verification/rungs.json"]);
+    for (const sha of hist.status === 0 ? hist.stdout.trim().split(/\r?\n/).filter(Boolean) : []) {
+      if (runGitClean(repoRoot, ["rev-parse", "--verify", `${sha}~1^{commit}`]).status === 0) {
+        const d = auditManifestDowngrade(repoRoot, `${sha}~1`, { downgradeOnly: true });
+        if (d.length > 0) { findings.push(...d); break; }
+      }
     }
   }
   for (const mf of [".verification/hooks.json", ".claude/settings.local.json", ".codex/hooks.json", ".cursor/hooks.json"]) {

@@ -8,7 +8,7 @@ const DRIZZLE_TS_NO_TZ = /\btimestamp\s*\(\s*["'][^"']+["']\s*\)/g;
 const TEST_FRAME_WAIT = /\brequestAnimationFrame\s*\(|\baddEventListener\s*\(\s*["']transitionend["']/g;
 const TEST_POLLING_LOOP = /\bwhile\s*\([^)\n]+\)\s*\{[^}]{0,260}\b(?:sleep|yieldNow|setTimeout)\s*\(/g;
 const PY_SOURCE_INTROSPECTION = /\binspect\.getsource(?:lines)?\s*\(/g;
-const JS_FN_TOSTRING_THEATER = /(?:Function\.prototype\.toString\.call\s*\(|\b([a-z_$][A-Za-z0-9_$]*)\.toString\s*\(\s*\))/g;
+const JS_FN_TOSTRING_THEATER = /(?:Function\.prototype\.toString\.call\s*\(|\bString\s*\(\s*([a-z_$][A-Za-z0-9_$]*)\s*\)|\b([a-z_$][A-Za-z0-9_$]*)\.toString\s*\(\s*\))/g;
 const NON_FN_TOSTRING_RECEIVER = /^(?:err|error|e|ex|url|uri|buf|buffer|val|value|num|n|id|count|total|sum|len|length|size|idx|index|i|j|k|x|y|z|str|text|body|out|stdout|stderr|res|result|raw|data|date|now|ts|time|path|file|dir|rel|abs|href|host|port|code|status|msg|message|name|key|token|hash|digest|hex|uuid|ver|version|re|regex|pattern|match|args|argv|cmd|line|src|source|content|json|xml|html|sql|query|params|searchParams|headers|response|request|req|big|bigint|bn|dec|decimal|amount|price|score|rate|pct|ms|sec|min|max|avg|stdoutText|stderrText)$/i;
 
 function push(
@@ -48,7 +48,7 @@ export function analyzeT3TestGuards(file: ScannedFile): Finding[] {
     for (const m of raw.matchAll(JS_FN_TOSTRING_THEATER)) {
       const idx = m.index ?? 0;
       if (code[idx] === " ") continue;
-      const recv = m[1] ?? "";
+      const recv = m[1] ?? m[2] ?? "";
       if (recv && NON_FN_TOSTRING_RECEIVER.test(recv)) continue;
       const windowSlice = raw.slice(idx, Math.min(raw.length, idx + 220));
       if (/\b(?:createHash|sha256|md5)\b|["'`](?:===|!==|>=|<=|&&|\|\||return\b|if\s*\(|=>)/.test(windowSlice) || m[0].startsWith("Function.prototype")) {

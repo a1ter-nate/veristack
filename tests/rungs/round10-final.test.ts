@@ -1,0 +1,187 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { maskCode } from "../../src/anti-slop/lexical-mask.ts";
+import { analyzeT3TestGuards } from "../../src/ast/t3-immune-rules.ts";
+import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
+import { extractSfcScript } from "../../src/discover.ts";
+import { executeHookEvent } from "../../src/hooks/runtime.ts";
+import { scanRepo } from "../../src/ladder.ts";
+import { parseAndValidateCommandArgv, sanitizeShellBlock } from "../../src/rungs/command-audit.ts";
+import { auditRunnerConfigs, runGitClean } from "../../src/rungs/config-audit.ts";
+import { auditManifestDowngrade } from "../../src/zero-defect/anti-evasion.ts";
+import { runRedBeforeFix } from "../../src/zero-defect/index.ts";
+
+function withTempDir(fn: (dir: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-r10-"));
+  try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function initGit(dir: string): void {
+  runGitClean(dir, ["init", "-q", "-b", "main"]);
+  runGitClean(dir, ["config", "user.name", "Test"]);
+  runGitClean(dir, ["config", "user.email", "t@test.local"]);
+}
+
+test("round10 final: hooks global git-option skipper, pre-edit anchorBaseSha pin, session-dir protection, and all bare names", () => {
+  withTempDir((dir) => {
+    initGit(dir);
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: { R2: { command: "bun test", required: true } } }));
+    fs.writeFileSync(path.join(dir, "src", "a.ts"), "export const a = 1;\n");
+    runGitClean(dir, ["add", "."]);
+    runGitClean(dir, ["commit", "-q", "-m", "base"]);
+
+    const globalGitCmds = [
+      "git -C . update-ref refs/remotes/origin/main HEAD",
+      "git -c core.hooksPath=/tmp/evil status",
+      "git --no-pager reset --hard HEAD~1",
+      "git commit --no-verify -am tidy",
+      "git apply evil.patch",
+      "git switch --orphan clean",
+      "rm -rf /tmp/vstack-hook-sessions/abc.json",
+    ];
+    for (const cmd of globalGitCmds) {
+      const res = executeHookEvent("pre-edit", JSON.stringify({ cwd: dir, session_id: "r10-s1", tool_name: "Bash", tool_input: { command: cmd } }), { repoRoot: dir, harness: "claude" });
+      assert.equal(res.exitCode, 2, `Expected pre-edit block for: ${cmd}`);
+    }
+
+    for (const bare of ["rungs.json", "behavior-changes.json", "control-plan.json", "escapes.json", "invariants.json", "chokepoints.json"]) {
+      const res = executeHookEvent("pre-edit", JSON.stringify({ cwd: dir, tool_name: "Write", tool_input: { file_path: path.join(dir, bare), content: "{}" } }), { repoRoot: dir, harness: "claude" });
+      assert.equal(res.exitCode, 2, `Expected pre-edit block for bare ${bare}`);
+    }
+
+    const baseSha = runGitClean(dir, ["rev-parse", "HEAD"]).stdout.trim();
+    runGitClean(dir, ["update-ref", "refs/remotes/origin/main", baseSha]);
+    executeHookEvent("pre-edit", JSON.stringify({ cwd: dir, session_id: "r10-pin", tool_name: "Bash", tool_input: { command: "bun test" } }), { repoRoot: dir, harness: "claude" });
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: { R2: { command: "bun test ./tests/empty.test.ts", required: true } } }));
+    runGitClean(dir, ["add", "."]);
+    runGitClean(dir, ["commit", "-q", "-m", "weaken"]);
+    runGitClean(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    const stopPinned = executeHookEvent("stop", JSON.stringify({ cwd: dir, session_id: "r10-pin" }), { repoRoot: dir, harness: "claude" });
+    assert.equal(JSON.parse(stopPinned.stdout).decision, "block");
+  });
+
+  withTempDir((dir) => {
+    initGit(dir);
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: { R2: { command: "bun test", required: true } } }));
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "p", version: "1.0.0" }));
+    runGitClean(dir, ["add", "."]);
+    runGitClean(dir, ["commit", "-q", "-m", "base"]);
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: { R2: { command: "bun test ./tests/empty.test.ts", required: true } } }));
+    runGitClean(dir, ["add", "."]);
+    runGitClean(dir, ["commit", "-q", "-m", "weaken"]);
+    for (let i = 1; i <= 6; i++) {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "p", version: `1.0.${i}` }));
+      runGitClean(dir, ["add", "."]);
+      runGitClean(dir, ["commit", "-q", "-m", `pad ${i}`]);
+    }
+    const stopNoOrigin = executeHookEvent("stop", JSON.stringify({ cwd: dir, session_id: "fresh-no-origin" }), { repoRoot: dir, harness: "claude" });
+    assert.equal(JSON.parse(stopNoOrigin.stdout).decision, "block");
+  });
+});
+
+test("round10 final: lifecycle-script lock, npm:/github:/nested/pnpm overrides & patchedDependencies, value-flag narrowing, and conftest/addopts/JS config hardening", () => {
+  withTempDir((dir) => {
+    initGit(dir);
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: { R2: { command: "bun test --concurrency 4", required: true } } }));
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "p", devDependencies: { oxlint: "^1.0.0" } }));
+    runGitClean(dir, ["add", "."]);
+    runGitClean(dir, ["commit", "-q", "-m", "base"]);
+
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: { R2: { command: "bun test --concurrency 4 ./tests/dummy.test.ts", required: true } } }));
+    assert.ok(auditManifestDowngrade(dir, "HEAD", { downgradeOnly: true }).some((f) => f.id === "DIFF:manifest:cmd-R2"));
+
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: { R2: { command: "bun test --concurrency 4", required: true } } }));
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "p", scripts: { postinstall: "node evil.js" }, devDependencies: { oxlint: "^1.0.0" } }));
+    assert.ok(auditManifestDowngrade(dir, "HEAD", { downgradeOnly: true }).some((f) => f.id === "DIFF:manifest:pkg-lifecycle-postinstall"));
+    assert.ok(scanGitDiffCheats(dir, "HEAD").some((f) => f.rule === "diff-config-strictness-downgrade"));
+
+    const badPkgs = [
+      { name: "p", overrides: { oxlint: "npm:left-pad@1.3.0" } },
+      { name: "p", overrides: { pkg: { oxlint: "github:evil/oxlint" } } },
+      { name: "p", resolutions: { typescript: "evil/tsc" } },
+      { name: "p", peerDependencies: { vitest: "file:./fake" } },
+      { name: "p", pnpm: { overrides: { oxlint: "npm:fake@1" } } },
+      { name: "p", pnpm: { patchedDependencies: { "oxlint@1.0.0": "patches/oxlint.patch" } } },
+    ];
+    for (const bp of badPkgs) {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(bp));
+      assert.ok(auditRunnerConfigs(dir), `Expected config-audit failure for ${JSON.stringify(bp)}`);
+      assert.ok(auditManifestDowngrade(dir, "HEAD", { downgradeOnly: true }).length > 0);
+    }
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "p", devDependencies: { oxlint: "^1.0.0" } }));
+
+    fs.mkdirSync(path.join(dir, "tests", "a", "b", "c", "d"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "tests", "a", "b", "c", "d", "conftest.py"), "def pytest_pyfunc_call(pyfuncitem):\n    return True\n");
+    assert.ok(auditRunnerConfigs(dir));
+    fs.writeFileSync(path.join(dir, "tests", "a", "b", "c", "d", "conftest.py"), "pytest_plugins = ['evil_plug']\n");
+    assert.ok(auditRunnerConfigs(dir));
+    fs.unlinkSync(path.join(dir, "tests", "a", "b", "c", "d", "conftest.py"));
+
+    fs.writeFileSync(path.join(dir, "pytest.ini"), "[pytest]\naddopts = --cov --ignore=tests/real.py\n");
+    assert.ok(auditRunnerConfigs(dir));
+    fs.writeFileSync(path.join(dir, "pytest.ini"), "[pytest]\naddopts = --cov-fail-under=0\n");
+    assert.ok(auditRunnerConfigs(dir));
+    fs.unlinkSync(path.join(dir, "pytest.ini"));
+
+    fs.writeFileSync(path.join(dir, "vitest.workspace.ts"), "const s = ['./evil.ts'];\nexport default { test: { setupFiles: s } };\n");
+    assert.ok(auditRunnerConfigs(dir));
+    fs.unlinkSync(path.join(dir, "vitest.workspace.ts"));
+
+    fs.mkdirSync(path.join(dir, "packages", "app"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "packages", "app", "vitest.config.ts"), "export default { test: { exclude: ['tests/real.test.ts'] } };\n");
+    assert.ok(auditRunnerConfigs(dir));
+    fs.unlinkSync(path.join(dir, "packages", "app", "vitest.config.ts"));
+  });
+});
+
+test("round10 final: sanitizeShellBlock conditionals/pipes, pnpm -F {...}..., NameError red-before-fix, String(fn) theater, and lexical polish", () => {
+  assert.deepEqual(sanitizeShellBlock("[ 1 = 2 ] && bun test\n"), []);
+  assert.deepEqual(sanitizeShellBlock("bun test | wc -l\n"), []);
+
+  withTempDir((dir) => {
+    assert.ok(parseAndValidateCommandArgv("R2", 'pnpm -F "{../outside}..." exec bun test', dir).error);
+  });
+
+  const strIntrospect = analyzeT3TestGuards({
+    rel: "tests/s.test.ts", abs: "/tmp/s.test.ts", language: "typescript", isTest: true, isWorkflow: false, lines: 2,
+    content: 'import { foo } from "../src/foo.ts";\ntest("t", () => expect(String(foo)).toContain("==="));\n',
+  });
+  assert.ok(strIntrospect.some((f) => f.rule === "test-source-introspection-theater"));
+
+  const hashIntrospect = analyzeT3TestGuards({
+    rel: "tests/h.test.ts", abs: "/tmp/h.test.ts", language: "typescript", isTest: true, isWorkflow: false, lines: 3,
+    content: 'import crypto from "node:crypto";\nimport fs from "node:fs";\ntest("h", () => expect(crypto.createHash("sha256").update(fs.readFileSync("src/a.ts")).digest("hex")).toBe("x"));\n',
+  });
+  assert.ok(hashIntrospect.some((f) => f.rule === "test-source-introspection-theater"));
+
+  const sfcTsx = extractSfcScript("App.vue", "<script lang=\"tsx\">\nexport const C = ({ x }: any) => <div><span>it's ok</span>{(x as any)}</div>;\n</script>\n");
+  assert.ok(sfcTsx && sfcTsx.content.includes("as any"));
+
+  assert.ok(maskCode("const v = obj.default / 2 + (x as any) / 3;\n", "typescript").includes("as any"));
+
+  withTempDir((dir) => {
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "src", "hdr.py"), 'def check(headers):\n    cc = headers.get("Cache-Control", "").lower()\n    return "no-store" in cc\n');
+    const report = scanRepo(dir);
+    assert.equal(report.findings.some((f) => f.rule === "http-case-sensitive-header-directive"), false);
+  });
+
+  withTempDir((dir) => {
+    initGit(dir);
+    fs.writeFileSync(path.join(dir, "app.py"), "def ok(): return 1\n");
+    runGitClean(dir, ["add", "."]);
+    runGitClean(dir, ["commit", "-q", "-m", "base"]);
+    fs.writeFileSync(path.join(dir, "app.py"), "def ok(): return 1\ndef added(): return 2\n");
+    fs.writeFileSync(path.join(dir, "test_app.py"), "import unittest\nfrom app import *\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertEqual(added(), 2)\n");
+    const rbf = runRedBeforeFix(dir, "HEAD", "python3 -m unittest discover");
+    assert.equal(rbf.passed, false);
+    assert.ok(rbf.reason.includes("INVALID RED"));
+  });
+});

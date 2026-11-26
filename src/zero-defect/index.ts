@@ -308,7 +308,7 @@ export function computeRolledThroughputYield(firstPassRates: readonly number[]):
 }
 
 const INVALID_RED_ERROR =
-  /\b(?:SyntaxError|ReferenceError|Cannot\s+find\s+module|TS\d{4}:|error\[E\d{4}\]|IndentationError|ImportError)\b/;
+  /\b(?:SyntaxError|ReferenceError|NameError|Cannot\s+find\s+module|TS\d{4}:|CS\d{4}:|error\[E\d{4}\]|IndentationError|ImportError)\b|\bundefined:\s+[A-Za-z_]/;
 
 export { runTwoSidedOracleCheck, type TwoSidedOracleResult } from "../rungs/oracle-check.ts";
 
@@ -418,7 +418,9 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
           ? `INVALID RED: base run on ${baseRef} failed due to timeout or compile/import error rather than a behavioral assertion failure.`
           : baseCode === 0
             ? `THEATER TEST DETECTED: test command already passed on unfixed ${baseRef} (exit 0)!`
-            : `Test command still fails on working tree (exit ${headCode}).`,
+            : headRanZero
+              ? `INVALID HEAD RUN: test runner exited 0 on working tree without executing > 0 passing tests.`
+              : `Test command still fails on working tree (exit ${headCode}).`,
     };
   } finally {
     runGitClean(root, ["worktree", "remove", "--force", worktreeDir]);
