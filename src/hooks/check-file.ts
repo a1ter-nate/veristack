@@ -141,6 +141,11 @@ function makeSingleFileRepo(repoRoot: string, file: ScannedFile): DiscoveredRepo
       hasFormalTool: false, hasFuzzTool: false, hasBombadil: false, hasVisualTool: false, hasPerfOrLoadTool: false,
       hasE2eTool: false, hasProdTelemetryOrCanary: false, hasDiffSelection: false,
     },
+    ci: {
+      hasCiWorkflows: false, workflowFiles: [], runsFormatterOrLint: false, runsTypeOrStructureCheck: false,
+      runsUnitTests: false, runsBoundaryOrMbtTests: false, runsIntegrationOrDbTests: false, runsMutationOrFormal: false,
+      runsPerfOrBench: false, runsE2eTests: false, runsProdVerification: false,
+    },
   };
 }
 

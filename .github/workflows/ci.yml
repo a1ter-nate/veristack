@@ -39,6 +39,8 @@ jobs:
           fi
       - name: Enforce 500-line hard maximum across all tracked files
         run: node scripts/check-max-lines.mjs
+      - name: Enforce R6 performance and Big-O scaling budget
+        run: bun run perf:check
       - name: Build and run Veristack against itself (--strict)
         run: |
           bun run build

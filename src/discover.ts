@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Language, RepoArchetype, ToolSignals } from "./types.ts";
+import { extractSignals } from "./rungs/signals.ts";
+import type { CiExecutionSignals, Language, RepoArchetype, ToolSignals } from "./types.ts";
 import { loadRepoConfig } from "./zero-defect/repo-config.ts";
 
 export interface ScannedFile {
@@ -20,6 +21,7 @@ export interface DiscoveredRepo {
   languages: Language[];
   archetype: RepoArchetype;
   signals: ToolSignals;
+  ci: CiExecutionSignals;
 }
 
 const SKIP_DIRS = new Set([
@@ -56,7 +58,8 @@ const SKIP_DIRS = new Set([
 ]);
 
 const MAX_FILE_BYTES = 512_000;
-const MAX_FILES = 4_000;
+const MAX_FILES = 12_000;
+const PRIORITY_DIRS = new Set([".github", ".verification", ".circleci", ".husky"]);
 
 export function detectLanguage(rel: string): Language | undefined {
   const lower = rel.toLowerCase();
@@ -96,7 +99,10 @@ function isWorkflowPath(rel: string): boolean {
   return (
     (lower.startsWith(".github/workflows/") && (lower.endsWith(".yml") || lower.endsWith(".yaml"))) ||
     lower === "azure-pipelines.yml" ||
-    lower.endsWith("/azure-pipelines.yml")
+    lower.endsWith("/azure-pipelines.yml") ||
+    lower === ".gitlab-ci.yml" ||
+    lower === ".circleci/config.yml" ||
+    lower === "bitbucket-pipelines.yml"
   );
 }
 
@@ -158,7 +164,10 @@ function shouldReadText(rel: string): boolean {
     base.endsWith(".dfy") ||
     base.endsWith(".lean") ||
     base.endsWith(".feature") ||
-    /^(?:vitest|vite)\.config\.[cm]?[jt]s$/.test(base)
+    base === "knip.json" ||
+    base === "knip.jsonc" ||
+    /^(?:vitest|vite|playwright|cypress|k6)\.config\.[cm]?[jt]s$/.test(base) ||
+    /^\.?lighthouserc\.(?:json|ya?ml|[cm]?js)$/.test(base)
   );
 }
 
@@ -239,13 +248,17 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
       continue;
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
+    const subdirs: string[] = [];
+    const prioritySubdirs: string[] = [];
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
         const dirRel = path.relative(root, path.join(dir, entry.name)).split(path.sep).join("/");
         if (isIgnored(dirRel)) continue;
-        stack.push(path.join(dir, entry.name));
+        const fullDir = path.join(dir, entry.name);
+        if (PRIORITY_DIRS.has(entry.name)) prioritySubdirs.push(fullDir);
+        else subdirs.push(fullDir);
         continue;
       }
       if (!entry.isFile()) continue;
@@ -269,6 +282,14 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
         lines,
       });
     }
+    for (let i = subdirs.length - 1; i >= 0; i--) {
+      const nextDir = subdirs[i];
+      if (nextDir) stack.push(nextDir);
+    }
+    for (let i = prioritySubdirs.length - 1; i >= 0; i--) {
+      const nextDir = prioritySubdirs[i];
+      if (nextDir) stack.push(nextDir);
+    }
   }
 
   const languageSet = new Set<Language>();
@@ -278,16 +299,6 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
   const languages = [...languageSet].sort();
 
   const lowerPaths = allRelPaths.map((p) => p.toLowerCase());
-  const allText = files.map((f) => f.content).join("\n");
-  const nonDocText = files
-    .filter((f) => !f.rel.toLowerCase().endsWith(".md"))
-    .map((f) => f.content)
-    .join("\n");
-  const configText = files
-    .filter((f) => !f.isTest && ((!f.language && !f.rel.toLowerCase().endsWith(".md")) || f.rel.includes("config") || f.isWorkflow))
-    .map((f) => f.content)
-    .join("\n");
-
   const manifestText = files
     .filter((f) => !f.isTest && !f.isWorkflow && !f.language && !f.rel.toLowerCase().endsWith(".md"))
     .map((f) => f.content)
@@ -308,70 +319,7 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
   else if (hasReactOrUi) archetype = "frontend";
   else if (hasBackendService) archetype = "service";
 
-  const hasPath = (re: RegExp): boolean => lowerPaths.some((p) => re.test(p));
-  const hasAny = (re: RegExp): boolean => re.test(allText);
+  const { signals, ci } = extractSignals(files, allRelPaths, languages);
 
-  const signals: ToolSignals = {
-    hasFormatter:
-      hasPath(/prettier|oxfmt|\.editorconfig|rustfmt|ruff/) ||
-      /\b(?:prettier|oxfmt|biome|ruff format|\[tool\.ruff\]|dotnet format|gofmt|rustfmt)\b/i.test(configText),
-    hasLinter:
-      hasPath(/eslint|oxlint|biome|ruff|clippy|golangci|directory\.build\.props/) ||
-      /\b(?:eslint|oxlint|biome|ruff|clippy|golangci-lint|roslyn|AnalysisLevel|VStack\.Analyzers)\b/i.test(configText),
-    hasOxlint: hasPath(/oxlint/) || /\boxlint\b/i.test(configText),
-    hasAntiSlop: hasAny(/anti-slop|dmmulroy\/anti-slop/i),
-    hasLandmines: hasAny(/@interfere\/landmines|landmines-testing|landmines\//i),
-    hasGoInternal: hasAny(/oxlint-plugin-go-internal/i),
-    hasDeslopPlease: hasPath(/\.deslop-please\.allow/) || hasAny(/deslop-please/i),
-    hasDesloppify: hasAny(/\bdesloppify\b/i),
-    hasStrictTypes:
-      /"strict"\s*:\s*true/.test(configText) ||
-      /<Nullable>enable<\/Nullable>/i.test(configText) ||
-      languages.includes("rust") ||
-      languages.includes("go") ||
-      /\b(?:mypy|pyright)\b/i.test(configText),
-    hasTsgo: hasAny(/\btsgo\b|@typescript\/native-preview/i),
-    hasKnipOrDeadCode:
-      hasPath(/knip/) || /\bknip\b|CS0162|IDE0051|dead_code/i.test(allText),
-    hasJscpd: hasPath(/jscpd/) || /\bjscpd\b/i.test(configText),
-    hasArchFitness:
-      hasAny(/dependency-cruiser|archunit|netarchtest|import-linter|deptrac|packwerk|turbo\s+boundaries/i) ||
-      hasPath(/check-boundaries|arch-fitness/),
-    hasPreCommitHook:
-      hasPath(/lefthook|\.husky\/|\.pre-commit-config|git-hooks\/pre-commit/) ||
-      /core\.hooksPath/.test(configText),
-    hasCodeowners: hasPath(/(?:^|\/)codeowners$/),
-    hasReviewMd: hasPath(/(?:^|\/)review\.md$/),
-    hasAgentsMd: hasPath(/(?:^|\/)(?:agents|claude)\.md$/),
-    hasPbt: hasAny(/\b(?:fast-check|fc\.property|hypothesis|fscheck|proptest|quickcheck)\b/i),
-    hasMbt: hasAny(
-      /\b(?:fc\.commands|RuleBasedStateMachine|modelRun|PropEr|stateright|FsCheck\.Experimental|ToProperty\s*\(\s*\)\s*\.Check|StateMachine|proptest_state_machine|ReferenceStateMachine|state_machine_test!)\b/i,
-    ),
-    hasContractTool: hasAny(/\b(?:@pact-foundation|pactnet|schemathesis|openapi|asyncapi|buf\.yaml)\b/i),
-    hasComponentUiTool: hasAny(/@testing-library|playwright\/experimental-ct|storybook/i),
-    hasMsw: hasAny(/\b(?:msw|setupServer|setupWorker)\b/),
-    hasMswStrict: /onUnhandledRequest\s*:\s*["']error["']/.test(allText),
-    hasTestcontainersOrRealDb: hasAny(
-      /\b(?:testcontainers|UseNpgsql|UseSqlServer|pglite|postgres:|FIRESTORE_EMULATOR_HOST|FIREBASE_AUTH_EMULATOR_HOST|firebase-emulator)\b/i,
-    ),
-    hasMigrationTest: hasAny(/\b(?:MigrateAsync|MigrationBuilder|alembic|flyway|prisma migrate)\b/i),
-    hasBusDlqTest: hasAny(/\b(?:DeadLetter|MaxDeliveryCount|ServiceBusClient|RabbitMQ|Kafka)\b/i),
-    hasDst: hasAny(/\b(?:turmoil|antithesis|deterministic.simulation|virtualClock)\b/i),
-    hasDryRun: hasAny(/--dry-run|terraform plan|ansible.*--check/i),
-    hasMutationTool: hasAny(/\b(?:stryker|mutmut|cargo-mutants|mutants\.toml|pitest)\b/i) || hasPath(/mutants\.toml|stryker-config\.json/),
-    hasFormalTool:
-      hasPath(/\.(?:tla|qnt|als|dfy|lean)$|formal_model_check/) ||
-      /\b(?:everystate|z3-solver|Microsoft\.Z3|z3::|kani|verus|stateright|loom|shuttle|quint|dafny|tlc|crosshair)\b/i.test(
-        nonDocText,
-      ),
-    hasFuzzTool: hasAny(/\b(?:cargo-fuzz|libFuzzer|jazzer|atheris|fuzzTest)\b/i),
-    hasBombadil: hasAny(/\bbombadil\b/i),
-    hasVisualTool: hasAny(/\b(?:toHaveScreenshot|chromatic|percy|argos|ui-diff)\b/i),
-    hasPerfOrLoadTool: hasAny(/\b(?:k6|BenchmarkDotNet|web-vitals|lighthouse|performance\.mark)\b/i),
-    hasE2eTool: hasAny(/\b(?:@playwright\/test|playwright|cypress|selenium|puppeteer)\b/i),
-    hasProdTelemetryOrCanary: hasAny(/\b(?:opentelemetry|launchdarkly|canary|goreplay|chaos-mesh|synthetic)\b/i),
-    hasDiffSelection: hasAny(/\b(?:testscope|--changed|--affected|affected-projects)\b/i),
-  };
-
-  return { root, files, allRelPaths, languages, archetype, signals };
+  return { root, files, allRelPaths, languages, archetype, signals, ci };
 }

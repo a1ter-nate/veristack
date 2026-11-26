@@ -9,7 +9,7 @@ export function formatTerminalReport(report: ScanReport): string {
     `Archetype: ${report.archetype} | Languages: ${report.languages.join(", ") || "none"} | Prod: ${s.sourceFiles} files (${s.prodLines} L) | Tests: ${s.testFiles} files (${s.testLines} L, ratio ${s.testToProdRatio}x)`,
   );
   out.push(
-    `Summary: ${s.holeCount} rung hole/over-budget | ${s.pushDownCount} push-down opportunities | ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} no-comments) | ${s.warnCount} warnings`,
+    `Summary: ${s.holeCount} not-covered/over-budget | ${s.poorlyCoveredCount} poorly-covered | ${s.unexecutedRungCount} not running in CI | Ladder: ${s.overallCoverageScore}/100 (${s.wellCoveredCount}/${s.applicableRungCount} well-covered) | ${s.pushDownCount} push-down opportunities | ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} no-comments) | ${s.warnCount} warnings`,
   );
   if (report.config && (report.config.disabledRules.length > 0 || report.config.suppressedCount > 0)) {
     const src = report.config.path ?? "CLI";
@@ -19,9 +19,15 @@ export function formatTerminalReport(report: ScanReport): string {
   out.push("");
   out.push("9-RUNG VERIFICATION LADDER (R0 -> R8)");
   for (const r of report.rungs) {
-    const tag = r.status.toUpperCase().padEnd(14);
+    const tag = r.coverageGrade.toUpperCase().padEnd(14);
+    const score = r.coverageGrade === "not-applicable" ? " -- " : `${String(r.coverageScore).padStart(3)}%`;
+    const ciTag = r.coverageGrade === "not-applicable" ? "CI:N/A" : r.executedInCi ? "CI:YES" : "CI:NO ";
     const ev = r.evidence.length > 0 ? r.evidence.join(", ") : "none";
-    out.push(`  ${r.rung} [${tag}] ${r.name} (${r.speedBudget} | budget: ${r.targetBudget}) -> ${ev}`);
+    out.push(`  ${r.rung} [${tag} ${score} ${ciTag}] ${r.name} (${r.speedBudget} | budget: ${r.targetBudget}) -> ${ev}`);
+    if (r.coverageGrade !== "not-applicable") {
+      out.push(`       Ideal:  ${r.idealCoverage}`);
+      out.push(`       Actual: ${r.observedCoverage}`);
+    }
     for (const gap of r.gaps) {
       out.push(`       GAP: ${gap}`);
     }
@@ -74,16 +80,18 @@ export function formatMarkdownReport(report: ScanReport): string {
     `- **Counts:** ${s.sourceFiles} prod files (${s.prodLines} L) · ${s.testFiles} test files (${s.testLines} L, ${s.testToProdRatio}x) · ${s.e2eTestCases} E2E cases`,
   );
   out.push(
-    `- **Signals:** ${s.holeCount} rung holes/over-budget · ${s.pushDownCount} push-down opportunities · ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} prose comments) · ${s.warnCount} warnings`,
+    `- **Signals:** Ladder ${s.overallCoverageScore}/100 (${s.wellCoveredCount}/${s.applicableRungCount} well-covered, ${s.poorlyCoveredCount} poorly-covered, ${s.holeCount} not-covered/over-budget, ${s.unexecutedRungCount} not running in CI) · ${s.pushDownCount} push-down opportunities · ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} prose comments) · ${s.warnCount} warnings`,
   );
   out.push("");
   out.push("## 9-Rung Coverage (R0 → R8)");
   out.push("");
-  out.push("| Rung | Layer | Status | Budget | Evidence | Gaps |");
-  out.push("| :---: | :--- | :---: | :--- | :--- | :--- |");
+  out.push("| Rung | Layer | Grade | Score | CI | Ideal Coverage | Actual | Gaps |");
+  out.push("| :---: | :--- | :---: | :---: | :---: | :--- | :--- | :--- |");
   for (const r of report.rungs) {
+    const score = r.coverageGrade === "not-applicable" ? "—" : `${r.coverageScore}%`;
+    const ci = r.coverageGrade === "not-applicable" ? "N/A" : r.executedInCi ? "YES" : "NO";
     out.push(
-      `| **${r.rung}** | ${r.name} | \`${r.status}\` | ${r.targetBudget} | ${r.evidence.join("; ") || "—"} | ${r.gaps.join("; ") || "—"} |`,
+      `| **${r.rung}** | ${r.name} | \`${r.coverageGrade}\` | ${score} | ${ci} | ${r.idealCoverage} | ${r.observedCoverage} | ${r.gaps.join("; ") || "—"} |`,
     );
   }
 

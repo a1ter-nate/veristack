@@ -76,9 +76,11 @@ test("vstack CLI exits 1 on examples/*/caught and exits 0 on examples/*/clean", 
     });
     assert.equal(caughtScan.status, 1, `vstack scan --fail-on-errors must fail on examples/${lang}/caught`);
 
-    const cleanScan = spawnSync(process.execPath, [cliPath, "scan", cleanDir, "--fail-on-errors"], {
-      encoding: "utf8",
-    });
+    const cleanScan = spawnSync(
+      process.execPath,
+      [cliPath, "scan", cleanDir, "--fail-on-errors", "--allow-missing-rungs"],
+      { encoding: "utf8" },
+    );
     assert.equal(cleanScan.status, 0, `vstack scan --fail-on-errors must pass on examples/${lang}/clean`);
 
     const cleanSm = spawnSync(process.execPath, [cliPath, "state-machines", cleanDir, "--fail"], {

@@ -18,6 +18,11 @@ test("self-scan passes with zero cheats, zero prose comments, zero errors, zero 
   assert.equal(report.summary.warnCount, 0);
   assert.equal(report.summary.pushDownCount, 0);
   assert.equal(report.summary.holeCount, 0);
+  assert.equal(report.summary.poorlyCoveredCount, 0);
+  assert.equal(report.summary.unexecutedRungCount, 0);
+  assert.equal(report.summary.wellCoveredCount, 6);
+  assert.equal(report.summary.applicableRungCount, 6);
+  assert.equal(report.summary.overallCoverageScore, 100);
   assert.equal(report.rungs.length, 9);
 });
 

@@ -2,16 +2,10 @@ import fs from "node:fs";
 import { scanGitDiffCheats } from "./ci-auditor.ts";
 import { createSystem1Engine, formatCircuitReport, listDefaultCircuits, runRepoCircuit } from "./circuits/index.ts";
 import { discoverRepo } from "./discover.ts";
-import { formatFindingsList, formatMarkdownReport, formatSystem1Report, formatTerminalReport } from "./format.ts";
+import { formatFindingsList, formatSystem1Report } from "./format.ts";
 import { handleHooksAndDoctorCli } from "./hooks/index.ts";
-import { scanRepo } from "./ladder.ts";
 import { lintNoComments } from "./no-comments.ts";
-import {
-  buildRatchetBaseline,
-  evaluateRatchet,
-  type RatchetBaseline,
-  writeRatchetBaseline,
-} from "./ratchet.ts";
+import { handleScanCli } from "./rungs/scan-cli.ts";
 import { analyzeStateMachines } from "./state-machines/index.ts";
 import { buildSystem1Packet, corroborateSystem1Batch } from "./system1-classifier.ts";
 import { runSystem1Provider } from "./system1-providers.ts";
@@ -48,7 +42,7 @@ function usage(): string {
     "vstack — Deterministic Verification Stack, Push-Down Analyzer, Formal Checks & JEV-Style System 1 Circuits",
     "",
     "Commands:",
-    "  vstack scan [dir] [--json | --md] [--config <file>] [--disable <rules>] [--ratchet <file>] [--update-ratchet] [--strict] [--fail-on-cheats] [--fail-on-errors]",
+    "  vstack scan [dir] [--json | --md] [--config <file>] [--disable <rules>] [--ratchet <file>] [--update-ratchet] [--strict] [--allow-missing-rungs] [--fail-on-poor-coverage] [--fail-on-cheats] [--fail-on-errors]",
     "  vstack no-comments [dir] [--json] [--fail]",
     "  vstack state-machines [dir] [--json] [--fail]",
     "  vstack diff-cheats [dir] [--base <ref>] [--json] [--fail]",
@@ -150,77 +144,7 @@ async function run(): Promise<number> {
   if (hookOrDoctorCode !== null) return hookOrDoctorCode;
 
   if (cmd === "scan") {
-    const strict = rest.includes("--strict");
-    const configPath = parseFlagValue(rest, "--config");
-    const disableRaw = parseFlagValue(rest, "--disable");
-    const disableRules = disableRaw
-      ? disableRaw.split(",").map((r) => r.trim()).filter(Boolean)
-      : undefined;
-    const ratchetPath = parseFlagValue(rest, "--ratchet");
-    const updateRatchet = rest.includes("--update-ratchet");
-    if (strict && (ratchetPath || updateRatchet)) {
-      console.error("vstack scan --strict forbids --ratchet and --update-ratchet baselines.");
-      return 1;
-    }
-    if (strict && (configPath || (disableRules && disableRules.length > 0))) {
-      console.error("vstack scan --strict forbids --config and --disable rule overrides.");
-      return 1;
-    }
-    const report = scanRepo(target, { configPath, disableRules });
-    let ratchetEval: ReturnType<typeof evaluateRatchet> | undefined;
-
-    if (ratchetPath) {
-      if (updateRatchet || !fs.existsSync(ratchetPath)) {
-        const nextBaseline = buildRatchetBaseline(report.findings);
-        writeRatchetBaseline(ratchetPath, nextBaseline);
-        ratchetEval = evaluateRatchet(report.findings, nextBaseline);
-      } else {
-        const baseline = JSON.parse(fs.readFileSync(ratchetPath, "utf8")) as RatchetBaseline;
-        ratchetEval = evaluateRatchet(report.findings, baseline);
-      }
-    }
-
-    if (asJson) console.log(JSON.stringify(ratchetEval ? { ...report, ratchet: ratchetEval } : report, null, 2));
-    else if (asMd) console.log(formatMarkdownReport(report));
-    else {
-      console.log(formatTerminalReport(report));
-      if (ratchetEval) {
-        console.log(`\nRATCHET (${ratchetPath}): ${ratchetEval.passed ? "PASS" : "FAIL"}`);
-        for (const r of ratchetEval.regressions) {
-          console.log(`  - [REGRESSION] ${r.rule}: ${r.baseline} -> ${r.current} (+${r.delta})`);
-        }
-        for (const t of ratchetEval.tightenAvailable) {
-          console.log(`  - [TIGHTEN] ${t.rule}: ${t.baseline} -> ${t.current} (${t.delta}) — rerun with --update-ratchet`);
-        }
-      }
-    }
-
-    if (strict) {
-      if (report.config && (report.config.disabledRules.length > 0 || report.config.suppressedCount > 0)) {
-        console.error("vstack scan --strict failed: .vstack.json disables or suppresses rules.");
-        return 1;
-      }
-      const s = report.summary;
-      if (
-        s.totalFindings > 0 ||
-        s.errorCount > 0 ||
-        s.warnCount > 0 ||
-        s.cheatCount > 0 ||
-        s.noCommentCount > 0 ||
-        s.holeCount > 0 ||
-        s.pushDownCount > 0
-      ) {
-        return 1;
-      }
-      return 0;
-    }
-
-    if (ratchetEval && !ratchetEval.passed) return 1;
-    if (rest.includes("--fail-on-errors") && report.summary.errorCount > 0) return 1;
-    if (rest.includes("--fail-on-cheats") && (report.summary.cheatCount > 0 || report.summary.noCommentCount > 0)) {
-      return 1;
-    }
-    return 0;
+    return handleScanCli(rest, target, asJson, asMd);
   }
 
   if (cmd === "formal-sync") {

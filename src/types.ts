@@ -39,12 +39,48 @@ export interface PushDownOpportunity {
   forbiddenWarning?: string;
 }
 
+export type RungCoverageGrade =
+  | "well-covered"
+  | "poorly-covered"
+  | "not-covered"
+  | "over-budget"
+  | "not-applicable";
+
+export interface RungCheck {
+  id: string;
+  label: string;
+  weight: number;
+  passed: boolean;
+  executed: boolean;
+  detail: string;
+}
+
+export interface CiExecutionSignals {
+  hasCiWorkflows: boolean;
+  workflowFiles: string[];
+  runsFormatterOrLint: boolean;
+  runsTypeOrStructureCheck: boolean;
+  runsUnitTests: boolean;
+  runsBoundaryOrMbtTests: boolean;
+  runsIntegrationOrDbTests: boolean;
+  runsMutationOrFormal: boolean;
+  runsPerfOrBench: boolean;
+  runsE2eTests: boolean;
+  runsProdVerification: boolean;
+}
+
 export interface RungStatus {
   rung: RungId;
   name: string;
   speedBudget: string;
   targetBudget: string;
   status: "covered" | "partial" | "hole" | "over-budget" | "not-applicable";
+  coverageGrade: RungCoverageGrade;
+  coverageScore: number;
+  executedInCi: boolean;
+  idealCoverage: string;
+  observedCoverage: string;
+  checks: RungCheck[];
   observedCount: number;
   evidence: string[];
   gaps: string[];
@@ -120,6 +156,11 @@ export interface ScanSummary {
   noCommentCount: number;
   pushDownCount: number;
   holeCount: number;
+  poorlyCoveredCount: number;
+  wellCoveredCount: number;
+  applicableRungCount: number;
+  unexecutedRungCount: number;
+  overallCoverageScore: number;
 }
 
 export interface ScanConfigMeta {

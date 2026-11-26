@@ -43,7 +43,7 @@ Run `npx vstack --help` for the complete command and flag reference. From a loca
 
 ## The 9-Rung Verification Ladder
 
-Every check belongs on the lowest rung that still catches the defect:
+Every check belongs on the lowest rung that still catches the defect. `vstack scan` proves each applicable rung is **actually running in CI** (never crediting markdown docs or string literals), grades every rung **`well-covered` (`>= 80%` + CI)**, **`poorly-covered` (`25–79%` or missing CI)**, **`not-covered` (`< 25%`)**, or **`over-budget`**, and **exits `1` by default** when any rung is missing, over-budget, or not executing in CI (`--strict` requires `100%` `well-covered` across all applicable rungs):
 
 ```text
 R0  Static Locks, Anti-Slop & Agent-Doc Hygiene   (< 2 s   | 100% files)
