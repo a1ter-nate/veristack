@@ -1,3 +1,4 @@
+import { scanLexical } from "../anti-slop/lexical-mask.ts";
 import type { ScannedFile } from "../discover.ts";
 import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
@@ -50,7 +51,7 @@ function isSymmetricBoundMath(callText: string): boolean {
 }
 const CS_UNDISPOSED_NEW =
   /^[ \t]*(?!using\b|await\s+using\b|return\b)(?:var|[A-Za-z0-9_.<>]+)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*new\s+(?:SqlConnection|NpgsqlConnection|FileStream|StreamReader|StreamWriter|DbCommand|SqlCommand)\s*\(/gm;
-const GO_HTTP_CALL = /\b(?:http\.(?:Get|Post|PostForm|Head)|[A-Za-z_][A-Za-z0-9_]*\.Do)\s*\(/g;
+const GO_HTTP_CALL = /\b(?:http\.(?:Get|Post|PostForm|Head)|[A-Za-z_][A-Za-z0-9_.]*\.Do)\s*\(/g;
 
 function push(
   findings: Finding[],
@@ -372,60 +373,12 @@ export function analyzeOssGuards(file: ScannedFile): Finding[] {
     );
   }
 
-function findEmptyAltRegexOffsets(masked: string): number[] {
-  const hits: number[] = [];
-  let lastNonWs = "";
-  for (let i = 0; i < masked.length; i++) {
-    const ch = masked[i] ?? "";
-    const next = masked[i + 1] ?? "";
-    if (ch === "/" && next === "/") {
-      while (i < masked.length && masked[i] !== "\n") i += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      i += 2;
-      while (i < masked.length && !(masked[i] === "*" && masked[i + 1] === "/")) i += 1;
-      i += 1;
-      continue;
-    }
-    if (ch === "/" && (lastNonWs === "" || "=(,:!&|?;{[}\n".includes(lastNonWs))) {
-      let inClass = false;
-      let escaped = false;
-      let end = -1;
-      for (let j = i + 1; j < masked.length; j++) {
-        const c = masked[j] ?? "";
-        if (c === "\n" || c === "\r") break;
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (c === "\\") {
-          escaped = true;
-          continue;
-        }
-        if (c === "[") inClass = true;
-        else if (c === "]") inClass = false;
-        else if (c === "/" && !inClass) {
-          end = j;
-          break;
-        }
-      }
-      if (end > i) {
-        const body = masked.slice(i + 1, end);
-        if (EMPTY_ALT_INSIDE.test(body)) hits.push(i);
-        i = end;
-        lastNonWs = ")";
-        continue;
-      }
-    }
-    if (ch.trim()) lastNonWs = ch;
-  }
-  return hits;
-}
-
-  for (const offset of findEmptyAltRegexOffsets(masked)) {
+  const regexSpans = scanLexical(raw, true, file.language).regexSpans;
+  for (const sp of regexSpans) {
+    const body = raw.slice(sp.start + 1, sp.end);
+    if (!EMPTY_ALT_INSIDE.test(body)) continue;
     push(
-      findings, file.rel, lineOf(raw, offset), "regex-empty-alternation-or-unescaped", "R1", "warn",
+      findings, file.rel, lineOf(raw, sp.start), "regex-empty-alternation-or-unescaped", "R1", "warn",
       "Regex contains an empty alternation branch (|| or (?:| / |)), silently matching empty strings or causing backtracking.",
       "Replace empty alternation branches with an explicit optional '?' quantifier.",
     );

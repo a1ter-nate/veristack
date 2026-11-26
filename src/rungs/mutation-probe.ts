@@ -167,7 +167,7 @@ function collectFallbackMutants(rel: string, source: string, maxPerFile: number,
     if (rel.endsWith(".rs") && (op === "&&" || op === "||")) {
       const before = masked.slice(Math.max(0, idx - 12), idx).trimEnd();
       if (op === "&&" && (!before || /[(:=,[<]$/.test(before))) continue;
-      if (op === "||" && (!before || /[(:=,[{]$/.test(before))) continue;
+      if (op === "||" && (!before || /[(:=,[{]$|\bmove$/.test(before))) continue;
     }
     const replacement = op === "and" ? "or" : op === "or" ? "and" : (BINARY_MUTATIONS[op] ?? LOGICAL_MUTATIONS[op]);
     if (!replacement) continue;
@@ -195,14 +195,16 @@ function findBalancedParenEnd(masked: string, openIdx: number): number {
 }
 
 function findFnBodyOpenBrace(masked: string, startAfterParams: number, allowInlineStructBrace: boolean): number {
-  let angle = 0; let paren = 0;
+  let angle = 0; let paren = 0; let bracket = 0;
   for (let i = startAfterParams; i < masked.length; i++) {
     const ch = masked[i] ?? "";
     if (ch === "(") paren += 1;
     else if (ch === ")") paren = Math.max(0, paren - 1);
+    else if (ch === "[") bracket += 1;
+    else if (ch === "]") bracket = Math.max(0, bracket - 1);
     else if (ch === "<") angle += 1;
     else if (ch === ">" && masked[i - 1] !== "-") angle = Math.max(0, angle - 1);
-    else if (paren === 0 && angle === 0) {
+    else if (paren === 0 && angle === 0 && bracket === 0) {
       if (ch === ";") return -1;
       if (ch === "=" && masked[i + 1] === ">") return -1;
       if (ch === "{") {
@@ -271,9 +273,9 @@ export function insertSemanticNoOp(rel: string, source: string, variant: number)
     while (i < lines.length) {
       const l = (lines[i] ?? "").trim();
       if (inTriple) { if (l.includes(inTriple)) inTriple = null; i += 1; continue; }
-      if (inFuture) { if (l.includes(")")) inFuture = false; i += 1; continue; }
+      if (inFuture) { if (l.includes(")") || !l.endsWith("\\")) inFuture = false; i += 1; continue; }
       if (l === "" || l.startsWith("#")) { i += 1; continue; }
-      if (l.startsWith("from __future__ import")) { if (l.includes("(") && !l.includes(")")) inFuture = true; i += 1; continue; }
+      if (l.startsWith("from __future__ import")) { if ((l.includes("(") && !l.includes(")")) || l.endsWith("\\")) inFuture = true; i += 1; continue; }
       const ds = /^(?:[rRbBuUfF]{0,2})("""|''')/.exec(l);
       if (ds?.[1]) { if (!l.slice(ds[0].length).includes(ds[1])) inTriple = ds[1]; i += 1; continue; }
       break;
@@ -372,16 +374,23 @@ function copyRepoForIsolatedCanary(repoRoot: string): string {
   return sandboxDir;
 }
 
+function safeWriteSandboxText(sandboxDir: string, rel: string, content: string): boolean {
+  const realSb = fs.realpathSync(sandboxDir);
+  const dest = path.resolve(realSb, rel);
+  if (dest !== realSb && !dest.startsWith(`${realSb}${path.sep}`)) return false;
+  try { if (fs.lstatSync(dest).isSymbolicLink()) fs.unlinkSync(dest); } catch { void 0; }
+  const realParent = fs.realpathSync(path.dirname(dest));
+  if (realParent !== realSb && !realParent.startsWith(`${realSb}${path.sep}`)) return false;
+  fs.writeFileSync(dest, content, "utf8");
+  return true;
+}
+
 function withOpaqueTmpEnv<T>(baseEnv: NodeJS.ProcessEnv, sandboxDir: string, fn: (env: NodeJS.ProcessEnv) => T): T {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "t-"));
   const pyPaths = [path.join(sandboxDir, "src"), sandboxDir].filter((p) => fs.existsSync(p));
   if (baseEnv.PYTHONPATH) pyPaths.push(baseEnv.PYTHONPATH);
-  const env: NodeJS.ProcessEnv = { ...baseEnv, TMPDIR: tmpDir, TMP: tmpDir, TEMP: tmpDir, PYTHONPATH: pyPaths.join(path.delimiter) };
-  try {
-    return fn(env);
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+  const env: NodeJS.ProcessEnv = { ...baseEnv, HOME: tmpDir, XDG_CONFIG_HOME: tmpDir, TMPDIR: tmpDir, TMP: tmpDir, TEMP: tmpDir, PYTHONPATH: pyPaths.join(path.delimiter) };
+  try { return fn(env); } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
 }
 
 export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultReport {
@@ -426,9 +435,9 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
   };
 
   const baselineStart = performance.now();
-  const baselineRun = withFreshSandbox((sb) => withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, 90_000)));
+  const baselineRun = withFreshSandbox((sb) => withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, 120_000, parsedCmd.stepCwds)));
   const baselineMs = Math.max(500, Math.round(performance.now() - baselineStart));
-  const mutantTimeoutMs = Math.round(Math.max(20_000, Math.min(60_000, baselineMs * 6)));
+  const taskTimeoutMs = Math.round(Math.max(25_000, Math.min(120_000, baselineMs * 6)));
   if (baselineRun.status !== 0) return failReport(candidates.length, candidates.length);
 
   const uniqueTargetFiles = [...new Set(candidates.map((c) => c.file))];
@@ -436,9 +445,9 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
     withFreshSandbox((sb) => {
       for (const rel of uniqueTargetFiles) {
         const p = path.join(sb, rel);
-        fs.writeFileSync(p, insertSemanticNoOp(rel, fs.readFileSync(p, "utf8"), variant), "utf8");
+        if (!safeWriteSandboxText(sb, rel, insertSemanticNoOp(rel, fs.readFileSync(p, "utf8"), variant))) return false;
       }
-      return withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, 90_000)).status === 0;
+      return withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, taskTimeoutMs, parsedCmd.stepCwds)).status === 0;
     });
 
   type Task = { kind: "noop"; variant: number } | { kind: "mutant"; mutant: MutantCandidate };
@@ -464,22 +473,19 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
       invalidKills += 1; continue;
     }
     withFreshSandbox((sb) => {
-      fs.writeFileSync(path.join(sb, mutant.file), mutatedSource, "utf8");
+      if (!safeWriteSandboxText(sb, mutant.file, mutatedSource)) { invalidKills += 1; return; }
       const mutStart = performance.now();
-      const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, mutantTimeoutMs));
+      const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, taskTimeoutMs, parsedCmd.stepCwds));
       const elapsedMs = performance.now() - mutStart;
       const cleanCombined = stripAnsi(`${res.stdout}\n${res.stderr}`);
-      const timedOut = (res.signal === "SIGTERM" || (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") && elapsedMs >= mutantTimeoutMs * 0.8;
-      if (timedOut) {
-        killed += 1;
-      } else if (res.signal === "SIGTERM" || res.error) {
-        invalidKills += 1;
-      } else if (res.status !== 0) {
+      const timedOut = (res.signal === "SIGTERM" || (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") && elapsedMs >= taskTimeoutMs * 0.8;
+      if (timedOut) killed += 1;
+      else if (res.signal === "SIGTERM" || res.error) invalidKills += 1;
+      else if (res.status !== 0) {
         const parsedCounts = parseRunnerTestCounts(cleanCombined, parsedCmd.steps);
         const runnerReportedFail = parsedCounts.matched && parsedCounts.failed > 0;
         const hasCrash = COMPILE_OR_RUNTIME_CRASH.test(cleanCombined);
-        const hasTestFail = runnerReportedFail || (!hasCrash && STRICT_TEST_FAILURE.test(cleanCombined));
-        if (!hasTestFail) invalidKills += 1;
+        if (hasCrash || (!runnerReportedFail && !STRICT_TEST_FAILURE.test(cleanCombined))) invalidKills += 1;
         else killed += 1;
       } else {
         survivors.push({ file: mutant.file, line: mutant.line, operator: mutant.operator, original: mutant.original, mutated: mutant.mutated });

@@ -8,4 +8,27 @@ const distCli = path.join(rootDir, "dist", "cli.mjs");
 const srcCli = path.join(rootDir, "src", "cli.ts");
 const entry = fs.existsSync(distCli) ? distCli : srcCli;
 
-await import(pathToFileURL(entry).href);
+try {
+  await import(pathToFileURL(entry).href);
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (process.argv[2] === "hook") {
+    const sub = process.argv[3];
+    const hIdx = process.argv.indexOf("--harness");
+    const harness = hIdx >= 0 ? process.argv[hIdx + 1] : "claude";
+    const errMsg = `Veristack hook failed closed on startup error: ${msg}`;
+    if (sub === "pre-edit") {
+      console.error(errMsg);
+      if (harness !== "codex") {
+        console.log(JSON.stringify({ permission: "deny", hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: errMsg }, user_message: errMsg, agent_message: errMsg }));
+      }
+      process.exit(2);
+    }
+    if (sub === "stop") {
+      console.log(JSON.stringify({ decision: "block", reason: errMsg }));
+      process.exit(0);
+    }
+  }
+  console.error(msg);
+  process.exit(1);
+}

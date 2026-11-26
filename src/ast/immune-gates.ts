@@ -55,12 +55,11 @@ function loadChokePoints(repo: DiscoveredRepo, findings: Finding[]): ChokePointR
         raw.allowPaths.some((p) => {
           if (typeof p !== "string") return true;
           const clean = p.trim().replace(/^\/+/, "").replace(/\/+$/, "");
-          const parts = clean.split("/").filter(Boolean);
           const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(clean);
-          return clean === "" || clean.includes("*") || clean.length < 5 || (parts.length < 2 && !hasExt);
+          return clean === "" || clean.includes("*") || !hasExt;
         })
       ) {
-        push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} rule '${raw.pattern}' has an overly broad or invalid allowPaths entry.`, "Scope allowPaths to the exact choke-point wrapper file (e.g. 'src/db/client.ts').");
+        push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} rule '${raw.pattern}' has an overly broad or invalid allowPaths entry (must be an exact file path).`, "Scope allowPaths to exact choke-point wrapper file paths (e.g. 'src/db/client.ts').");
         continue;
       }
       if (raw.languages !== undefined) {
@@ -111,7 +110,7 @@ function auditChokePoints(repo: DiscoveredRepo, findings: Finding[]): void {
     const masked = maskCode(file.content, file.language, true);
     for (const c of compiled) {
       if (c.langSet && !c.langSet.has(file.language)) continue;
-      if (c.allowSet.some((prefix) => file.rel === prefix || file.rel.startsWith(prefix))) continue;
+      if (c.allowSet.some((allowed) => file.rel === allowed)) continue;
       for (const offset of findTokenOffsets(masked, c.rule.pattern)) {
         push(
           findings, file.rel, lineOf(file.content, offset), "chokepoint-banned-primitive", "R0", "error",
@@ -171,21 +170,38 @@ function auditRunScriptSupplyChain(file: ScannedFile, lines: readonly string[], 
   }
   if (buf) joinedLines.push(buf);
   const downloadedFiles = new Set<string>();
-  const hasChecksumVerify = /\b(?:sha256sum\s+(?:-[A-Za-z]*c|--check)|shasum\s+-a\s+256\s+(?:-[A-Za-z]*c|--check)|sha512sum\s+(?:-[A-Za-z]*c|--check)|gpg\s+--verify)\b/i.test(runScript);
+  const verifiedFiles = new Set<string>();
+  let globalChecksumVerified = false;
+  const CHECKSUM_CMD = /(?:^|\|\s*)(?:sudo\s+)?(?:sha256sum\s+(?:-[A-Za-z]*c|--check)|shasum\s+-a\s+256\s+(?:-[A-Za-z]*c|--check)|sha512sum\s+(?:-[A-Za-z]*c|--check)|gpg\s+--verify)\b/i;
   for (const line of joinedLines) {
     if (/^\s*#/.test(line)) continue;
     if (FETCH_TO_SHELL.test(line)) {
-      push(findings, file.rel, findLineForNeedle(lines, line.trim().slice(0, 32)), "ci-curl-pipe-shell", "R0", "error", "Workflow pipes or evals remote download directly into a shell/script interpreter.", "Download a pinned checksum-verified release artifact or use a SHA-pinned action.");
+      push(findings, file.rel, findLineForNeedle(lines, line.trim().slice(0, 32)), "ci-curl-pipe-shell", "R0", "error", "Script pipes or evals remote download directly into a shell/script interpreter.", "Download a pinned checksum-verified release artifact or use a SHA-pinned action.");
       continue;
     }
-    const dl = DOWNLOAD_TO_FILE.exec(line);
-    const dlTarget = (dl?.[1] ?? dl?.[2] ?? dl?.[3] ?? "").replace(/^["']|["']$/g, "");
-    if (dlTarget && dlTarget !== "/dev/null") downloadedFiles.add(dlTarget);
-    if (!hasChecksumVerify && downloadedFiles.size > 0) {
-      for (const f of downloadedFiles) {
-        if (!line.includes(f) || /^\s*(?:curl|wget|rm)\b/.test(line)) continue;
-        if (/\b(?:(?:\/[\w.-]+)*\/)?(?:sh|bash|zsh|dash|node|python3?|perl|ruby|source)\b|\bchmod\s+\+x\b/.test(line) || line.includes(`./${f}`)) {
-          push(findings, file.rel, findLineForNeedle(lines, f), "ci-curl-pipe-shell", "R0", "error", `Workflow downloads and executes '${f}' without verified checksum ('sha256sum -c' / 'gpg --verify').`, "Verify sha256sum -c against a pinned digest before executing downloaded scripts.");
+    const stmts = line.split(/\s*(?:&&|;)\s*/);
+    for (const stmt of stmts) {
+      const st = stmt.trim();
+      if (!st || st.startsWith("#")) continue;
+      if (CHECKSUM_CMD.test(st) && !/\|\|\s*(?:true|:)\b/.test(st)) {
+        globalChecksumVerified = true;
+        for (const f of downloadedFiles) verifiedFiles.add(f);
+        continue;
+      }
+      const dl = DOWNLOAD_TO_FILE.exec(st);
+      const dlTarget = (dl?.[1] ?? dl?.[2] ?? dl?.[3] ?? "").replace(/^["']|["']$/g, "");
+      if (dlTarget && dlTarget !== "/dev/null") {
+        downloadedFiles.add(dlTarget);
+        verifiedFiles.delete(dlTarget);
+        continue;
+      }
+      if (downloadedFiles.size > 0) {
+        for (const f of downloadedFiles) {
+          if (verifiedFiles.has(f) || globalChecksumVerified) continue;
+          if (!st.includes(f) || /^\s*(?:curl|wget|rm|echo|printf)\b/.test(st)) continue;
+          if (/\b(?:(?:\/[\w.-]+)*\/)?(?:sh|bash|zsh|dash|node|python3?|perl|ruby|source|\.)\b|\bchmod\s+\+x\b/.test(st) || st.includes(`./${f}`)) {
+            push(findings, file.rel, findLineForNeedle(lines, f), "ci-curl-pipe-shell", "R0", "error", `Script downloads and executes '${f}' without prior verified checksum ('sha256sum -c' / 'gpg --verify').`, "Verify sha256sum -c against a pinned digest before executing downloaded scripts.");
+          }
         }
       }
     }
@@ -267,6 +283,8 @@ export function analyzeImmuneSystemGates(repo: DiscoveredRepo): Finding[] {
   for (const file of repo.files) {
     if (file.isWorkflow || /(?:^|\/)\.github\/(?:.+\/)?action\.ya?ml$/i.test(file.rel)) {
       auditWorkflowImmuneSupplyChain(file, findings);
+    } else if (/\.(?:sh|bash)$/i.test(file.rel)) {
+      auditRunScriptSupplyChain(file, file.content.split(/\r?\n/), file.content, findings);
     } else {
       auditLinterImmuneConfigs(file, findings);
     }

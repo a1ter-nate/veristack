@@ -1,10 +1,10 @@
-import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
 import type { Finding, PlantedFaultReport, RungId, RungManifest, RungReceipt } from "../types.ts";
-import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
+import { extractToolHead, parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
+import { runGitClean } from "./config-audit.ts";
 import { loadRungManifest } from "./manifest.ts";
 import { runPlantedFaultCanary } from "./mutation-probe.ts";
 import { parseStructuredReports, reportParsers } from "./reports.ts";
@@ -36,10 +36,7 @@ function digestPayload(receipt: Omit<RungReceipt, "digest">, hmacKeyOverride?: s
 
 function listHashablePaths(repo: DiscoveredRepo): string[] {
   const paths = new Set<string>();
-  const gitList = spawnSync("git", ["-C", repo.root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-  });
+  const gitList = runGitClean(repo.root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
   if (gitList.status === 0) {
     for (const rel of gitList.stdout.split("\0")) {
       if (!rel || isEphemeralReportPath(rel)) continue;
@@ -75,12 +72,12 @@ export function computeRepoTreeHash(repo: DiscoveredRepo): string {
 }
 
 export function hasGitTrackedReceipts(repoRoot: string): boolean {
-  const res = spawnSync("git", ["-C", repoRoot, "ls-files", RECEIPTS_REL_DIR], { encoding: "utf8" });
+  const res = runGitClean(repoRoot, ["ls-files", RECEIPTS_REL_DIR]);
   return res.status === 0 && res.stdout.trim().length > 0;
 }
 
 function readGitHeadSha(repoRoot: string): string {
-  const res = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" });
+  const res = runGitClean(repoRoot, ["rev-parse", "HEAD"]);
   return res.status === 0 && res.stdout.trim() ? res.stdout.trim() : "no-git";
 }
 
@@ -109,17 +106,31 @@ function parseCommandMetrics(
 ): { metrics: RungReceipt["metrics"]; hasTestRunner: boolean } {
   const output = stripAnsi(rawOutput);
   const structured = parseStructuredReports(repoRoot, { rung, preSnapshot });
-  const metrics: NonNullable<RungReceipt["metrics"]> = {};
-  if (typeof structured.testsPassed === "number") metrics.testsPassed = structured.testsPassed;
-  if (typeof structured.testsFailed === "number") metrics.testsFailed = structured.testsFailed;
-  if (typeof structured.mutationScore === "number") metrics.mutationScore = structured.mutationScore;
-
   const parsedCounts = parseRunnerTestCounts(output, steps);
-  if (metrics.testsPassed === undefined && parsedCounts.matched) {
-    metrics.testsPassed = parsedCounts.passed;
-    metrics.testsFailed = parsedCounts.failed;
+  const metrics: NonNullable<RungReceipt["metrics"]> = {};
+  if (parsedCounts.hasTestRunner) {
+    if (parsedCounts.matched) {
+      metrics.testsPassed =
+        typeof structured.testsPassed === "number"
+          ? Math.min(parsedCounts.passed, structured.testsPassed)
+          : parsedCounts.passed;
+      metrics.testsFailed = Math.max(parsedCounts.failed, structured.testsFailed ?? 0);
+    } else if (typeof structured.testsFailed === "number" && structured.testsFailed > 0) {
+      metrics.testsPassed = 0;
+      metrics.testsFailed = structured.testsFailed;
+    }
+  } else {
+    if (typeof structured.testsPassed === "number") metrics.testsPassed = structured.testsPassed;
+    if (typeof structured.testsFailed === "number") metrics.testsFailed = structured.testsFailed;
   }
-  if (metrics.mutationScore === undefined && rung === "R5") {
+  const hasMutationTool = steps.some((seg) => {
+    const h = extractToolHead(seg).head;
+    return /^(?:stryker|mutmut|pitest|gremlins|go-mutesting|cargo mutants|dotnet stryker)$/.test(h);
+  });
+  if (hasMutationTool && typeof structured.mutationScore === "number") {
+    metrics.mutationScore = structured.mutationScore;
+  }
+  if (metrics.mutationScore === undefined && rung === "R5" && hasMutationTool) {
     const mutationMatch = /mutation\s+score[:\s]+(\d+(?:\.\d+)?)%/i.exec(output);
     if (mutationMatch?.[1]) metrics.mutationScore = Number(mutationMatch[1]);
   }
@@ -142,7 +153,7 @@ export function runRungAndWriteReceipt(
   const preSnapshot = snapshotReportFiles(repo.root);
   const commitSha = readGitHeadSha(repo.root);
   const started = performance.now();
-  const proc = runArgvChain(parsedCmd.steps, repo.root, scrubChildEnv(), 300_000);
+  const proc = runArgvChain(parsedCmd.steps, repo.root, scrubChildEnv(), 300_000, parsedCmd.stepCwds);
   const durationMs = Math.round(performance.now() - started);
   const exitCode = proc.status;
   const combined = `${proc.stdout}\n${proc.stderr}`;

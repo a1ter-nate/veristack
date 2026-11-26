@@ -1,4 +1,5 @@
 import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
+import { maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 import { lintCsharpStateMachines } from "./csharp.ts";
 import { lintPythonStateMachines } from "./python.ts";
@@ -11,6 +12,7 @@ const LIFECYCLE_BOOL_NAME =
 
 const STATE_DISCRIMINANT_NAME = /^(?:status|state|phase|stage|mode)$/;
 const CONFIG_TYPE_SUFFIX = /(?:Options|Config|Settings|Flags|Args|Params|Props|Input|Query|Filter)$/;
+const WIRE_OR_DTO_SUFFIX = /(?:Response|Request|Dto|DTO|Payload|View|Summary|Event|Row)$/;
 const EXHAUSTIVE_GUARD = /\b(?:assertNever|exhaustiveCheck|unreachable)\s*\(|:\s*never\b|\bsatisfies\s+never\b/;
 const STATE_SWITCH_EXPR = /^(?:[A-Za-z_$][A-Za-z0-9_$.]*\.)?(?:[a-z][A-Za-z0-9]*[Ss]tatus|[a-z][A-Za-z0-9]*[Ss]tate|status|state|phase|stage|kind)$/;
 const CANONICAL_TRANSITION_FN = /^(?:transition|reduce|reducer|applyEvent|nextState|stepState|handleEvent)$/i;
@@ -24,64 +26,7 @@ function lineOf(text: string, index: number): number {
 }
 
 function maskStringsAndComments(source: string): string {
-  const out = [...source];
-  let quote = "";
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i] ?? "";
-    const next = source[i + 1] ?? "";
-    if (lineComment) {
-      if (ch === "\n") lineComment = false;
-      else out[i] = " ";
-      continue;
-    }
-    if (blockComment) {
-      if (ch === "*" && next === "/") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        blockComment = false;
-        i += 1;
-      } else if (ch !== "\n") {
-        out[i] = " ";
-      }
-      continue;
-    }
-    if (quote) {
-      if (ch !== "\n" && ch !== "\r") out[i] = " ";
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (ch === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (ch === quote) quote = "";
-      continue;
-    }
-    if (ch === "/" && next === "/") {
-      out[i] = " ";
-      out[i + 1] = " ";
-      lineComment = true;
-      i += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      out[i] = " ";
-      out[i + 1] = " ";
-      blockComment = true;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-      out[i] = " ";
-    }
-  }
-  return out.join("");
+  return maskCode(source, "typescript");
 }
 
 function findMatchingBrace(masked: string, openIdx: number): number {
@@ -189,7 +134,7 @@ function checkTypeAndClassBlocks(file: ScannedFile, masked: string): Finding[] {
       });
     }
 
-    if (kind !== "class" && hasRequiredDiscriminantUnion && optionalSiblings.size >= 2) {
+    if (kind !== "class" && !WIRE_OR_DTO_SUFFIX.test(name) && hasRequiredDiscriminantUnion && optionalSiblings.size >= 2) {
       const optList = [...optionalSiblings].slice(0, 5).join(", ");
       findings.push({
         id: `SM:optional-bag:${file.rel}:${line}`,
@@ -242,16 +187,23 @@ function collectFunctionSpans(masked: string): FunctionSpan[] {
 
 function checkScatteredMutations(file: ScannedFile, masked: string): Finding[] {
   const spans = collectFunctionSpans(masked);
-  const mutationRegex = /\b(?:this|[A-Za-z_$][A-Za-z0-9_$]*)\.(?:status|state|phase|stage)\s*=(?!=)/g;
+  const mutationRegex = /\b(this|[A-Za-z_$][A-Za-z0-9_$]*)\.(?:status|state|phase|stage)\s*=(?!=)/g;
   const mutatingFns = new Map<string, number>();
 
   for (const match of masked.matchAll(mutationRegex)) {
     const pos = match.index ?? 0;
+    const receiver = match[1] ?? "";
     const containing = spans
       .filter((s) => s.start < pos && pos < s.end)
       .sort((a, b) => a.end - a.start - (b.end - b.start))[0];
     if (!containing) continue;
     if (containing.name === "constructor" || CANONICAL_TRANSITION_FN.test(containing.name)) continue;
+    if (receiver !== "this") {
+      const sigStart = Math.max(0, containing.start - 160);
+      const sig = masked.slice(sigStart, containing.start);
+      const isParamOrLocal = sig.includes(`${receiver}:`) || sig.includes(`${receiver},`) || sig.includes(`${receiver})`) || masked.slice(containing.start, pos).includes(`const ${receiver}`) || masked.slice(containing.start, pos).includes(`let ${receiver}`);
+      if (isParamOrLocal && /(?:row|dto|res|resp|item|entry|record|payload|out|result|draft)/i.test(receiver)) continue;
+    }
     if (!mutatingFns.has(containing.name)) {
       mutatingFns.set(containing.name, lineOf(file.content, pos));
     }

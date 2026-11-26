@@ -19,32 +19,17 @@ const VERISTACK_ROOT_REALPATH = (() => {
     if (fs.existsSync(path.join(dir, "bin", "vstack.mjs")) && fs.existsSync(path.join(dir, "package.json"))) {
       try { return fs.realpathSync(dir); } catch { return dir; }
     }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
+    const parent = path.dirname(dir); if (parent === dir) break; dir = parent;
   }
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 })();
 
-interface RunnerFlagSchema {
-  boolFlags: ReadonlySet<string>;
-  valueFlags: ReadonlySet<string>;
-  doubleDashMode?: "clippy" | "cargo-test";
-}
+interface RunnerFlagSchema { boolFlags: ReadonlySet<string>; valueFlags: ReadonlySet<string>; doubleDashMode?: "clippy" | "cargo-test"; }
 
 const s = (...items: string[]): ReadonlySet<string> => new Set(items);
-const PATH_VALUE_FLAGS = s(
-  "-c", "--config", "--config-path", "--config-file", "-p", "--project", "--manifest-path",
-  "--coverage", "--directory", "--cwd", "--ignore-path", "--outfile", "--outdir",
-  "--outputFile", "--reporter-outfile", "--results-directory", "--junitxml", "-o", "--out",
-  "--output", "--coverprofile", "--corpus", "--replay", "--baseline", "-s", "-t",
-);
+const PATH_VALUE_FLAGS = s("-c", "--config", "--config-path", "--config-file", "-p", "--project", "--manifest-path", "--coverage", "--directory", "--cwd", "--ignore-path", "--outfile", "--outdir", "--outputFile", "--reporter-outfile", "--results-directory", "--junitxml", "-o", "--out", "--output", "--coverprofile", "--corpus", "--replay", "--baseline", "-s", "-t");
 const REPORTER_VALUE_FLAGS = s("--reporter", "--reporters", "--test-reporter", "-f", "--format");
-const BUILTIN_REPORTERS = s(
-  "default", "verbose", "dot", "json", "junit", "tap", "spec", "nyan", "min", "list",
-  "line", "html", "github-actions", "trx", "console", "basic", "hanging-process", "blob",
-  "stylish", "compact", "unix", "checkstyle", "sarif", "progress", "documentation", "lcov",
-);
+const BUILTIN_REPORTERS = s("default", "verbose", "dot", "json", "junit", "tap", "spec", "nyan", "min", "list", "line", "html", "github-actions", "trx", "console", "basic", "hanging-process", "blob", "stylish", "compact", "unix", "checkstyle", "sarif", "progress", "documentation", "lcov");
 
 const RUNNER_SCHEMAS: Record<string, RunnerFlagSchema> = {
   oxlint: { boolFlags: s("--deny-warnings", "--quiet", "--fix-suggestions", "--type-aware"), valueFlags: s("-c", "--config", "-f", "--format", "-D") },
@@ -72,7 +57,7 @@ const RUNNER_SCHEMAS: Record<string, RunnerFlagSchema> = {
   deadcode: { boolFlags: s("-test"), valueFlags: s() },
   staticcheck: { boolFlags: s(), valueFlags: s("-checks", "-f") },
   "import-linter": { boolFlags: s(), valueFlags: s("--config") },
-  vitest: { boolFlags: s("run", "--run", "--coverage", "--bail"), valueFlags: s("--reporter", "--outputFile", "--testTimeout", "--pool") },
+  vitest: { boolFlags: s("run", "--run", "--coverage", "--bail"), valueFlags: s("--reporter", "--outputFile", "--testTimeout") },
   jest: { boolFlags: s("--ci", "--coverage", "--bail", "--runInBand", "--no-cache"), valueFlags: s("--reporters", "--testTimeout") },
   mocha: { boolFlags: s("--bail", "--recursive"), valueFlags: s("--reporter", "--timeout") },
   ava: { boolFlags: s("--fail-fast", "--verbose"), valueFlags: s("--timeout") },
@@ -231,15 +216,12 @@ function isPathInsideRepo(candidate: string, repoRoot: string): boolean {
   const absRoot = (() => { try { return fs.realpathSync(path.resolve(repoRoot)); } catch { return path.resolve(repoRoot); } })();
   const raw = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(absRoot, candidate);
   let res = raw;
-  try { res = fs.realpathSync(raw); } catch {
-    try { res = path.join(fs.realpathSync(path.dirname(raw)), path.basename(raw)); } catch { res = raw; }
-  }
+  try { res = fs.realpathSync(raw); } catch { try { res = path.join(fs.realpathSync(path.dirname(raw)), path.basename(raw)); } catch { res = raw; } }
   return res === absRoot || res.startsWith(`${absRoot}${path.sep}`);
 }
 
 function isOwnVeristackBin(repoRoot: string, relBin: string): boolean {
-  try { return fs.realpathSync(path.join(repoRoot, relBin)) === fs.realpathSync(path.join(VERISTACK_ROOT_REALPATH, relBin)); }
-  catch { return false; }
+  try { return fs.realpathSync(path.join(repoRoot, relBin)) === fs.realpathSync(path.join(VERISTACK_ROOT_REALPATH, relBin)); } catch { return false; }
 }
 
 export function extractToolHead(tokens: readonly string[], repoRoot?: string): { head: string; toolArgs: string[]; error?: string } {
@@ -285,11 +267,9 @@ export function extractToolHead(tokens: readonly string[], repoRoot?: string): {
       const fl = tokens[i] ?? "";
       if (fl === "--project" || fl === "--directory") {
         const dirVal = tokens[i + 1] ?? "";
-        if (!dirVal || (repoRoot && !isPathInsideRepo(dirVal, repoRoot))) {
-          return { head: "", toolArgs: [], error: `wrapper flag '${fl}' path '${dirVal}' escapes repo root` };
-        }
-        i += 2;
-        continue;
+        if (!dirVal || (repoRoot && !isPathInsideRepo(dirVal, repoRoot))) return { head: "", toolArgs: [], error: `wrapper flag '${fl}' path '${dirVal}' escapes repo root` };
+        if (repoRoot) { const cfgErr = auditRunnerConfigs(repoRoot, [path.resolve(repoRoot, dirVal)]); if (cfgErr) return { head: "", toolArgs: [], error: cfgErr }; }
+        i += 2; continue;
       }
       return { head: "", toolArgs: [], error: `wrapper flag '${fl}' is forbidden on ${low0} run` };
     }
@@ -311,8 +291,7 @@ function validateDoubleDashArgs(mode: "clippy" | "cargo-test", tail: readonly st
     for (let i = 0; i < tail.length; i++) {
       const t = tail[i] ?? "";
       if (t === "-D" || t === "--deny" || t === "-W" || t === "--warn") {
-        const lint = tail[i + 1];
-        if (!lint || lint.startsWith("-")) return `cargo clippy '${t}' requires a lint name`;
+        const lint = tail[i + 1]; if (!lint || lint.startsWith("-")) return `cargo clippy '${t}' requires a lint name`;
         i += 1; continue;
       }
       return `disallowed cargo clippy pass-through arg '${t}' (only -D/--deny and -W/--warn allowed)`;
@@ -342,6 +321,9 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
     return null;
   }
   const isDotnet = head.startsWith("dotnet ");
+  const repeatableFlags = s("--external", "--features", "--tags", "-D", "--reporter", "--reporters", "--test-reporter");
+  const seenValueFlags = new Set<string>();
+  const extraAuditDirs: string[] = [];
   for (let i = 0; i < toolArgs.length; i++) {
     const tok = toolArgs[i] ?? "";
     if (tok === "--") return schema.doubleDashMode ? validateDoubleDashArgs(schema.doubleDashMode, toolArgs.slice(i + 1)) : `argument separator '--' is forbidden on '${head}'`;
@@ -356,6 +338,8 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
     const inlineVal = sepIdx > 0 ? tok.slice(sepIdx + 1) : undefined;
     if (schema.boolFlags.has(tok) || (inlineVal === undefined && schema.boolFlags.has(flagName))) continue;
     if (schema.valueFlags.has(flagName)) {
+      if (!repeatableFlags.has(flagName) && seenValueFlags.has(flagName)) return `duplicate value flag '${flagName}' on '${head}' is forbidden`;
+      seenValueFlags.add(flagName);
       const val = inlineVal ?? toolArgs[i + 1];
       if (!val || (inlineVal === undefined && val.startsWith("-"))) return `flag '${flagName}' on '${head}' requires a value`;
       if (REPORTER_VALUE_FLAGS.has(flagName) && /^(?:vitest|jest|mocha|eslint|playwright|cypress|node --test|bun test)$/.test(head)) {
@@ -363,6 +347,10 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
         if (repParts.length === 0 || repParts.some((r) => !BUILTIN_REPORTERS.has(r))) return `disallowed reporter '${val}' on '${head}' (built-in reporters only)`;
       }
       if (PATH_VALUE_FLAGS.has(flagName) && !(isDotnet && (flagName === "-c" || flagName === "--configuration")) && !(head.startsWith("cargo ") && flagName === "-p") && !(head === "unittest" && flagName === "-p") && repoRoot && !isPathInsideRepo(val, repoRoot)) return `path flag '${flagName}=${val}' on '${head}' escapes repo root`;
+      if (repoRoot && (flagName === "--manifest-path" || flagName === "--project" || flagName === "--directory" || flagName === "--cwd")) {
+        const resolved = path.resolve(repoRoot, val);
+        extraAuditDirs.push(fs.existsSync(resolved) && fs.statSync(resolved).isFile() ? path.dirname(resolved) : resolved);
+      }
       if (head === "go test" && flagName === "-count" && !(Number(val) >= 1)) return `go test -count must be >= 1 (got '${val}')`;
       if (head === "bun test" && flagName === "--rerun-each" && !(Number(val) >= 1)) return `bun test --rerun-each must be >= 1 (got '${val}')`;
       if (head === "eslint" && flagName === "--max-warnings" && !(Number(val) === 0)) return `eslint --max-warnings must be 0 (got '${val}')`;
@@ -377,6 +365,10 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
     }
     return `disallowed flag '${tok}' for '${head}' in ${rung} (positive flag allowlist)`;
   }
+  if (repoRoot && extraAuditDirs.length > 0) {
+    const subErr = auditRunnerConfigs(repoRoot, extraAuditDirs);
+    if (subErr) return subErr;
+  }
   return null;
 }
 
@@ -384,17 +376,18 @@ export function parseAndValidateCommandArgv(
   rung: RungId | "canary",
   command: string,
   repoRoot?: string,
-): { steps: string[][]; error?: string } {
+): { steps: string[][]; stepCwds?: string[]; error?: string } {
   if (repoRoot) {
     const cfgErr = auditRunnerConfigs(repoRoot);
     if (cfgErr) return { steps: [], error: `Rung ${rung}: ${cfgErr}` };
   }
   const scripts = readPackageScripts(repoRoot);
-  const expand = (cmd: string, visiting: Set<string>, cwdDir = repoRoot): { steps: string[][]; error?: string } => {
+  const expand = (cmd: string, visiting: Set<string>, cwdDir = repoRoot): { steps: string[][]; cwds: string[]; error?: string } => {
     const split = splitAndChainStrict(cmd.trim());
-    if (split.error) return { steps: [], error: split.error };
-    if (split.parts.length === 0) return { steps: [], error: "empty command" };
+    if (split.error) return { steps: [], cwds: [], error: split.error };
+    if (split.parts.length === 0) return { steps: [], cwds: [], error: "empty command" };
     const out: string[][] = [];
+    const cwds: string[] = [];
     for (const seg of split.parts) {
       const low0 = (seg[0] ?? "").toLowerCase();
       const low1 = (seg[1] ?? "").toLowerCase();
@@ -403,10 +396,10 @@ export function parseAndValidateCommandArgv(
       let targetDir = cwdDir;
       let targetScripts = cwdDir === repoRoot ? scripts : readPackageScripts(cwdDir);
       if (low0 === "bun" && seg[1] === "--cwd" && seg[2] && seg[3]) {
-        if (repoRoot && !isPathInsideRepo(seg[2], repoRoot)) return { steps: [], error: `--cwd '${seg[2]}' escapes repo root` };
+        if (repoRoot && !isPathInsideRepo(seg[2], repoRoot)) return { steps: [], cwds: [], error: `--cwd '${seg[2]}' escapes repo root` };
         const subDir = repoRoot ? path.resolve(repoRoot, seg[2]) : seg[2];
-        const subCfgErr = auditRunnerConfigs(subDir);
-        if (subCfgErr) return { steps: [], error: subCfgErr };
+        const subCfgErr = auditRunnerConfigs(repoRoot ?? subDir, [subDir]);
+        if (subCfgErr) return { steps: [], cwds: [], error: subCfgErr };
         const subScripts = readPackageScripts(subDir);
         const subCmd = seg[3].toLowerCase();
         if (subCmd === "run" && seg[4]) { scriptName = seg[4]; extraArgs = seg.slice(5); targetDir = subDir; targetScripts = subScripts; }
@@ -419,22 +412,26 @@ export function parseAndValidateCommandArgv(
         scriptName = seg[1]; extraArgs = seg.slice(2);
       }
       if (scriptName) {
-        if (extraArgs.length > 0) return { steps: [], error: `trailing args on script '${scriptName}' are forbidden` };
+        if (extraArgs.length > 0) return { steps: [], cwds: [], error: `trailing args on script '${scriptName}' are forbidden` };
         const body = targetScripts[scriptName];
-        if (!body) return { steps: [], error: `unknown package.json script '${scriptName}'` };
+        if (!body) return { steps: [], cwds: [], error: `unknown package.json script '${scriptName}'` };
         const visitKey = `${targetDir ?? ""}:${scriptName}`;
-        if (visiting.has(visitKey)) return { steps: [], error: `cyclic package.json script '${scriptName}'` };
+        if (visiting.has(visitKey)) return { steps: [], cwds: [], error: `cyclic package.json script '${scriptName}'` };
         const nextVisiting = new Set(visiting); nextVisiting.add(visitKey);
         for (const hook of [`pre${scriptName}`, scriptName, `post${scriptName}`]) {
           const hookBody = hook === scriptName ? body : targetScripts[hook];
           if (!hookBody) continue;
           const sub = expand(hookBody, nextVisiting, targetDir);
-          if (sub.error) return { steps: [], error: hook === scriptName ? sub.error : `lifecycle hook '${hook}': ${sub.error}` };
-          out.push(...sub.steps);
+          if (sub.error) return { steps: [], cwds: [], error: hook === scriptName ? sub.error : `lifecycle hook '${hook}': ${sub.error}` };
+          out.push(...sub.steps); cwds.push(...sub.cwds);
         }
-      } else out.push(seg);
+      } else {
+        out.push(seg);
+        const relCwd = repoRoot && targetDir && targetDir !== repoRoot ? path.relative(repoRoot, targetDir).split(path.sep).join("/") : "";
+        cwds.push(relCwd);
+      }
     }
-    return { steps: out };
+    return { steps: out, cwds };
   };
 
   const expanded = expand(command, new Set());
@@ -469,7 +466,7 @@ export function parseAndValidateCommandArgv(
     if (rung === "R1" && /^(?:tsc|tsgo|mypy|pyright|basedpyright|cargo\s+(?:check|clippy)|dotnet\s+build|go\s+(?:vet|build))$/.test(head)) hasR1Typecheck = true;
   }
   if (rung === "R1" && !hasR1Typecheck) return { steps: [], error: `Rung R1 command '${command}' must run a real typechecker/compiler.` };
-  return { steps: expanded.steps };
+  return { steps: expanded.steps, stepCwds: expanded.cwds };
 }
 
 export function runArgvChain(
@@ -477,13 +474,18 @@ export function runArgvChain(
   cwd: string,
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
+  stepCwds?: readonly string[],
 ): { status: number; stdout: string; stderr: string; signal: NodeJS.Signals | null; error?: Error } {
   if (steps.length === 0) return { status: 1, stdout: "", stderr: "empty argv chain", signal: null };
   let stdout = ""; let stderr = "";
-  for (const argv of steps) {
+  for (let idx = 0; idx < steps.length; idx++) {
+    const argv = steps[idx] ?? [];
     const bin = argv[0] ?? "";
     if (!bin) return { status: 1, stdout, stderr: `${stderr}\nempty argv`, signal: null };
-    const res = spawnSync(bin, argv.slice(1), { cwd, shell: false, env, encoding: "utf8", timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
+    const relSub = stepCwds?.[idx];
+    const resolvedSub = relSub ? path.resolve(cwd, relSub) : cwd;
+    const stepCwd = relSub && fs.existsSync(resolvedSub) ? resolvedSub : cwd;
+    const res = spawnSync(bin, argv.slice(1), { cwd: stepCwd, shell: false, env, encoding: "utf8", timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
     stdout += res.stdout ?? ""; stderr += res.stderr ?? "";
     if (res.error || res.signal || res.status !== 0) return { status: res.status ?? 1, stdout, stderr, signal: res.signal ?? null, error: res.error };
   }

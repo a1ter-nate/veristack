@@ -224,17 +224,18 @@ export function evaluateSpcSeries(metric: string, values: readonly number[], upp
   let nelsonRule3Breach = false;
   let nelsonRule1Outlier = false;
 
+  const sortedVals = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sortedVals.length / 2);
+  const median = sortedVals.length % 2 === 0 ? ((sortedVals[mid - 1] ?? 0) + (sortedVals[mid] ?? 0)) / 2 : (sortedVals[mid] ?? 0);
+  const absDevs = sortedVals.map((v) => Math.abs(v - median)).sort((a, b) => a - b);
+  const mad = absDevs.length % 2 === 0 ? ((absDevs[mid - 1] ?? 0) + (absDevs[mid] ?? 0)) / 2 : (absDevs[mid] ?? 0);
+
   for (let i = 0; i < values.length; i++) {
     const cur = values[i] ?? 0;
     if (stdDev > 0 && cur > mean + 3 * stdDev) nelsonRule1Outlier = true;
     if (!nelsonRule1Outlier && values.length >= 4) {
-      const others = values.filter((_, idx) => idx !== i);
-      const oMean = others.reduce((acc, v) => acc + v, 0) / others.length;
-      const oVar = others.reduce((acc, v) => acc + (v - oMean) ** 2, 0) / Math.max(1, others.length - 1);
-      const oSd = Math.sqrt(oVar);
-      if ((oSd > 0 && cur > oMean + 3 * oSd) || (oSd === 0 && Math.abs(cur - oMean) > Math.max(1, Math.abs(oMean) * 0.5))) {
-        nelsonRule1Outlier = true;
-      }
+      if (mad > 0 && (0.6745 * (cur - median)) / mad > 3.5) nelsonRule1Outlier = true;
+      else if (mad === 0 && Math.abs(cur - median) > Math.max(1, Math.abs(median) * 0.5)) nelsonRule1Outlier = true;
     }
     if (cur > mean) {
       consecAbove += 1;

@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { auditAgentDocs } from "../anti-slop/agent-docs.ts";
 import { discoverRepo } from "../discover.ts";
+import { runGitClean } from "../rungs/config-audit.ts";
 import { globMatchesPath } from "../rungs/workflow-audit.ts";
 import { auditFormalSync } from "../zero-defect/formal-sync.ts";
 import { auditZeroDefectArtifacts } from "../zero-defect/index.ts";
@@ -57,6 +59,15 @@ export function runDoctor(repoPath: string): DoctorReport {
     });
   }
   const hookCfgAbs = path.join(repo.root, ".verification", "hooks.json");
+  if (!fs.existsSync(hookCfgAbs) && runGitClean(repo.root, ["cat-file", "-e", "HEAD:.verification/hooks.json"]).status === 0) {
+    findings.push({
+      id: "DOC:hooks-deleted:.verification/hooks.json",
+      level: "mention",
+      artifact: ".verification/hooks.json",
+      summary: ".verification/hooks.json existed at HEAD and was deleted in the working tree.",
+      fix: "Restore .verification/hooks.json or run 'vstack hooks on'.",
+    });
+  }
   if (fs.existsSync(hookCfgAbs)) {
     try {
       const hc = JSON.parse(fs.readFileSync(hookCfgAbs, "utf8")) as Record<string, unknown>;
@@ -122,6 +133,15 @@ export function runDoctor(repoPath: string): DoctorReport {
           fix: "Remove disableAllHooks: true so per-edit and stop hooks execute.",
         });
       }
+      if (parsed && typeof parsed === "object" && typeof parsed.env === "object" && parsed.env !== null && (parsed.env as Record<string, unknown>).VSTACK_HOOK_DISABLED === "1") {
+        findings.push({
+          id: `DOC:hooks-env-disabled:${rel}`,
+          level: "mention",
+          artifact: rel,
+          summary: `${rel} sets env.VSTACK_HOOK_DISABLED=1, disabling Veristack hooks.`,
+          fix: "Remove VSTACK_HOOK_DISABLED from settings env.",
+        });
+      }
       if (parsed && typeof parsed === "object" && typeof parsed.hooks === "object" && parsed.hooks !== null) {
         const hooksObj = parsed.hooks as Record<string, unknown>;
         const cmds: string[] = [];
@@ -144,8 +164,8 @@ export function runDoctor(repoPath: string): DoctorReport {
         let badCmd: string | undefined;
         let preCmd: string | undefined;
         for (const c of cmds) {
-          if (!badCmd && /\bvstack\b/i.test(c) && /\|\|\s*(?:true|:)|;\s*true\b|>\/dev\/null/i.test(c)) badCmd = c;
-          if (!preCmd && /\bhook\s+pre-edit\b/.test(c) && !/[;|>&`\n\r]/.test(c)) preCmd = c;
+          if (!badCmd && /\bvstack\b/i.test(c) && /\|\|\s*(?:true|:)|;\s*true\b|(?:^|[^2])>\/dev\/null/i.test(c)) badCmd = c;
+          if (!preCmd && /\bhook\s+pre-edit\b/.test(c)) preCmd = c;
         }
         if (badCmd) {
           findings.push({
@@ -159,15 +179,17 @@ export function runDoctor(repoPath: string): DoctorReport {
         if (hookStatus.enabled && preCmd && !badCmd) {
           let probePassed = probedCmds.get(preCmd);
           if (probePassed === undefined) {
-            const argv = preCmd.trim().split(/\s+/);
-            const bin = argv[0] ?? "";
-            const probePayload = JSON.stringify({
-              cwd: repo.root,
-              tool_input: { file_path: path.join(repo.root, ".verification", "rungs.json"), content: "{}" },
-            });
-            const probe = spawnSync(bin, argv.slice(1), { cwd: repo.root, input: probePayload, encoding: "utf8", timeout: 5_000, shell: false });
-            const denied = probe.status === 2 || /"permission"\s*:\s*"deny"|"permissionDecision"\s*:\s*"deny"/.test(`${probe.stdout}\n${probe.stderr}`);
-            probePassed = !probe.error && denied;
+            const probeCwd = fs.existsSync(path.join(repo.root, "src")) ? path.join(repo.root, "src") : repo.root;
+            const shMatch = /^sh\s+-c\s+'(.+)'$/.exec(preCmd.trim());
+            const bin = shMatch ? "sh" : (preCmd.trim().split(/\s+/)[0] ?? "");
+            const args = shMatch ? ["-c", shMatch[1] ?? ""] : preCmd.trim().split(/\s+/).slice(1);
+            const runProbe = (payloadObj: object): boolean => {
+              const p = spawnSync(bin, args, { cwd: probeCwd, input: JSON.stringify(payloadObj), encoding: "utf8", timeout: 5_000, shell: false });
+              return !p.error && p.status === 2;
+            };
+            const cpOk = runProbe({ cwd: probeCwd, tool_name: "Write", tool_input: { file_path: path.join(repo.root, ".verification", "rungs.json"), content: "{}" } });
+            const slopOk = runProbe({ cwd: probeCwd, tool_name: "Write", tool_input: { file_path: path.join(repo.root, "src", "__probe__.ts"), content: "export const x = (1 as any);\n" } });
+            probePassed = cpOk && slopOk;
             probedCmds.set(preCmd, probePassed);
           }
           if (!probePassed) {
@@ -175,8 +197,8 @@ export function runDoctor(repoPath: string): DoctorReport {
               id: `DOC:hook-probe-failed:${rel}`,
               level: "mention",
               artifact: rel,
-              summary: `Live pre-edit probe of '${preCmd}' in ${rel} failed to deny a synthetic control-plane write.`,
-              fix: "Point hook command to a working current Veristack binary (e.g. 'node bin/vstack.mjs' or updated local install).",
+              summary: `Live subdirectory pre-edit probe of '${preCmd}' in ${rel} failed to exit 2 on synthetic control-plane and slop writes.`,
+              fix: "Reinstall root-anchored fail-closed hooks via 'vstack hooks on'.",
             });
           }
         }
@@ -249,12 +271,22 @@ export function runDoctor(repoPath: string): DoctorReport {
     });
   }
 
+  const codexCfg = path.join(os.homedir(), ".codex", "config.toml");
+  let codexUntrusted = false;
+  if (hookStatus.harnesses.includes("codex") && fs.existsSync(codexCfg)) {
+    try {
+      const cRaw = fs.readFileSync(codexCfg, "utf8");
+      const realRoot = (() => { try { return fs.realpathSync(repo.root); } catch { return repo.root; } })();
+      codexUntrusted = !cRaw.includes(repo.root) && !cRaw.includes(realRoot);
+    } catch { codexUntrusted = false; }
+  }
+  const installedHarnesses = hookStatus.harnesses.map((h) => (h === "codex" && codexUntrusted ? "codex (installed; untrusted)" : h));
   return {
     schemaVersion: 1,
     repo: repo.root,
     healthy: findings.length === 0,
     hooksEnabled: hookStatus.enabled,
-    installedHarnesses: hookStatus.harnesses,
+    installedHarnesses,
     findings,
   };
 }

@@ -1,6 +1,6 @@
 import { parseSync } from "oxc-parser";
 import type { ScannedFile } from "../discover.ts";
-import { lineOf } from "../test-lexical.ts";
+import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 export interface AstNode {
@@ -28,22 +28,21 @@ export function walkAst(node: AstNode, visit: (current: AstNode, parent: AstNode
   }
 }
 
-export function hasPathologicalNesting(source: string): boolean {
+export function hasPathologicalNesting(source: string, language = "typescript"): boolean {
   if (source.length > 2_097_152) return true;
+  const masked = maskCode(source, language);
   let depth = 0;
   let unaryRun = 0;
   let bsRun = 0;
-  for (let i = 0; i < source.length; i++) {
-    const c = source.charCodeAt(i);
+  for (let i = 0; i < masked.length; i++) {
+    const c = masked.charCodeAt(i);
     if (c === 40 || c === 91 || c === 123) {
       depth += 1;
       if (depth > 128) return true;
-      unaryRun = 0;
-      bsRun = 0;
+      unaryRun = 0; bsRun = 0;
     } else if (c === 41 || c === 93 || c === 125) {
       if (depth > 0) depth -= 1;
-      unaryRun = 0;
-      bsRun = 0;
+      unaryRun = 0; bsRun = 0;
     } else if (c === 33 || c === 126 || c === 43 || c === 45) {
       unaryRun += 1;
       if (unaryRun > 128) return true;
@@ -52,8 +51,7 @@ export function hasPathologicalNesting(source: string): boolean {
       bsRun += 1;
       if (bsRun > 256) return true;
     } else if (c !== 32 && c !== 9 && c !== 10 && c !== 13) {
-      unaryRun = 0;
-      bsRun = 0;
+      unaryRun = 0; bsRun = 0;
     }
   }
   return false;
@@ -61,11 +59,18 @@ export function hasPathologicalNesting(source: string): boolean {
 
 export function parseTsAst(file: ScannedFile): AstNode | null {
   if (file.language !== "typescript" && file.language !== "javascript") return null;
-  if (hasPathologicalNesting(file.content)) return null;
+  if (hasPathologicalNesting(file.content, file.language)) return null;
+  const virtualName = /\.(?:vue|svelte|astro)$/i.test(file.rel)
+    ? `${file.rel}.${file.language === "typescript" ? "ts" : "js"}`
+    : file.rel;
   try {
-    const res = parseSync(file.rel, file.content);
-    if (res.errors.length > 0 || !isAstNode(res.program)) return null;
-    return res.program;
+    const res = parseSync(virtualName, file.content);
+    if (res.errors.length === 0 && isAstNode(res.program)) return res.program;
+    if (file.language === "javascript" && res.errors.some((e) => /return/i.test(e.message))) {
+      const wrapped = parseSync(virtualName, `(function(){\n${file.content}\n})();`);
+      if (wrapped.errors.length === 0 && isAstNode(wrapped.program)) return wrapped.program;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -387,8 +392,35 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
 }
 
 export function analyzeTsAstGuards(file: ScannedFile, program?: AstNode | null): Finding[] {
+  if (file.language !== "typescript" && file.language !== "javascript") return [];
+  if (file.isStub) return [];
+  if (program === undefined && hasPathologicalNesting(file.content, file.language)) {
+    return [{
+      id: `AST:syntax-bomb:${file.rel}:1`,
+      rule: "syntax-nesting-bomb",
+      category: "cheat",
+      rung: "R0",
+      severity: "error",
+      file: file.rel,
+      line: 1,
+      message: `File '${file.rel}' exceeds safe AST nesting/size bounds (>128 depth or >2 MiB) — refusing to skip AST security analysis.`,
+      fix: "Refactor deeply nested expressions or oversized generated payloads so AST verification can run.",
+    }];
+  }
   const ast = program ?? parseTsAst(file);
-  if (!ast) return [];
+  if (!ast) {
+    return [{
+      id: `AST:parse-error:${file.rel}:1`,
+      rule: "ts-syntax-parse-error",
+      category: "structure",
+      rung: "R0",
+      severity: "error",
+      file: file.rel,
+      line: 1,
+      message: `File '${file.rel}' failed TS/JS AST parsing — refusing to silently drop AST security/invariant rules.`,
+      fix: "Fix the syntax error so OXC AST verification can analyze this file.",
+    }];
+  }
   const findings: Finding[] = [];
   let nonNullCount = 0;
 

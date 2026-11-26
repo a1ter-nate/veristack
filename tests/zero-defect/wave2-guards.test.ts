@@ -31,7 +31,7 @@ test("Wave 2 ecosystem guards catch duplicate SQL migrations, env template secre
       "src/Widget.vue": "<template><div/></template>\n<script setup>\nconst x = 1;\n</script>\n",
       "src/plugin-loader.ts": "export async function loadPlugin(pluginPath: string): Promise<unknown> {\n  return import(pluginPath);\n}\n",
       "src/tools/schema.ts": "export function makeTool(z: { tuple: (a: unknown[]) => unknown }): unknown {\n  return z.tuple([]);\n}\n",
-      "src/components/Page.tsx": 'export function Page(dummyData: string[]): string {\n  return "<a onClick={fn}>go</a><option selected>x</option>" + dummyData.join(",");\n}\n',
+      "src/components/Page.tsx": 'export function Page(dummyData: string[], fn: () => void) {\n  return <div><a onClick={fn}>go</a><select><option selected>x</option></select>{dummyData.join(",")}</div>;\n}\n',
       "src/worker.ts": 'export async function handle(url: string): Promise<Response> {\n  return fetch(url, { redirect: "error", signal: AbortSignal.timeout(1000) });\n}\n',
       ".github/workflows/ci.yml": [
         "name: ci",

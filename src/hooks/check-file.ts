@@ -43,7 +43,35 @@ export interface CheckFileResult {
 }
 
 const CHAINED_AS = /\bas\s+unknown\s+as\b|\bas\s+any\b/g;
-const SWALLOWING_CATCH = /\bcatch\s*(?:\([^)]*\))?\s*\{\s*\}/g;
+
+function findEmptyCatchOffsets(code: string): number[] {
+  const offsets: number[] = [];
+  let idx = 0;
+  while ((idx = code.indexOf("catch", idx)) >= 0) {
+    const prev = idx > 0 ? (code[idx - 1] ?? "") : "";
+    const afterWord = code[idx + 5] ?? "";
+    if (/[A-Za-z0-9_$]/.test(prev) || /[A-Za-z0-9_$]/.test(afterWord)) { idx += 5; continue; }
+    let p = idx + 5;
+    while (p < code.length && /\s/.test(code[p] ?? "")) p += 1;
+    if (code[p] === "(") {
+      let depth = 1;
+      p += 1;
+      while (p < code.length && depth > 0) {
+        if (code[p] === "(") depth += 1;
+        else if (code[p] === ")") depth -= 1;
+        p += 1;
+      }
+      while (p < code.length && /\s/.test(code[p] ?? "")) p += 1;
+    }
+    if (code[p] === "{") {
+      p += 1;
+      while (p < code.length && /\s/.test(code[p] ?? "")) p += 1;
+      if (code[p] === "}") offsets.push(idx);
+    }
+    idx = Math.max(idx + 5, p);
+  }
+  return offsets;
+}
 const CSHARP_DYNAMIC = /\bdynamic\s+[A-Za-z_][A-Za-z0-9_]*\b/g;
 const PY_ANY_ESCAPE = /\bcast\s*\(\s*Any\b|:\s*Any\b|->\s*Any\b/g;
 const PY_SWALLOWING_EXCEPT = /^\s*except(?:\s+[A-Za-z_][A-Za-z0-9_.]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?)?\s*:\s*\r?\n\s*pass\b/gm;
@@ -87,8 +115,8 @@ function scanImmediateProd(file: ScannedFile, code: string, findings: Finding[])
     }
   }
   if (file.language === "typescript" || file.language === "javascript" || file.language === "csharp") {
-    for (const m of code.matchAll(SWALLOWING_CATCH)) {
-      pushFast(findings, file, m.index ?? 0, "no-swallowing-catch", "structure", "R0", "warn", "Empty catch block silently swallows errors.", "Rethrow, return a typed error, or handle the specific expected error explicitly.");
+    for (const off of findEmptyCatchOffsets(code)) {
+      pushFast(findings, file, off, "no-swallowing-catch", "structure", "R0", "warn", "Empty catch block silently swallows errors.", "Rethrow, return a typed error, or handle the specific expected error explicitly.");
     }
   }
   if (file.language === "csharp") {

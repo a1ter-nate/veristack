@@ -1,5 +1,5 @@
 import type { DiscoveredRepo, ScannedFile } from "../discover.ts";
-import { lineOf, maskCode, maskStrings } from "../test-lexical.ts";
+import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated|min|bundle)\.[cm]?[jt]sx?$/i;
@@ -16,42 +16,7 @@ interface LoopSpan {
 }
 
 function maskCommentsAndStrings(source: string, isPython: boolean): string {
-  const base = maskStrings(source);
-  const out = [...base];
-  for (let i = 0; i < out.length; i++) {
-    const ch = out[i];
-    const next = out[i + 1];
-    if (isPython && ch === "#") {
-      while (i < out.length && out[i] !== "\n") {
-        out[i] = " ";
-        i += 1;
-      }
-      continue;
-    }
-    if (!isPython && ch === "/" && next === "/") {
-      while (i < out.length && out[i] !== "\n") {
-        out[i] = " ";
-        i += 1;
-      }
-      continue;
-    }
-    if (!isPython && ch === "/" && next === "*") {
-      out[i] = " ";
-      out[i + 1] = " ";
-      i += 2;
-      while (i < out.length) {
-        if (out[i] === "*" && out[i + 1] === "/") {
-          out[i] = " ";
-          out[i + 1] = " ";
-          i += 1;
-          break;
-        }
-        if (out[i] !== "\n") out[i] = " ";
-        i += 1;
-      }
-    }
-  }
-  return out.join("");
+  return maskCode(source, isPython ? "python" : "typescript");
 }
 
 function extractBraceLoopSpans(masked: string, language: ScannedFile["language"]): LoopSpan[] {

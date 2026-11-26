@@ -139,7 +139,8 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
   const scopedCommands: Array<{ cwd: string; command: string }> = [];
   const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
   const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
-  const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|NODE_OPTIONS|PYTEST_ADDOPTS|GOFLAGS|RUSTFLAGS|DOTNET_STARTUP_HOOKS|CARGO_TARGET_.*_RUNNER)$/i;
+  const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|NODE_OPTIONS|BUN_OPTIONS|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_HOME|CARGO_BUILD_|CARGO_TARGET_.*_RUNNER|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|LD_PRELOAD|DYLD_INSERT_LIBRARIES|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES)$/i;
+  const GITHUB_ENV_POISON = />>\s*["']?\$\{?GITHUB_(?:ENV|PATH)\}?/i;
   const hasPoisonedEnv = (envObj: unknown): boolean => isRecord(envObj) && Object.keys(envObj).some((k) => BAD_ENV_KEY.test(k));
   const wfPoisoned = hasPoisonedEnv(doc.env);
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
@@ -148,8 +149,11 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
     const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : wfDefaults;
     const jobWorkDir = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run["working-directory"] : wfWorkDir;
     const steps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
+    let jobEnvPoisoned = false;
     for (const step of steps) {
       if (!isRecord(step) || hasPoisonedEnv(step.env)) continue;
+      if (typeof step.run === "string" && GITHUB_ENV_POISON.test(step.run)) { jobEnvPoisoned = true; continue; }
+      if (jobEnvPoisoned) continue;
       if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
       if (!isAllowedShell(step.shell ?? jobShell)) continue;
       const rawWd = step["working-directory"] ?? jobWorkDir;

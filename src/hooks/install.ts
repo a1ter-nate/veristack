@@ -35,61 +35,98 @@ function writeJsonObj(filePath: string, data: object): void {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
-const HOOK_CMD_PATTERNS: Record<"any" | "pre-edit" | "post-edit" | "stop", readonly [RegExp, RegExp]> = {
-  any: [
-    /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+(?:pre-edit|post-edit|stop)(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
-    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+(?:pre-edit|post-edit|stop)(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
-  ],
-  "pre-edit": [
-    /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+pre-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
-    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+pre-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
-  ],
-  "post-edit": [
-    /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+post-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
-    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+post-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
-  ],
-  stop: [
-    /^(?:npx\s+(?:--no-install\s+)?|bunx\s+|bun\s+\S+\s+|node\s+\S+\s+)?(?:vstack|veristack)\s+hook\s+stop(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
-    /^(?:bun\s+src\/cli\.ts|node\s+bin\/vstack\.mjs)\s+hook\s+stop(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
-  ],
+const DIRECT_HOOK_CMD: Record<"any" | "pre-edit" | "post-edit" | "stop", RegExp> = {
+  any: /^(?:npx\s+(?:--no-install\s+)?|bunx\s+)?(?:vstack|veristack)\s+hook\s+(?:pre-edit|post-edit|stop)(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+  "pre-edit": /^(?:npx\s+(?:--no-install\s+)?|bunx\s+)?(?:vstack|veristack)\s+hook\s+pre-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+  "post-edit": /^(?:npx\s+(?:--no-install\s+)?|bunx\s+)?(?:vstack|veristack)\s+hook\s+post-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
+  stop: /^(?:npx\s+(?:--no-install\s+)?|bunx\s+)?(?:vstack|veristack)\s+hook\s+stop(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*$/,
 };
+
+const ANCHORED_HOOK_CMD: Record<"any" | "pre-edit" | "post-edit" | "stop", RegExp> = {
+  any: /^sh\s+-c\s+'(?:r=\$\(git rev-parse --show-toplevel 2>\/dev\/null \|\| pwd\);\s+(?:node "\$r\/bin\/vstack\.mjs"|bun "\$r\/src\/cli\.ts")|(?:npx\s+(?:--no-install\s+)?|bunx\s+)?(?:vstack|veristack))\s+hook\s+(?:pre-edit|post-edit|stop)(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*(?:\s+\|\|\s+(?:exit 2|printf\s+"\{\\"decision\\":\\"block\\",\\"reason\\":\\"[^"]+\\"\}\\n"))?'$/,
+  "pre-edit": /^sh\s+-c\s+'(?:r=\$\(git rev-parse --show-toplevel 2>\/dev\/null \|\| pwd\);\s+(?:node "\$r\/bin\/vstack\.mjs"|bun "\$r\/src\/cli\.ts")|(?:npx\s+(?:--no-install\s+)?|bunx\s+)?(?:vstack|veristack))\s+hook\s+pre-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*\s+\|\|\s+exit 2'$/,
+  "post-edit": /^sh\s+-c\s+'(?:r=\$\(git rev-parse --show-toplevel 2>\/dev\/null \|\| pwd\);\s+(?:node "\$r\/bin\/vstack\.mjs"|bun "\$r\/src\/cli\.ts")|(?:npx\s+(?:--no-install\s+)?|bunx\s+)?(?:vstack|veristack))\s+hook\s+post-edit(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*(?:\s+\|\|\s+exit 2)?'$/,
+  stop: /^sh\s+-c\s+'(?:r=\$\(git rev-parse --show-toplevel 2>\/dev\/null \|\| pwd\);\s+(?:node "\$r\/bin\/vstack\.mjs"|bun "\$r\/src\/cli\.ts")|(?:npx\s+(?:--no-install\s+)?|bunx\s+)?(?:vstack|veristack))\s+hook\s+stop(?:\s+--[a-z-]+(?:\s+[a-z0-9_-]+)?)*(?:\s+\|\|\s+printf\s+"\{\\"decision\\":\\"block\\",\\"reason\\":\\"[^"]+\\"\}\\n")?'$/,
+};
+
+export function buildHookCommand(cmdPrefix: string, event: "pre-edit" | "post-edit" | "stop", harness: HookHarness, extraArgs = ""): string {
+  const trimmed = cmdPrefix.trim();
+  const args = `hook ${event} --harness ${harness}${extraArgs ? ` ${extraArgs}` : ""}`;
+  if (trimmed === "node bin/vstack.mjs" || trimmed === "bun src/cli.ts") {
+    const runner = trimmed === "node bin/vstack.mjs" ? 'node "$r/bin/vstack.mjs"' : 'bun "$r/src/cli.ts"';
+    if (event === "stop") {
+      return `sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); ${runner} ${args} || printf "{\\"decision\\":\\"block\\",\\"reason\\":\\"Veristack stop hook failed closed\\"}\\n"'`;
+    }
+    if (event === "pre-edit") {
+      return `sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); ${runner} ${args} || exit 2'`;
+    }
+    return `sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); ${runner} ${args}'`;
+  }
+  if (event === "pre-edit") return `sh -c '${trimmed} ${args} || exit 2'`;
+  return `${trimmed} ${args}`;
+}
 
 function isRealVstackHookCommand(cmd: unknown, expectedEvent?: "pre-edit" | "post-edit" | "stop"): boolean {
   if (typeof cmd !== "string") return false;
   const trimmed = cmd.trim();
-  if (/[;|>&`\n\r]|\|\|/.test(trimmed)) return false;
-  const [re1, re2] = HOOK_CMD_PATTERNS[expectedEvent ?? "any"];
-  return re1.test(trimmed) || re2.test(trimmed);
+  if (/\|\|\s*(?:true|:)|;\s*true\b|(?:^|[^2])>\/dev\/null/.test(trimmed)) return false;
+  const key = expectedEvent ?? "any";
+  if (ANCHORED_HOOK_CMD[key].test(trimmed)) return true;
+  if (/[;|>&`\n\r]/.test(trimmed)) return false;
+  return DIRECT_HOOK_CMD[key].test(trimmed);
 }
 
-function matcherCoversEdits(matcher: unknown): boolean {
+function matcherCoversTools(matcher: unknown, requiredTools: readonly string[]): boolean {
   if (typeof matcher !== "string" || !matcher.trim()) return false;
   try {
     const re = new RegExp(matcher);
-    return re.test("Edit") || re.test("Write");
+    return requiredTools.every((t) => re.test(t));
   } catch {
     return false;
   }
 }
 
-function containsVstackCommand(entry: unknown, expectedEvent?: "pre-edit" | "post-edit" | "stop", requireEditMatcher = false): boolean {
+function isValidSubHook(h: unknown, expectedEvent?: "pre-edit" | "post-edit" | "stop"): boolean {
+  if (!isRecord(h)) return false;
+  if (h.type !== undefined && h.type !== "command") return false;
+  if (h.timeout !== undefined && (typeof h.timeout !== "number" || !Number.isFinite(h.timeout) || h.timeout < 5)) return false;
+  return isRealVstackHookCommand(h.command, expectedEvent);
+}
+
+function containsVstackCommand(
+  entry: unknown,
+  expectedEvent?: "pre-edit" | "post-edit" | "stop",
+  requiredTools?: readonly string[],
+  requireFailClosed = false,
+): boolean {
   if (!isRecord(entry)) return false;
-  if (requireEditMatcher && !matcherCoversEdits(entry.matcher)) return false;
+  if (requiredTools && !matcherCoversTools(entry.matcher, requiredTools)) return false;
+  if (requireFailClosed && entry.failClosed !== true) return false;
   if (isRealVstackHookCommand(entry.command, expectedEvent)) return true;
   if (Array.isArray(entry.hooks)) {
-    return entry.hooks.some((h) => isRecord(h) && isRealVstackHookCommand(h.command, expectedEvent));
+    return entry.hooks.some((h) => isValidSubHook(h, expectedEvent));
+  }
+  return false;
+}
+
+function isAnyVstackHookEntry(entry: unknown): boolean {
+  if (!isRecord(entry)) return false;
+  const legacyRe = /\b(?:vstack|veristack|bin\/vstack\.mjs|src\/cli\.ts)\s+hook\s+(?:pre-edit|post-edit|stop)\b/;
+  if (typeof entry.command === "string" && legacyRe.test(entry.command)) return true;
+  if (Array.isArray(entry.hooks)) {
+    return entry.hooks.some((h) => isRecord(h) && typeof h.command === "string" && legacyRe.test(h.command));
   }
   return false;
 }
 
 function mergeHookBucket(existing: unknown, newEntry: Record<string, unknown>): Record<string, unknown>[] {
-  const list = Array.isArray(existing) ? existing.filter((item) => !containsVstackCommand(item)) : [];
+  const list = Array.isArray(existing) ? existing.filter((item) => !containsVstackCommand(item) && !isAnyVstackHookEntry(item)) : [];
   return [...(list as Record<string, unknown>[]), newEntry];
 }
 
 function stripHookBucket(existing: unknown): unknown[] {
   if (!Array.isArray(existing)) return [];
-  return existing.filter((item) => !containsVstackCommand(item));
+  return existing.filter((item) => !containsVstackCommand(item) && !isAnyVstackHookEntry(item));
 }
 
 function manifestPathFor(repoRoot: string, harness: HookHarness): string {
@@ -116,7 +153,7 @@ function installHarnessManifest(repoRoot: string, harness: HookHarness, cmdPrefi
   if (harness === "cursor") {
     hooks.preToolUse = mergeHookBucket(hooks.preToolUse, {
       matcher: "Write|Edit|StrReplace|Delete",
-      command: `${cmdPrefix} hook pre-edit --harness cursor`,
+      command: buildHookCommand(cmdPrefix, "pre-edit", "cursor"),
       failClosed: true,
     });
     writeJsonObj(filePath, { ...doc, version: 1, hooks });
@@ -126,24 +163,24 @@ function installHarnessManifest(repoRoot: string, harness: HookHarness, cmdPrefi
   if (harness === "copilot") {
     hooks.PostToolUse = mergeHookBucket(hooks.PostToolUse, {
       matcher: "Edit|Write",
-      hooks: [{ type: "command", command: `${cmdPrefix} hook post-edit --harness copilot --tier all`, timeout: 15 }],
+      hooks: [{ type: "command", command: buildHookCommand(cmdPrefix, "post-edit", "copilot", "--tier all"), timeout: 15 }],
     });
     writeJsonObj(filePath, { ...doc, hooks });
     return rel;
   }
 
-  const matcher = harness === "codex" ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit";
+  const matcher = harness === "codex" ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|NotebookEdit|Bash";
   hooks.PreToolUse = mergeHookBucket(hooks.PreToolUse, {
     matcher,
-    hooks: [{ type: "command", command: `${cmdPrefix} hook pre-edit --harness ${harness}`, timeout: 15 }],
+    hooks: [{ type: "command", command: buildHookCommand(cmdPrefix, "pre-edit", harness), timeout: 15 }],
   });
   hooks.PostToolUse = mergeHookBucket(hooks.PostToolUse, {
-    matcher,
-    hooks: [{ type: "command", command: `${cmdPrefix} hook post-edit --harness ${harness}`, timeout: 15 }],
+    matcher: harness === "codex" ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|NotebookEdit",
+    hooks: [{ type: "command", command: buildHookCommand(cmdPrefix, "post-edit", harness), timeout: 15 }],
   });
   hooks.Stop = mergeHookBucket(hooks.Stop, {
     matcher: ".*",
-    hooks: [{ type: "command", command: `${cmdPrefix} hook stop --harness ${harness}`, timeout: 30 }],
+    hooks: [{ type: "command", command: buildHookCommand(cmdPrefix, "stop", harness), timeout: 30 }],
   });
   writeJsonObj(filePath, { ...doc, hooks });
   return rel;
@@ -215,14 +252,16 @@ export function manageHooks(
       try {
         const parsed: unknown = JSON.parse(fs.readFileSync(p, "utf8"));
         if (!isRecord(parsed) || parsed.disableAllHooks === true || !isRecord(parsed.hooks)) return false;
+        if (isRecord(parsed.env) && parsed.env.VSTACK_HOOK_DISABLED === "1") return false;
         if (h === "claude" || h === "codex") {
-          const hasPre = Array.isArray(parsed.hooks.PreToolUse) && parsed.hooks.PreToolUse.some((e) => containsVstackCommand(e, "pre-edit", true));
-          const hasPost = Array.isArray(parsed.hooks.PostToolUse) && parsed.hooks.PostToolUse.some((e) => containsVstackCommand(e, "post-edit", true));
-          const hasStop = Array.isArray(parsed.hooks.Stop) && parsed.hooks.Stop.some((e) => containsVstackCommand(e, "stop", false));
+          const preReq = h === "codex" ? ["Edit", "Write", "apply_patch"] : ["Edit", "Write", "MultiEdit"];
+          const hasPre = Array.isArray(parsed.hooks.PreToolUse) && parsed.hooks.PreToolUse.some((e) => containsVstackCommand(e, "pre-edit", preReq));
+          const hasPost = Array.isArray(parsed.hooks.PostToolUse) && parsed.hooks.PostToolUse.some((e) => containsVstackCommand(e, "post-edit", preReq));
+          const hasStop = Array.isArray(parsed.hooks.Stop) && parsed.hooks.Stop.some((e) => containsVstackCommand(e, "stop"));
           return hasPre && hasPost && hasStop;
         }
         if (h === "cursor") {
-          return Array.isArray(parsed.hooks.preToolUse) && parsed.hooks.preToolUse.some((e) => containsVstackCommand(e, "pre-edit", true));
+          return Array.isArray(parsed.hooks.preToolUse) && parsed.hooks.preToolUse.some((e) => containsVstackCommand(e, "pre-edit", ["Write", "Edit", "StrReplace", "Delete"], true));
         }
         return Object.values(parsed.hooks).some(
           (bucket) => Array.isArray(bucket) && bucket.some((entry) => containsVstackCommand(entry)),

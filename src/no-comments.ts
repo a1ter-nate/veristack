@@ -212,8 +212,37 @@ function findSlashComments(source: string, language: Language): CommentHit[] {
       continue;
     }
 
-    if (language === "csharp" && a === "@" && b === '"') {
-      bump(1);
+    if (language === "csharp" && a === "$") {
+      let dollars = 0; while (source[i + dollars] === "$") dollars += 1;
+      let qCount = 0; while (source[i + dollars + qCount] === '"') qCount += 1;
+      if (qCount >= 3) {
+        bump(dollars + qCount);
+        while (i < source.length) {
+          if (source[i] === '"') {
+            let closeQ = 0; while (source[i + closeQ] === '"') closeQ += 1;
+            if (closeQ >= qCount) { bump(closeQ); break; }
+            bump(closeQ); continue;
+          }
+          bump(1);
+        }
+        prevNonSpace = '"'; prevWord = ""; continue;
+      }
+    }
+    if (language === "csharp" && a === '"' && b === '"' && source[i + 2] === '"') {
+      let qCount = 3; while (source[i + qCount] === '"') qCount += 1;
+      bump(qCount);
+      while (i < source.length) {
+        if (source[i] === '"') {
+          let closeQ = 0; while (source[i + closeQ] === '"') closeQ += 1;
+          if (closeQ >= qCount) { bump(closeQ); break; }
+          bump(closeQ); continue;
+        }
+        bump(1);
+      }
+      prevNonSpace = '"'; prevWord = ""; continue;
+    }
+    if (language === "csharp" && ((a === "@" && b === '"') || (((a === "@" && b === "$") || (a === "$" && b === "@")) && source[i + 2] === '"'))) {
+      bump(a === "@" && b === '"' ? 1 : 2);
       skipQuoted('"', true);
       prevNonSpace = '"';
       prevWord = "";

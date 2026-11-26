@@ -21,19 +21,30 @@ if (medianCheckMs > maxCheckMs) {
   process.exit(1);
 }
 
-const scales = [100, 200, 400, 800];
+const scales = [200, 400, 800, 1600];
 const samples = [];
-for (const n of scales) {
-  const source = Array.from(
+const sources = scales.map((n) => ({
+  n,
+  source: Array.from(
     { length: n },
     (_, idx) => `export function fn_${idx}(x: number): number { return x + ${idx}; }`,
-  ).join("\n");
-  const t0 = performance.now();
-  for (let rep = 0; rep < 20; rep++) {
-    lintNoComments("src/synth.ts", source, "typescript");
+  ).join("\n"),
+}));
+for (const { source } of sources) lintNoComments("src/synth.ts", source, "typescript");
+for (const { n, source } of sources) {
+  const trials = [];
+  for (let trial = 0; trial < 5; trial++) {
+    const t0 = performance.now();
+    const cpu0 = process.cpuUsage();
+    for (let rep = 0; rep < 15; rep++) {
+      lintNoComments("src/synth.ts", source, "typescript");
+    }
+    const cpu = process.cpuUsage(cpu0);
+    const cpuMs = (cpu.user + cpu.system) / 1000;
+    trials.push(Math.max(0.01, cpuMs > 0 ? cpuMs : performance.now() - t0));
   }
-  const elapsed = Math.max(0.01, performance.now() - t0);
-  samples.push({ n, timeMs: elapsed });
+  trials.sort((a, b) => a - b);
+  samples.push({ n, timeMs: trials[2] ?? 0.01 });
 }
 
 const bigO = fitEmpiricalBigO(samples, { maxTimeExponent: 1.65 });

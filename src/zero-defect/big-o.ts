@@ -147,10 +147,23 @@ export function fitEmpiricalBigO(
     const last = ordered[ordered.length - 1];
     if (prev && last && last.n > prev.n && last.timeMs > prev.timeMs) {
       const finalStepSlope = Math.log(last.timeMs / prev.timeMs) / Math.log(last.n / prev.n);
-      if (finalStepSlope > thresholds.maxTimeExponent + 0.8) {
+      if (finalStepSlope > thresholds.maxTimeExponent + 0.5) {
         reasons.push(
           `Final scaling step exponent ${finalStepSlope.toFixed(3)} exceeds budget <= ${thresholds.maxTimeExponent} (sudden super-linear jump at largest n).`,
         );
+      }
+    }
+    const first = ordered[0];
+    if (first && last && last.timeMs > first.timeMs * 1.4 && ordered.length >= 4) {
+      const offset = first.timeMs;
+      const deltas = ordered.slice(1).filter((s) => s.timeMs > offset);
+      if (deltas.length >= 3) {
+        const deltaFit = fitLogLogSlope(deltas.map((s) => s.n), deltas.map((s) => s.timeMs - offset));
+        if (deltaFit.r2 >= 0.85 && deltaFit.slope > thresholds.maxTimeExponent + 0.25) {
+          reasons.push(
+            `Intercept-adjusted time scaling exponent ${deltaFit.slope} (${classifyExponent(deltaFit.slope)}) exceeds budget <= ${thresholds.maxTimeExponent} (constant overhead masking super-linear growth).`,
+          );
+        }
       }
     }
   }
@@ -194,8 +207,11 @@ export function measureEmpiricalBigO<TInput>(
     for (let r = 1; r <= repeats; r++) {
       const input = buildInput(n, r);
       const t0 = performance.now();
+      const cpu0 = process.cpuUsage();
       run(input);
-      const dt = performance.now() - t0;
+      const cpu = process.cpuUsage(cpu0);
+      const cpuMs = (cpu.user + cpu.system) / 1000;
+      const dt = cpuMs > 0 ? cpuMs : performance.now() - t0;
       timings.push(Math.max(dt, 0.001));
     }
     timings.sort((a, b) => a - b);

@@ -1,8 +1,7 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { sanitizeShellBlock } from "../rungs/command-audit.ts";
-import { auditBunfigContent } from "../rungs/config-audit.ts";
+import { auditBunfigContent, runGitClean } from "../rungs/config-audit.ts";
 import type { Finding, RungId, RungManifest } from "../types.ts";
 
 export interface DiffLineEvent {
@@ -13,7 +12,7 @@ export interface DiffLineEvent {
   code: string;
 }
 
-const STRICT_CONFIG_PATH = /(?:^|\/)(?:tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.props|Cargo\.toml|go\.mod|\.vstackignore|\.eslintignore|(?:vitest|vite|jest)\.config\.[cm]?[jt]s|jest\.config\.json|CODEOWNERS|(?:\.verification\/)?\.?vstack\.json|\.verification\/(?:invariants|rungs|behavior-changes|control-plan|escapes)\.json)$/i;
+const STRICT_CONFIG_PATH = /(?:^|\/)(?:\.gitattributes|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.props|Cargo\.toml|go\.mod|\.vstackignore|\.eslintignore|(?:vitest|vite|jest)\.config\.[cm]?[jt]s|jest\.config\.json|CODEOWNERS|(?:\.verification\/)?\.?vstack\.json|\.verification\/(?:invariants|rungs|behavior-changes|control-plan|escapes)\.json)$/i;
 const TEST_FILE_PATH = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.go$|_tests?\.rs$|(?:^|\/)test_[^/]+\.py$|tests?\.cs$)/i;
 const ASSERT_CALL = /\b(?:assert|expect|Assert\.|assert_eq!|assert_ne!|assert!|require\.|should\.)/;
 const STRICT_ASSERT = /\.(?:toEqual|toStrictEqual|toBe|toMatchObject|toContainEqual)\s*\(|\bassert\.(?:equal|strictEqual|deepEqual|deepStrictEqual)\s*\(|\bassert_eq!\s*\(/;
@@ -59,12 +58,12 @@ export function normalizeDiffMigrationPairs(
 
 export function scanUntrackedConfigCheats(repoPath: string): Finding[] {
   const trackedSet = new Set(
-    (spawnSync("git", ["-C", repoPath, "ls-files"], { encoding: "utf8" }).stdout ?? "")
+    (runGitClean(repoPath, ["ls-files"]).stdout ?? "")
       .split(/\r?\n/)
       .map((s) => s.trim())
       .filter(Boolean),
   );
-  const candidates = [".vstackignore", ".vstack.json", ".verification/vstack.json", "bunfig.toml", ".cargo/config.toml", ".cargo/config"];
+  const candidates = [".gitattributes", ".vstackignore", ".vstack.json", ".verification/vstack.json", "bunfig.toml", ".cargo/config.toml", ".cargo/config"];
   const findings: Finding[] = [];
   for (const rel of candidates) {
     if (trackedSet.has(rel)) continue;
@@ -72,7 +71,9 @@ export function scanUntrackedConfigCheats(repoPath: string): Finding[] {
     const abs = path.join(repoPath, rel);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
     const raw = fs.readFileSync(abs, "utf8");
-    if (lower === ".vstackignore") {
+    if (lower === ".gitattributes") {
+      if (/(?:^|\s)(?:-diff|binary|diff=)/i.test(raw)) pushDiff(findings, rel, 1, "diff-config-strictness-downgrade", "Untracked .gitattributes suppresses git diff (-diff/binary/diff=).", "Remove diff-suppressing .gitattributes rules.");
+    } else if (lower === ".vstackignore") {
       const nonEmpty = raw.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
       if (nonEmpty.length > 0) pushDiff(findings, rel, 1, "diff-config-strictness-downgrade", `Untracked .vstackignore excludes ${nonEmpty.length} path(s).`, "Remove untracked .vstackignore exclusions and fix findings directly.");
     } else if (lower === ".vstack.json" || lower === ".verification/vstack.json") {
@@ -156,6 +157,9 @@ export function auditDiffAntiEvasion(
       if (STRICT_CONFIG_PATH.test(ev.file)) {
         if (/"(?:strict|strictNullChecks|noImplicitAny|exactOptionalPropertyTypes)"\s*:\s*false/.test(ev.raw)) {
           pushDiff(findings, ev.file, ev.line, "diff-config-strictness-downgrade", "Downgraded TypeScript strictness flag to false in config diff.", "Keep TypeScript strict compiler flags enabled.");
+        }
+        if (lower.endsWith(".gitattributes") && /(?:^|\s)(?:-diff|binary|diff=)/i.test(ev.raw) && !ev.raw.trim().startsWith("#")) {
+          pushDiff(findings, ev.file, ev.line, "diff-config-strictness-downgrade", `Added diff-suppressing .gitattributes rule ('${ev.raw.trim()}').`, "Do not disable git diff on source or test files via .gitattributes.");
         }
         if (lower.endsWith(".vstackignore") && ev.raw.trim().length > 0 && !ev.raw.trim().startsWith("#")) {
           pushDiff(findings, ev.file, ev.line, "diff-config-strictness-downgrade", `Added new path exclusion ('${ev.raw.trim()}') to .vstackignore in diff.`, "Fix findings directly instead of excluding paths from verification.");
@@ -344,11 +348,11 @@ export function auditManifestDowngrade(
     id: `DIFF:manifest:${id}`, rule: "diff-manifest-downgrade", category: "cheat", rung: "R0", severity: "error", file, line: 1, message: msg,
     fix: "Keep or strengthen verification control-plane files; set VSTACK_ALLOW_MANIFEST_CHANGE=1 only for reviewed human upgrades.",
   });
-  const revCheck = spawnSync("git", ["-C", repoRoot, "rev-parse", "--verify", `${baseRef}^{commit}`], { encoding: "utf8" });
+  const revCheck = runGitClean(repoRoot, ["rev-parse", "--verify", `${baseRef}^{commit}`]);
   if (revCheck.status !== 0) {
     return options.failClosedOnMissingBase ? [makeErr("missing-base", ".git", `Base ref '${baseRef}' could not be resolved for control-plane lock — failing closed.`)] : [];
   }
-  const baseShow = spawnSync("git", ["-C", repoRoot, "show", `${baseRef}:.verification/rungs.json`], { encoding: "utf8" });
+  const baseShow = runGitClean(repoRoot, ["show", `${baseRef}:.verification/rungs.json`]);
   if (baseShow.status !== 0) {
     return options.failClosedOnMissingBase && fs.existsSync(path.join(repoRoot, ".verification/rungs.json"))
       ? [makeErr("missing-base-manifest", ".verification/rungs.json", `Could not read .verification/rungs.json at base ref '${baseRef}'.`)]
@@ -401,7 +405,7 @@ export function auditManifestDowngrade(
       if (!(head.workspaces ?? []).some((h) => h.path === ws.path)) findings.push(makeErr(`ws-${ws.path}`, ".verification/rungs.json", `Removed workspace '${ws.path}' from .verification/rungs.json vs ${baseRef}.`));
     }
 
-    const basePkgShow = spawnSync("git", ["-C", repoRoot, "show", `${baseRef}:package.json`], { encoding: "utf8" });
+    const basePkgShow = runGitClean(repoRoot, ["show", `${baseRef}:package.json`]);
     const headPkgPath = path.join(repoRoot, "package.json");
     if (basePkgShow.status === 0 && fs.existsSync(headPkgPath)) {
       try {
@@ -419,14 +423,23 @@ export function auditManifestDowngrade(
           }
         }
         for (const relScript of refs.localScripts) {
-          const baseSc = spawnSync("git", ["-C", repoRoot, "show", `${baseRef}:${relScript}`], { encoding: "utf8" });
+          const baseSc = runGitClean(repoRoot, ["show", `${baseRef}:${relScript}`]);
           const headScPath = path.join(repoRoot, relScript);
-          if (baseSc.status === 0 && (!fs.existsSync(headScPath) || (!options.downgradeOnly && fs.readFileSync(headScPath, "utf8") !== baseSc.stdout))) {
+          if (baseSc.status === 0 && (!fs.existsSync(headScPath) || fs.readFileSync(headScPath, "utf8") !== baseSc.stdout)) {
             findings.push(makeErr(`gate-script-${relScript}`, relScript, `Modified or deleted rung-referenced gate script '${relScript}' vs ${baseRef}.`));
           }
         }
       } catch {
         findings.push(makeErr("pkg-json-invalid", "package.json", "Modified package.json is not valid JSON."));
+      }
+    }
+    const baseAttrShow = runGitClean(repoRoot, ["show", `${baseRef}:.gitattributes`]);
+    const headAttrPath = path.join(repoRoot, ".gitattributes");
+    if (fs.existsSync(headAttrPath)) {
+      const headAttr = fs.readFileSync(headAttrPath, "utf8");
+      const baseAttr = baseAttrShow.status === 0 ? baseAttrShow.stdout : "";
+      if (headAttr !== baseAttr && /(?:^|\s)(?:-diff|binary|diff=)/m.test(headAttr)) {
+        findings.push(makeErr("gitattributes", ".gitattributes", `Modified .gitattributes with diff-suppressing attribute (-diff/binary/diff=) vs ${baseRef}.`));
       }
     }
     return findings;

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node bin/vstack.mjs hook pre-edit --harness codex",
+            "command": "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); node \"$r/bin/vstack.mjs\" hook pre-edit --harness codex || exit 2'",
             "timeout": 15
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node bin/vstack.mjs hook post-edit --harness codex",
+            "command": "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); node \"$r/bin/vstack.mjs\" hook post-edit --harness codex'",
             "timeout": 15
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node bin/vstack.mjs hook stop --harness codex",
+            "command": "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); node \"$r/bin/vstack.mjs\" hook stop --harness codex || printf \"{\\\"decision\\\":\\\"block\\\",\\\"reason\\\":\\\"Veristack stop hook failed closed\\\"}\\n\"'",
             "timeout": 30
           }
         ]

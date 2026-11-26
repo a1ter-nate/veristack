@@ -5,6 +5,7 @@ import path from "node:path";
 import { isTestFilePath } from "../discover.ts";
 import { maskCode } from "../test-lexical.ts";
 import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
+import { runGitClean } from "./config-audit.ts";
 import { parseRunnerTestCounts } from "./runner-metrics.ts";
 
 export interface TwoSidedOracleResult {
@@ -17,7 +18,7 @@ export interface TwoSidedOracleResult {
 }
 
 const ORACLE_CONFIG_SURFACE =
-  /(?:^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config(?:\.toml)?|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|sitecustomize\.py|usercustomize\.py|conftest\.py|go\.mod|babel\.config\.[cm]?[jt]s|vitest\.workspace\.[cm]?[jt]s|(?:vitest|vite|jest|playwright)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|Directory\.Build\.props|Directory\.Packages\.props|[^/]+\.csproj|[^/]+\.runsettings|\.env\.test|\.verification\/rungs\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
+  /(?:^|\/)(?:\.gitattributes|package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config(?:\.toml)?|\.config\/nextest\.toml|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|sitecustomize\.py|usercustomize\.py|conftest\.py|go\.mod|go\.work|babel\.config\.[cm]?[jt]s|vitest\.workspace\.[cm]?[jt]s|(?:vitest|vite|jest|playwright|cypress)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|phpunit\.xml(?:\.dist)?|\.rspec|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|[^/]+\.csproj|[^/]+\.runsettings|\.env\.test|\.verification\/rungs\.json|examples\/[^/]+\/manifest\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
 
 const TEST_DIR_SURFACE =
   /(?:^|\/)(?:tests|test|__tests__|spec|specs|testdata|fixtures|__fixtures__|golden|goldens|[^/]+\.(?:Tests|UnitTests|IntegrationTests|Specs))\//i;
@@ -33,6 +34,10 @@ function listAllWorkingTreeOracleFiles(repoRoot: string): string[] {
   const walk = (dir: string, relPrefix: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink()) {
+        out.push(rel);
+        continue;
+      }
       if (entry.isDirectory()) {
         if (skipDirs.has(entry.name)) continue;
         walk(path.join(dir, entry.name), rel);
@@ -143,10 +148,23 @@ function copyWorkingTreeToSandbox(repoRoot: string): string {
   return sandboxDir;
 }
 
-function makeSandboxPythonEnv(baseEnv: NodeJS.ProcessEnv, sandboxDir: string): NodeJS.ProcessEnv {
+function safeWriteInSandbox(sandboxDir: string, rel: string, data: string | Buffer): void {
+  const realSb = fs.realpathSync(sandboxDir);
+  const dest = path.resolve(realSb, rel);
+  if (dest !== realSb && !dest.startsWith(`${realSb}${path.sep}`)) return;
+  try {
+    if (fs.lstatSync(dest).isSymbolicLink()) fs.unlinkSync(dest);
+  } catch { void 0; }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const realParent = fs.realpathSync(path.dirname(dest));
+  if (realParent !== realSb && !realParent.startsWith(`${realSb}${path.sep}`)) return;
+  fs.writeFileSync(dest, data);
+}
+
+function makeSandboxPythonEnv(baseEnv: NodeJS.ProcessEnv, sandboxDir: string, homeDir: string): NodeJS.ProcessEnv {
   const pyPaths = [path.join(sandboxDir, "src"), sandboxDir].filter((p) => fs.existsSync(p));
   if (baseEnv.PYTHONPATH) pyPaths.push(baseEnv.PYTHONPATH);
-  return { ...baseEnv, PYTHONPATH: pyPaths.join(path.delimiter) };
+  return { ...baseEnv, HOME: homeDir, XDG_CONFIG_HOME: homeDir, TMPDIR: homeDir, TMP: homeDir, TEMP: homeDir, PYTHONPATH: pyPaths.join(path.delimiter) };
 }
 
 export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCmd: string): TwoSidedOracleResult {
@@ -156,13 +174,13 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   });
   if (!baseRef || baseRef.startsWith("-")) return fail(-1, -1, `Invalid or missing --base ref '${baseRef}'.`);
   const root = path.resolve(repoPath);
-  const revCheck = spawnSync("git", ["-C", root, "rev-parse", "--verify", `${baseRef}^{commit}`], { encoding: "utf8" });
+  const revCheck = runGitClean(root, ["rev-parse", "--verify", `${baseRef}^{commit}`]);
   if (revCheck.status !== 0) return fail(-1, -1, `git rev-parse failed for base ref '${baseRef}' — failing closed.`);
 
   const parsedCmd = parseAndValidateCommandArgv("canary", testCmd, root);
   if (parsedCmd.error) return fail(-1, -1, `Rejected oracle --test-cmd: ${parsedCmd.error}`);
   const childEnv = scrubChildEnv();
-  const headRun = runArgvChain(parsedCmd.steps, root, childEnv, 120_000);
+  const headRun = runArgvChain(parsedCmd.steps, root, childEnv, 120_000, parsedCmd.stepCwds);
   const headExit = headRun.status;
   if (headExit !== 0) return fail(headExit, -1, `Head test suite fails (exit ${headExit}).`);
   const headCounts = parseRunnerTestCounts(`${headRun.stdout}\n${headRun.stderr}`, parsedCmd.steps);
@@ -170,14 +188,14 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
     return fail(headExit, -1, `Head test suite executed 0 passing tests (matched=${headCounts.matched}, passed=${headCounts.passed}).`);
   }
 
-  const diffFiles = spawnSync("git", ["-C", root, "diff", "--no-renames", "--name-only", baseRef, "--"], { encoding: "utf8" });
+  const diffFiles = runGitClean(root, ["diff", "--no-renames", "--name-only", baseRef, "--"]);
   if (diffFiles.status !== 0) return fail(headExit, -1, `git diff against '${baseRef}' failed — failing closed.`);
 
   const allDiffPaths = (diffFiles.stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const diffSet = new Set<string>(allDiffPaths.filter((s) => isOracleSurface(s)));
   const rustInlineCandidates = allDiffPaths.filter((s) => s.endsWith(".rs") && !diffSet.has(s));
   const trackedAtBase = new Set(
-    (spawnSync("git", ["-C", root, "ls-tree", "-r", "--name-only", baseRef], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).stdout ?? "")
+    (runGitClean(root, ["ls-tree", "-r", "--name-only", baseRef]).stdout ?? "")
       .split(/\r?\n/)
       .map((s) => s.trim())
       .filter(Boolean),
@@ -187,14 +205,16 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   }
   const changedOracleFiles = [...diffSet].sort();
   const rustInlineSplices: Array<{ rel: string; spliced: string }> = [];
+  let deletedRustWithTests = false;
   for (const rel of rustInlineCandidates) {
-    const baseShow = spawnSync("git", ["-C", root, "show", `${baseRef}:${rel}`], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+    const baseShow = runGitClean(root, ["show", `${baseRef}:${rel}`]);
     const headAbs = path.join(root, rel);
     if (baseShow.status === 0) {
       if (fs.existsSync(headAbs)) {
         const spliced = spliceBaseRustTestsIntoHead(fs.readFileSync(headAbs, "utf8"), baseShow.stdout);
         if (spliced !== null) rustInlineSplices.push({ rel, spliced });
       } else if (extractRustInlineTestSpans(baseShow.stdout).length > 0) {
+        deletedRustWithTests = true;
         rustInlineSplices.push({ rel, spliced: baseShow.stdout });
       }
     }
@@ -210,28 +230,29 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   const allCheckedOracle = [...changedOracleFiles, ...rustInlineSplices.map((r) => r.rel)];
   const approvedFiles = loadBaseApprovedBehaviorChanges(root, baseRef);
   const allApproved = allCheckedOracle.every((f) => approvedFiles.has(f));
+  if (deletedRustWithTests && !allApproved) {
+    return fail(headExit, 1, `ORACLE REWRITE DETECTED: Rust file(s) containing inline tests were deleted compared to ${baseRef} without base-approved .verification/behavior-changes.json.`);
+  }
 
   const sandboxDir = copyWorkingTreeToSandbox(root);
+  const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oh-"));
   try {
     for (const rel of changedOracleFiles) {
       const baseContent = spawnSync("git", ["-C", root, "show", `${baseRef}:${rel}`], { maxBuffer: 32 * 1024 * 1024 });
       const dest = path.resolve(sandboxDir, rel);
       if (baseContent.status === 0) {
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.writeFileSync(dest, baseContent.stdout);
-      } else if (fs.existsSync(dest)) {
-        fs.rmSync(dest, { force: true });
+        safeWriteInSandbox(sandboxDir, rel, baseContent.stdout);
+      } else {
+        try { fs.rmSync(dest, { recursive: true, force: true }); } catch { void 0; }
       }
     }
     for (const splice of rustInlineSplices) {
-      const dest = path.resolve(sandboxDir, splice.rel);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(dest, splice.spliced, "utf8");
+      safeWriteInSandbox(sandboxDir, splice.rel, splice.spliced);
     }
 
     const baseParsedCmd = parseAndValidateCommandArgv("canary", testCmd, sandboxDir);
     if (baseParsedCmd.error) return fail(headExit, -1, `Rejected base-ref oracle --test-cmd: ${baseParsedCmd.error}`);
-    const baseOnHead = runArgvChain(baseParsedCmd.steps, sandboxDir, makeSandboxPythonEnv(childEnv, sandboxDir), 120_000);
+    const baseOnHead = runArgvChain(baseParsedCmd.steps, sandboxDir, makeSandboxPythonEnv(childEnv, sandboxDir, isolatedHome), 120_000, baseParsedCmd.stepCwds);
     const baseExit = baseOnHead.status;
     const baseCounts = parseRunnerTestCounts(`${baseOnHead.stdout}\n${baseOnHead.stderr}`, baseParsedCmd.steps);
     const baseRanZero = baseExit === 0 && baseCounts.hasTestRunner && (!baseCounts.matched || baseCounts.passed <= 0 || baseCounts.failed > 0);
@@ -251,5 +272,6 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
     };
   } finally {
     fs.rmSync(sandboxDir, { recursive: true, force: true });
+    fs.rmSync(isolatedHome, { recursive: true, force: true });
   }
 }

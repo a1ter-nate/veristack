@@ -423,8 +423,16 @@ export function analyzeRuntimeGuards(file: ScannedFile): Finding[] {
     if (/\b(?:AbortController|signal\.aborted|controller\.abort|requestId|reqId|generation|genRef|seqRef|runId|latestRef|versionRef)\b/.test(body)) {
       continue;
     }
-    if (/\blet\s+(?:cancelled|canceled|ignore|ignored|active|mounted|isCurrent|disposed)\s*=\s*(?:false|true)\b/.test(body) && /\breturn\s*\(\s*\)\s*=>/.test(body)) {
-      continue;
+    const flagMatch = /\blet\s+(cancelled|canceled|ignore|ignored|active|mounted|isCurrent|disposed)\s*=\s*(false|true)\b/.exec(body);
+    if (flagMatch?.[1] && flagMatch[2]) {
+      const fName = flagMatch[1];
+      const flipVal = flagMatch[2] === "false" ? "true" : "false";
+      const cleanupIdx = body.search(/\breturn\s*\(\s*\)\s*=>/);
+      const cleanupTail = cleanupIdx >= 0 ? body.slice(cleanupIdx) : "";
+      const beforeCleanup = body.slice(0, cleanupIdx >= 0 ? cleanupIdx : body.length);
+      const hasFlip = cleanupTail.replace(/\s+/g, "").includes(`${fName}=${flipVal}`);
+      const hasGuard = beforeCleanup.replace(/\s+/g, "").includes(`!${fName}`) || beforeCleanup.replace(/\s+/g, "").includes(`if(${fName})`);
+      if (hasFlip && hasGuard) continue;
     }
     push(
       findings, file, raw, start, "async-effect-stale-guard", "R3", "warn",

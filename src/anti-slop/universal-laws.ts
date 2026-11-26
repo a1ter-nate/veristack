@@ -203,7 +203,7 @@ export function analyzeUniversalBendLaws(file: ScannedFile): Finding[] {
           const unlockPos = after.search(pair.close);
           if (unlockPos > 0 && unlockPos < 160) {
             const between = after.slice(m[0].length, unlockPos);
-            const onlyLockedCall = /^[A-Za-z0-9_.\s:=(),]*Locked\s*\([^)]*\)\s*$/.test(between.trim());
+            const onlyLockedCall = /^[A-Za-z0-9_.\s:=(),;]*Locked\s*\([^)]*\)\s*;?\s*$/.test(between.trim());
             if (!/\b(?:return|if|for|switch|panic|go)\b/.test(between) && (!/\w+\s*\(/.test(between) || onlyLockedCall)) continue;
           }
         }

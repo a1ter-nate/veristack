@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runGitClean } from "./config-audit.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { discoverRepo } from "../discover.ts";
@@ -28,7 +28,7 @@ function parseFlagValue(args: readonly string[], flag: string): string | undefin
 function loadBaseline(repoRoot: string, ratchetPath: string, baseRef?: string): RatchetBaseline | undefined {
   if (baseRef) {
     const cleanPath = ratchetPath.replace(/^\.\//, "");
-    const gitShow = spawnSync("git", ["-C", repoRoot, "show", `${baseRef}:${cleanPath}`], { encoding: "utf8" });
+    const gitShow = runGitClean(repoRoot, ["show", `${baseRef}:${cleanPath}`]);
     if (gitShow.status !== 0) return undefined;
     return JSON.parse(gitShow.stdout) as RatchetBaseline;
   }
@@ -173,13 +173,13 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
       let baseToCheck = explicitBase;
       let failClosed = Boolean(explicitBase);
       if (!baseToCheck) {
-        const isGit = spawnSync("git", ["-C", repo.root, "rev-parse", "--git-dir"], { encoding: "utf8" }).status === 0;
+        const isGit = runGitClean(repo.root, ["rev-parse", "--git-dir"]).status === 0;
         if (isGit) {
-          const hasOrigin = spawnSync("git", ["-C", repo.root, "remote", "get-url", "origin"], { encoding: "utf8" }).status === 0;
+          const hasOrigin = runGitClean(repo.root, ["remote", "get-url", "origin"]).status === 0;
           for (const candidate of ["origin/main", "origin/master", "origin/HEAD"]) {
-            const baseSha = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", `${candidate}^{commit}`], { encoding: "utf8" });
+            const baseSha = runGitClean(repo.root, ["rev-parse", "--verify", `${candidate}^{commit}`]);
             if (baseSha.status === 0) {
-              const mb = spawnSync("git", ["-C", repo.root, "merge-base", "HEAD", candidate], { encoding: "utf8" });
+              const mb = runGitClean(repo.root, ["merge-base", "HEAD", candidate]);
               baseToCheck = mb.status === 0 && mb.stdout.trim() ? mb.stdout.trim() : candidate;
               failClosed = true;
               break;
@@ -190,18 +190,22 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
               console.error("verify control-plane lock [missing-base-ref]: git remote 'origin' exists but origin/main|origin/master could not be resolved (shallow/detached clone). Fetch base branch or pass --base <ref>.");
               return 1;
             }
-            const headOk = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", "HEAD^{commit}"], { encoding: "utf8" }).status === 0;
+            const headOk = runGitClean(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"]).status === 0;
             if (headOk) baseToCheck = "HEAD";
           }
         }
       }
       if (baseToCheck) {
         const downgrades = auditManifestDowngrade(repo.root, baseToCheck, { failClosedOnMissingBase: failClosed });
-        const headSha = (spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", "HEAD^{commit}"], { encoding: "utf8" }).stdout ?? "").trim();
-        const baseSha = (spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", `${baseToCheck}^{commit}`], { encoding: "utf8" }).stdout ?? "").trim();
+        const headSha = (runGitClean(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"]).stdout ?? "").trim();
+        const baseSha = (runGitClean(repo.root, ["rev-parse", "--verify", `${baseToCheck}^{commit}`]).stdout ?? "").trim();
         if (!explicitBase && headSha && baseSha === headSha) {
-          const prevOk = spawnSync("git", ["-C", repo.root, "rev-parse", "--verify", "HEAD~1^{commit}"], { encoding: "utf8" }).status === 0;
-          if (prevOk) downgrades.push(...auditManifestDowngrade(repo.root, "HEAD~1", { downgradeOnly: true }));
+          const logRes = runGitClean(repo.root, ["rev-list", "--max-count=11", "HEAD"]);
+          const ancestors = logRes.status === 0 ? logRes.stdout.trim().split(/\r?\n/).slice(1).filter(Boolean) : [];
+          for (const anc of ancestors) {
+            const ancDowngrades = auditManifestDowngrade(repo.root, anc, { downgradeOnly: true });
+            if (ancDowngrades.length > 0) { downgrades.push(...ancDowngrades); break; }
+          }
         }
         if (downgrades.length > 0) {
           for (const d of downgrades) console.error(`verify control-plane lock [${d.rule}]: ${d.message}`);

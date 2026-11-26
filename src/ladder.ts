@@ -87,10 +87,29 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
 
   if (!isRuleDisabled("no-comments", config, options.disableRules)) {
     for (const file of repo.files) {
-      if (file.language) {
+      if (file.language && !file.isStub) {
         rawFindings.push(...lintNoComments(file.rel, file.content, file.language));
       }
     }
+  }
+  const hookCfgFile = repo.files.find((f) => f.rel === ".verification/hooks.json");
+  if (hookCfgFile) {
+    try {
+      const parsedHook = JSON.parse(hookCfgFile.content) as Record<string, unknown>;
+      if (parsedHook.enabled === false) {
+        rawFindings.push({
+          id: "HOOK:disabled:.verification/hooks.json",
+          rule: "hooks-disabled-in-config",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: ".verification/hooks.json",
+          line: 1,
+          message: ".verification/hooks.json sets enabled: false, disabling Veristack agent hooks.",
+          fix: "Set enabled: true or run 'vstack hooks on' so per-edit and stop hooks remain active.",
+        });
+      }
+    } catch { void 0; }
   }
 
   rawFindings.push(...analyzeStructure(repo));

@@ -10,6 +10,8 @@
 /.verification/ @a1ter-nate
 /.verification/laws/ @a1ter-nate
 /.vstackignore @a1ter-nate
+/.gitignore @a1ter-nate
+/.gitattributes @a1ter-nate
 /lefthook.yml @a1ter-nate
 /.oxlintrc.json @a1ter-nate
 /tsconfig.json @a1ter-nate

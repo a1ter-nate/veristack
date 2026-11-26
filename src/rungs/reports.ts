@@ -33,12 +33,21 @@ const EXACT_REPORT_PATHS: ReadonlySet<string> = new Set([
   ".verification/junit.xml", ".verification/reports/junit.xml",
 ]);
 
+function realpathSafe(p: string): string {
+  try { return fs.realpathSync(p); } catch {
+    const parent = path.dirname(p);
+    if (parent !== p) { try { return path.join(fs.realpathSync(parent), path.basename(p)); } catch { return path.resolve(p); } }
+    return path.resolve(p);
+  }
+}
+
 function canonicalizeCovPath(rawPath: string, repoRoot?: string): string {
   const clean = rawPath.replace(/\\/g, "/").replace(/^\.\//, "");
   if (!repoRoot) return clean;
-  const resolved = path.resolve(repoRoot, clean);
-  if (resolved === repoRoot || resolved.startsWith(`${repoRoot}${path.sep}`)) {
-    return path.relative(repoRoot, resolved).split(path.sep).join("/");
+  const realRoot = realpathSafe(repoRoot);
+  const resolved = realpathSafe(path.resolve(realRoot, clean));
+  if (resolved === realRoot || resolved.startsWith(`${realRoot}${path.sep}`)) {
+    return path.relative(realRoot, resolved).split(path.sep).join("/");
   }
   return clean;
 }
@@ -110,13 +119,19 @@ function parseCoberturaDetailed(content: string, repoRoot?: string): DetailedCov
   for (const sm of cleaned.matchAll(/<source>\s*([^<]+?)\s*<\/source>/gi)) {
     if (sm[1]) sources.push(sm[1].trim().replace(/\\/g, "/"));
   }
+  const realRoot = repoRoot ? realpathSafe(repoRoot) : undefined;
   const resolveFile = (rawFile: string): string => {
     const clean = rawFile.replace(/\\/g, "/");
-    if (!repoRoot) return clean;
-    if (fs.existsSync(path.resolve(repoRoot, clean))) return clean;
+    if (!realRoot) return clean;
+    const direct = realpathSafe(path.resolve(realRoot, clean));
+    if (fs.existsSync(direct) && (direct === realRoot || direct.startsWith(`${realRoot}${path.sep}`))) {
+      return path.relative(realRoot, direct).split(path.sep).join("/");
+    }
     for (const src of sources) {
-      const joined = path.resolve(repoRoot, src, clean);
-      if (fs.existsSync(joined)) return path.relative(repoRoot, joined).split(path.sep).join("/");
+      const joined = realpathSafe(path.resolve(realRoot, src, clean));
+      if (fs.existsSync(joined) && (joined === realRoot || joined.startsWith(`${realRoot}${path.sep}`))) {
+        return path.relative(realRoot, joined).split(path.sep).join("/");
+      }
     }
     return clean;
   };
@@ -154,8 +169,7 @@ function parseStrykerJson(content: string): number | undefined {
   try {
     const parsed = JSON.parse(content) as { files?: Record<string, { mutants?: Array<{ status?: string }> }> };
     if (!parsed.files || typeof parsed.files !== "object") return undefined;
-    let detected = 0;
-    let undetected = 0;
+    let detected = 0; let undetected = 0;
     for (const file of Object.values(parsed.files)) {
       for (const mut of file.mutants ?? []) {
         const st = (mut.status ?? "").toLowerCase();
@@ -164,9 +178,7 @@ function parseStrykerJson(content: string): number | undefined {
       }
     }
     return detected + undetected === 0 ? undefined : Number(((detected / (detected + undetected)) * 100).toFixed(2));
-  } catch {
-    return undefined;
-  }
+  } catch { return undefined; }
 }
 
 function parseIntAttr(attrs: string, name: string, required = false): number | null {
@@ -176,58 +188,63 @@ function parseIntAttr(attrs: string, name: string, required = false): number | n
   return Number(raw.trim());
 }
 
+function scanXmlTags(xml: string, targetName: string): Array<{ closing: boolean; selfClosing: boolean; attrs: string }> {
+  const out: Array<{ closing: boolean; selfClosing: boolean; attrs: string }> = [];
+  const lowTarget = targetName.toLowerCase();
+  for (let i = 0; i < xml.length; i++) {
+    if (xml[i] !== "<") continue;
+    let p = i + 1; const closing = xml[p] === "/"; if (closing) p += 1;
+    const nameStart = p; while (p < xml.length && /[A-Za-z0-9_:-]/.test(xml[p] ?? "")) p += 1;
+    if (xml.slice(nameStart, p).toLowerCase() !== lowTarget || (xml[p] !== undefined && !/[\s/>]/.test(xml[p] ?? ""))) continue;
+    const attrStart = p; let q = ""; let end = -1;
+    while (p < xml.length) {
+      const ch = xml[p] ?? "";
+      if (q) { if (ch === q) q = ""; p += 1; continue; }
+      if (ch === '"' || ch === "'") { q = ch; p += 1; continue; }
+      if (ch === ">") { end = p; break; }
+      p += 1;
+    }
+    if (end < 0) break;
+    const rawInside = xml.slice(attrStart, end).trim();
+    const selfClosing = !closing && rawInside.endsWith("/");
+    out.push({ closing, selfClosing, attrs: selfClosing ? rawInside.slice(0, -1) : rawInside });
+    i = end;
+  }
+  return out;
+}
+
 function parseJunitOrTrx(content: string): { passed: number; failed: number; skipped: number } | undefined {
   const cleaned = stripXmlNonStructure(content);
   const isTrx = /<TestRun\b/i.test(cleaned) || (!/<testsuites?\b/i.test(cleaned) && /<Counters\b/i.test(cleaned));
   if (isTrx) {
-    const trxMatch = /<Counters\b([^>]*?)\/?>/i.exec(cleaned);
-    if (trxMatch?.[1]) {
-      const a = trxMatch[1];
-      const nums = [
-        parseIntAttr(a, "total", true), parseIntAttr(a, "passed"), parseIntAttr(a, "failed"),
-        parseIntAttr(a, "error"), parseIntAttr(a, "timeout"), parseIntAttr(a, "aborted"),
-        parseIntAttr(a, "inconclusive"), parseIntAttr(a, "notRunnable"),
-      ];
+    const trxTag = scanXmlTags(cleaned, "Counters")[0];
+    if (trxTag) {
+      const a = trxTag.attrs;
+      const nums = [parseIntAttr(a, "total", true), parseIntAttr(a, "passed"), parseIntAttr(a, "failed"), parseIntAttr(a, "error"), parseIntAttr(a, "timeout"), parseIntAttr(a, "aborted"), parseIntAttr(a, "inconclusive"), parseIntAttr(a, "notRunnable")];
       if (nums.some((n) => n === null)) return undefined;
       const [total, passed, failed, err, timeout, aborted, inconclusive, notRunnable] = nums as number[];
       const totalFailed = (failed ?? 0) + (err ?? 0) + (timeout ?? 0) + (aborted ?? 0) + (inconclusive ?? 0) + (notRunnable ?? 0);
       return { passed: passed ?? 0, failed: totalFailed, skipped: Math.max(0, (total ?? 0) - (passed ?? 0) - totalFailed) };
     }
   }
-
-  let depth = 0; let countedDepth = -1; let total = 0; let failed = 0; let skipped = 0;
-  let matchedAny = false; let invalidAttr = false;
-
-  for (const tag of cleaned.matchAll(/<(\/?)testsuite\b([^>]*?)(\/?)>/gi)) {
-    const attrs = tag[2] ?? "";
-    if (tag[1] === "/") {
-      depth = Math.max(0, depth - 1);
-      if (countedDepth === depth) countedDepth = -1;
-      continue;
-    }
+  let depth = 0; let countedDepth = -1; let total = 0; let failed = 0; let skipped = 0; let matchedAny = false; let invalidAttr = false;
+  for (const tag of scanXmlTags(cleaned, "testsuite")) {
+    if (tag.closing) { depth = Math.max(0, depth - 1); if (countedDepth === depth) countedDepth = -1; continue; }
     if (countedDepth < 0) {
-      const t = parseIntAttr(attrs, "tests", true);
-      const f = parseIntAttr(attrs, "failures");
-      const e = parseIntAttr(attrs, "errors");
-      const sk = parseIntAttr(attrs, "skipped");
-      const dis = parseIntAttr(attrs, "disabled");
+      const [t, f, e, sk, dis] = [parseIntAttr(tag.attrs, "tests", true), parseIntAttr(tag.attrs, "failures"), parseIntAttr(tag.attrs, "errors"), parseIntAttr(tag.attrs, "skipped"), parseIntAttr(tag.attrs, "disabled")];
       if (t !== null) {
         if (f === null || e === null || sk === null || dis === null) { invalidAttr = true; break; }
-        matchedAny = true;
-        total += t;
-        failed += f + e;
-        skipped += sk + dis;
-        if (tag[3] !== "/") countedDepth = depth;
+        matchedAny = true; total += t; failed += f + e; skipped += sk + dis;
+        if (!tag.selfClosing) countedDepth = depth;
       }
     }
-    if (tag[3] !== "/") depth += 1;
+    if (!tag.selfClosing) depth += 1;
   }
-
   if (invalidAttr) return undefined;
   if (matchedAny) return { passed: Math.max(0, total - failed - skipped), failed, skipped };
-  const rootMatch = /<testsuites\b([^>]*?)>/i.exec(cleaned);
-  if (rootMatch?.[1]) {
-    const a = rootMatch[1];
+  const rootTag = scanXmlTags(cleaned, "testsuites")[0];
+  if (rootTag && !rootTag.closing) {
+    const a = rootTag.attrs;
     const [t, f, e, sk, dis] = [parseIntAttr(a, "tests", true), parseIntAttr(a, "failures"), parseIntAttr(a, "errors"), parseIntAttr(a, "skipped"), parseIntAttr(a, "disabled")];
     if (t === null || f === null || e === null || sk === null || dis === null) return undefined;
     return { passed: Math.max(0, t - (f + e) - (sk + dis)), failed: f + e, skipped: sk + dis };
@@ -473,14 +490,7 @@ export function evaluateCrapForCoverageFile(repoRoot: string, coveragePath: stri
     .sort();
 
   offenders.sort((a, b) => b.crapScore - a.crapScore);
-  return {
-    maxAllowed,
-    passed: evaluatedFiles > 0 && offenders.length === 0 && uncoveredRepoFiles.length === 0,
-    worstCrap,
-    offenders,
-    evaluatedFiles,
-    uncoveredRepoFiles,
-  };
+  return { maxAllowed, passed: evaluatedFiles > 0 && offenders.length === 0 && uncoveredRepoFiles.length === 0, worstCrap, offenders, evaluatedFiles, uncoveredRepoFiles };
 }
 
 export const reportParsers = { parseLcov, parseCoberturaXml, parseStrykerJson, parseJunitOrTrx, EXACT_REPORT_PATHS };

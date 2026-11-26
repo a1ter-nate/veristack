@@ -186,7 +186,7 @@ function mineRouteAuthBeliefs(files: readonly ScannedFile[], findings: Finding[]
   for (const file of files) {
     const dir = path.posix.dirname(file.rel);
     const base = path.posix.basename(file.rel, path.posix.extname(file.rel));
-    const appApiMatch = /^((?:.*\/)?app\/api)\/[^/]+$/i.exec(dir);
+    const appApiMatch = /^((?:.*\/)?app\/api)(?:\/.+)$/i.exec(dir);
     const groupKey = appApiMatch?.[1] && base === "route" ? appApiMatch[1] : dir;
     if (!ROUTE_DIR_RE.test(groupKey)) continue;
     const segName = appApiMatch?.[1] && base === "route" ? path.posix.basename(dir) : base;

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isAstNode, parseTsAst, walkAst } from "../ast/ts-ast.ts";
 import { type DiscoveredRepo, scanSfcScriptSpans, type ScannedFile } from "../discover.ts";
 import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
@@ -11,8 +12,6 @@ const EVALUATOR_PASS_LITERAL = /\bstatus\s*:\s*["']pass["']/g;
 const ZOD_TUPLE_CALL = /\bz\s*\.\s*tuple\s*\(/g;
 const DUMMY_DATA_IDENT = /\b(?:dummyData|mockData|fakeData|placeholderData)\b/g;
 const POPSTATE_LISTENER = /\baddEventListener\s*\(\s*["']popstate["'][\s\S]{0,400}?\bpushState\s*\(/g;
-const JSX_ANCHOR_TAG = /<a\b([^>]*?)>/g;
-const JSX_OPTION_SELECTED = /<option\b[^>]*\bselected(?:\s*=|\s|>)/g;
 const WORKER_FETCH_REDIRECT_ERROR = /\bfetch\s*\([\s\S]{0,220}?\bredirect\s*:\s*["']error["']/g;
 const DATETIMEFORMAT_RAW_NEW_DATE = /\bDateTimeFormat\s*\([^)]*\)\s*\.\s*format\s*\(\s*new\s+Date\s*\(/g;
 const RUST_ONCE_MUTEX_MAP = /\b(?:OnceLock|LazyLock)\s*<\s*(?:std::sync::)?Mutex\s*<\s*(?:HashMap|BTreeMap)\b/g;
@@ -317,34 +316,34 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
       break;
     }
 
-    for (const m of raw.matchAll(JSX_ANCHOR_TAG)) {
-      const attrs = m[1] ?? "";
-      if (!/\b(?:href|render)\s*=|\{\s*\.\.\./.test(attrs)) {
-        push(
-          findings,
-          file.rel,
-          lineOf(raw, m.index ?? 0),
-          "ui-anchor-without-href",
-          "R1",
-          "warn",
-          "JSX <a> element omits href, breaking keyboard navigation and screen-reader semantics.",
-          "Add a valid href or use a semantic <button type='button'> for in-page actions.",
-        );
-        break;
-      }
-    }
-
-    for (const m of raw.matchAll(JSX_OPTION_SELECTED)) {
-      push(
-        findings,
-        file.rel,
-        lineOf(raw, m.index ?? 0),
-        "react-option-selected",
-        "R1",
-        "warn",
-        "React <option selected> triggers runtime warnings and breaks controlled <select> state.",
-        "Set value or defaultValue on the parent <select> element instead of selected on <option>.",
-      );
+    const jsxAst = parseTsAst(file);
+    if (jsxAst) {
+      let flaggedAnchor = false;
+      walkAst(jsxAst, (node) => {
+        if (node.type !== "JSXOpeningElement" || !isAstNode(node.name) || node.name.type !== "JSXIdentifier") return;
+        const tag = typeof node.name.name === "string" ? node.name.name : "";
+        const attrs = Array.isArray(node.attributes) ? node.attributes : [];
+        if (tag === "a" && !flaggedAnchor) {
+          const hasHrefOrSpread = attrs.some((a) => {
+            if (!isAstNode(a)) return false;
+            if (a.type === "JSXSpreadAttribute") return true;
+            if (a.type === "JSXAttribute" && isAstNode(a.name) && a.name.type === "JSXIdentifier") {
+              return a.name.name === "href" || a.name.name === "render";
+            }
+            return false;
+          });
+          if (!hasHrefOrSpread) {
+            flaggedAnchor = true;
+            push(findings, file.rel, lineOf(raw, node.start ?? 0), "ui-anchor-without-href", "R1", "warn", "JSX <a> element omits href, breaking keyboard navigation and screen-reader semantics.", "Add a valid href or use a semantic <button type='button'> for in-page actions.");
+          }
+        }
+        if (tag === "option") {
+          const hasSelected = attrs.some((a) => isAstNode(a) && a.type === "JSXAttribute" && isAstNode(a.name) && a.name.type === "JSXIdentifier" && a.name.name === "selected");
+          if (hasSelected) {
+            push(findings, file.rel, lineOf(raw, node.start ?? 0), "react-option-selected", "R1", "warn", "React <option selected> triggers runtime warnings and breaks controlled <select> state.", "Set value or defaultValue on the parent <select> element instead of selected on <option>.");
+          }
+        }
+      });
     }
   }
 

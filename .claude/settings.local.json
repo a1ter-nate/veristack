@@ -2,11 +2,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "node bin/vstack.mjs hook pre-edit --harness claude",
+            "command": "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); node \"$r/bin/vstack.mjs\" hook pre-edit --harness claude || exit 2'",
             "timeout": 15
           }
         ]
@@ -14,11 +14,11 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "node bin/vstack.mjs hook post-edit --harness claude",
+            "command": "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); node \"$r/bin/vstack.mjs\" hook post-edit --harness claude'",
             "timeout": 15
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node bin/vstack.mjs hook stop --harness claude",
+            "command": "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); node \"$r/bin/vstack.mjs\" hook stop --harness claude || printf \"{\\\"decision\\\":\\\"block\\\",\\\"reason\\\":\\\"Veristack stop hook failed closed\\\"}\\n\"'",
             "timeout": 30
           }
         ]

@@ -4,6 +4,22 @@ function canStartJsRegex(text: string, idx: number): boolean {
   if (p < 0) return true;
   const prev = text[p] ?? "";
   if ("=({[,;:!?&|+-*~%^<>".includes(prev)) return true;
+  if (prev === ")") {
+    let depth = 1;
+    let q = p - 1;
+    while (q >= 0 && depth > 0) {
+      if (text[q] === ")") depth += 1;
+      else if (text[q] === "(") depth -= 1;
+      q -= 1;
+    }
+    while (q >= 0 && /\s/.test(text[q] ?? "")) q -= 1;
+    if (q >= 0 && /[A-Za-z0-9_$]/.test(text[q] ?? "")) {
+      let s = q;
+      while (s > 0 && /[A-Za-z0-9_$]/.test(text[s - 1] ?? "")) s -= 1;
+      return /^(?:if|while|for|with)$/.test(text.slice(s, q + 1));
+    }
+    return false;
+  }
   if (/[A-Za-z0-9_$]/.test(prev)) {
     let s = p;
     while (s > 0 && /[A-Za-z0-9_$]/.test(text[s - 1] ?? "")) s -= 1;
@@ -12,12 +28,19 @@ function canStartJsRegex(text: string, idx: number): boolean {
   return false;
 }
 
-function maskLexical(text: string, stripComments: boolean, language?: string): string {
+export interface LexicalScanResult {
+  masked: string;
+  regexSpans: Array<{ start: number; end: number }>;
+}
+
+export function scanLexical(text: string, stripComments: boolean, language?: string): LexicalScanResult {
   const isPython = language === "python";
   const isRust = language === "rust";
   const isGo = language === "go";
+  const isCsharp = language === "csharp";
   const isJsLike = language === "typescript" || language === "javascript" || language === undefined;
   const out = [...text];
+  const regexSpans: Array<{ start: number; end: number }> = [];
   let quote = ""; let tripleQuote = ""; let tripleLen = 0; let verbatimCSharp = false; let rustRawHashes = -1; let escaped = false;
   const tplBraceStack: number[] = [];
   for (let i = 0; i < text.length; i++) {
@@ -75,15 +98,27 @@ function maskLexical(text: string, stripComments: boolean, language?: string): s
           else if (rc === "/" && !inClass) { ok = true; break; }
           j += 1;
         }
-        if (ok) { for (let k = i + 1; k < j; k++) out[k] = " "; i = j; continue; }
+        if (ok) {
+          regexSpans.push({ start: i, end: j });
+          for (let k = i + 1; k < j; k++) out[k] = " ";
+          i = j; continue;
+        }
+      }
+      if (isCsharp && ch === "$") {
+        let dollars = 0; while (text[i + dollars] === "$") dollars += 1;
+        let qCount = 0; while (text[i + dollars + qCount] === '"') qCount += 1;
+        if (qCount >= 3) {
+          for (let k = 0; k < dollars + qCount; k++) out[i + k] = " ";
+          i += dollars + qCount - 1; tripleQuote = '"'; tripleLen = qCount; continue;
+        }
       }
       if ((ch === "@" && next === '"') || ((ch === "@" && next === "$" || ch === "$" && next === "@") && text[i + 2] === '"')) {
         const len = ch === "@" && next === '"' ? 2 : 3;
         for (let k = 0; k < len; k++) out[i + k] = " ";
         i += len - 1; verbatimCSharp = true; continue;
       }
-      if (isRust && (ch === "r" || (ch === "b" && next === "r")) && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1] ?? ""))) {
-        const prefixLen = ch === "b" ? 2 : 1; let hashes = 0;
+      if (isRust && (ch === "r" || (ch === "b" && next === "r") || (ch === "c" && next === "r")) && (i === 0 || !/[A-Za-z0-9_]/.test(text[i - 1] ?? ""))) {
+        const prefixLen = ch === "r" ? 1 : 2; let hashes = 0;
         while (text[i + prefixLen + hashes] === "#") hashes += 1;
         if (text[i + prefixLen + hashes] === '"') {
           for (let k = 0; k <= prefixLen + hashes; k++) out[i + k] = " ";
@@ -110,7 +145,7 @@ function maskLexical(text: string, stripComments: boolean, language?: string): s
     if (ch === "\\" && !(isGo && quote === "`")) { escaped = true; continue; }
     if (ch === quote) quote = "";
   }
-  return out.join("");
+  return { masked: out.join(""), regexSpans };
 }
 
 function splitTopLevelCommas(expr: string): string[] {
@@ -192,8 +227,22 @@ function blankRustCfgTest(masked: string, includeStandaloneTests = false): strin
         if (c === "{") { brace = i; break; }
       }
     }
+    let blankStart = pos;
+    let back = pos - 1;
+    while (back >= 0) {
+      while (back >= 0 && /\s/.test(masked[back] ?? "")) back -= 1;
+      if (back >= 0 && masked[back] === "]") {
+        let d = 0; let openPos = -1;
+        for (let k = back; k >= 0; k--) {
+          if (masked[k] === "]") d += 1;
+          else if (masked[k] === "[" && --d === 0) { openPos = k; break; }
+        }
+        if (openPos > 0 && masked[openPos - 1] === "#") { blankStart = openPos - 1; back = blankStart - 1; continue; }
+      }
+      break;
+    }
     if (semi >= 0) {
-      for (let i = pos; i <= semi; i++) if (out[i] !== "\n") out[i] = " ";
+      for (let i = blankStart; i <= semi; i++) if (out[i] !== "\n") out[i] = " ";
       idx = semi + 1; continue;
     }
     if (brace < 0) break;
@@ -202,17 +251,17 @@ function blankRustCfgTest(masked: string, includeStandaloneTests = false): strin
       if (masked[i] === "{") depth += 1;
       else if (masked[i] === "}" && --depth === 0) { end = i; break; }
     }
-    for (let i = pos; i <= end; i++) if (out[i] !== "\n") out[i] = " ";
+    for (let i = blankStart; i <= end; i++) if (out[i] !== "\n") out[i] = " ";
     idx = end + 1;
   }
   return out.join("");
 }
 
-export function maskStrings(text: string): string {
-  return maskLexical(text, false);
+export function maskStrings(text: string, language?: string): string {
+  return scanLexical(text, false, language).masked;
 }
 
 export function maskCode(text: string, language?: string, prodOnly = false, includeStandaloneRustTests = false): string {
-  const masked = maskLexical(text, true, language);
+  const masked = scanLexical(text, true, language).masked;
   return prodOnly && language === "rust" ? blankRustCfgTest(masked, includeStandaloneRustTests) : masked;
 }

@@ -1,4 +1,5 @@
 import type { ScannedFile } from "../discover.ts";
+import { maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const LIFECYCLE_BOOL_NAME =
@@ -19,90 +20,7 @@ function lineOf(text: string, index: number): number {
 }
 
 function maskCsharp(source: string): string {
-  const out = [...source];
-  let quote = "";
-  let verbatim = false;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i] ?? "";
-    const next = source[i + 1] ?? "";
-    if (lineComment) {
-      if (ch === "\n") lineComment = false;
-      else out[i] = " ";
-      continue;
-    }
-    if (blockComment) {
-      if (ch === "*" && next === "/") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        blockComment = false;
-        i += 1;
-      } else if (ch !== "\n") {
-        out[i] = " ";
-      }
-      continue;
-    }
-    if (quote) {
-      if (ch !== "\n" && ch !== "\r") out[i] = " ";
-      if (verbatim && ch === '"' && next === '"') {
-        out[i + 1] = " ";
-        i += 1;
-        continue;
-      }
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (!verbatim && ch === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (ch === quote) {
-        quote = "";
-        verbatim = false;
-      }
-      continue;
-    }
-    if (ch === "/" && next === "/") {
-      out[i] = " ";
-      out[i + 1] = " ";
-      lineComment = true;
-      i += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      out[i] = " ";
-      out[i + 1] = " ";
-      blockComment = true;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' && source.slice(i, i + 3) === '"""') {
-      const end = source.indexOf('"""', i + 3);
-      const stop = end < 0 ? source.length : end + 3;
-      for (let k = i; k < stop; k++) {
-        if (source[k] !== "\n" && source[k] !== "\r") out[k] = " ";
-      }
-      i = stop - 1;
-      continue;
-    }
-    if ((ch === "@" && next === '"') || (ch === "$" && next === "@" && source[i + 2] === '"') || (ch === "@" && next === "$" && source[i + 2] === '"')) {
-      const offset = next === '"' ? 1 : 2;
-      for (let k = i; k <= i + offset; k++) out[k] = " ";
-      quote = '"';
-      verbatim = true;
-      i += offset;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      out[i] = " ";
-    }
-  }
-  return out.join("");
+  return maskCode(source, "csharp");
 }
 
 function findMatching(masked: string, openIdx: number, openChar: string, closeChar: string): number {

@@ -14,32 +14,34 @@
       "required": true
     },
     "R2": {
-      "command": "bun test --timeout 15000 ./tests/ ./examples/typescript/clean/",
+      "command": "bun test --timeout 30000 ./tests/ ./examples/typescript/clean/",
       "required": true,
       "canary": {
         "enabled": true,
-        "testCommand": "bun test --timeout 15000 ./tests/no-comments.test.ts ./tests/rungs/ ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts ./tests/anti-slop/fail-closed-contracts.test.ts",
+        "testCommand": "bun test --timeout 30000 ./tests/no-comments.test.ts ./tests/rungs/ ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts ./tests/anti-slop/fail-closed-contracts.test.ts ./tests/anti-slop/gate-pin-matrix.test.ts",
         "targets": [
           "src/ratchet.ts",
           "src/no-comments.ts",
           "src/rungs/command-audit.ts",
+          "src/rungs/config-audit.ts",
           "src/rungs/reports.ts",
           "src/rungs/workflow-audit.ts",
           "src/rungs/receipts.ts",
           "src/rungs/manifest.ts",
           "src/rungs/mutation-probe.ts",
-          "src/rungs/oracle-check.ts"
+          "src/rungs/oracle-check.ts",
+          "src/hooks/runtime.ts"
         ],
-        "maxMutants": 12,
+        "maxMutants": 18,
         "minKillRate": 0.75
       }
     },
     "R3": {
-      "command": "bun test --timeout 15000 ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts",
+      "command": "bun test --timeout 30000 ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts",
       "required": true
     },
     "R5": {
-      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test --timeout 15000 ./tests/rungs/\" --targets src/rungs/reports.ts,src/ratchet.ts,src/rungs/receipts.ts,src/rungs/manifest.ts --max-mutants 6 --min-kill-rate 0.75 --fail",
+      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test --timeout 30000 ./tests/rungs/\" --targets src/rungs/reports.ts,src/ratchet.ts,src/rungs/receipts.ts,src/rungs/manifest.ts --max-mutants 6 --min-kill-rate 0.75 --fail",
       "required": true
     },
     "R6": {

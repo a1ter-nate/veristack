@@ -19,6 +19,7 @@ export interface ScannedFile {
   language?: Language;
   isTest: boolean;
   isWorkflow: boolean;
+  isStub?: boolean;
   content: string;
   rawContent?: string;
   lines: number;
@@ -39,35 +40,10 @@ export interface DiscoveredRepo {
 }
 
 const UNTRACKED_CACHE_SKIP_DIRS = new Set([
-  ".git",
-  "node_modules",
-  ".next",
-  ".nuxt",
-  ".output",
-  ".svelte-kit",
-  ".vercel",
-  ".netlify",
-  ".expo",
-  ".vite",
-  ".parcel-cache",
-  ".angular",
-  ".turbo",
-  ".cache",
-  ".venv",
-  "venv",
-  "__pycache__",
-  ".mypy_cache",
-  ".pytest_cache",
-  ".ruff_cache",
-  ".stryker-tmp",
-  "StrykerOutput",
-  "TestResults",
-  "coverage",
-  "dist",
-  "build",
-  "target",
-  "obj",
-  "vendor",
+  ".git", "node_modules", ".next", ".nuxt", ".output", ".svelte-kit", ".vercel", ".netlify",
+  ".expo", ".vite", ".parcel-cache", ".angular", ".turbo", ".cache", ".venv", "venv",
+  "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".stryker-tmp",
+  "StrykerOutput", "TestResults", "coverage", "dist", "build", "target", "obj", "vendor",
 ]);
 
 const MAX_FILE_BYTES = 512_000;
@@ -91,12 +67,23 @@ export function detectLanguage(rel: string): Language | undefined {
   return undefined;
 }
 
+export function isDeclarationStub(rel: string): boolean {
+  return /\.(?:d\.[cm]?ts|pyi)$/i.test(rel);
+}
+
 export function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStart: number; bodyEnd: number }> {
   const spans: Array<{ attrs: string; bodyStart: number; bodyEnd: number }> = [];
   for (let i = 0; i < raw.length; ) {
     if (raw.startsWith("<!--", i)) { const e = raw.indexOf("-->", i + 4); if (e < 0) break; i = e + 3; continue; }
     if (raw[i] === "<" && /^<script\b/i.test(raw.slice(i, i + 8))) {
-      const gt = raw.indexOf(">", i + 7); if (gt < 0) break;
+      let gt = -1; let attrQ = "";
+      for (let k = i + 7; k < raw.length; k++) {
+        const ac = raw[k] ?? "";
+        if (attrQ) { if (ac === attrQ) attrQ = ""; continue; }
+        if (ac === '"' || ac === "'") { attrQ = ac; continue; }
+        if (ac === ">") { gt = k; break; }
+      }
+      if (gt < 0) break;
       const attrs = raw.slice(i + 7, gt); const bodyStart = gt + 1;
       let j = bodyStart; let q = ""; let bodyEnd = -1; let closeLen = 0;
       while (j < raw.length) {
@@ -184,7 +171,7 @@ function shouldReadText(rel: string): boolean {
   if (lower.endsWith(".vue") || lower.endsWith(".svelte") || lower.endsWith(".astro") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
   if (lower.endsWith(".sh") || lower.endsWith(".bash")) return true;
   if (lower.endsWith(".sql") && (/(?:^|\/)(?:migrations?|supabase|policies|rls|schema|db|sql|flyway)\//.test(lower) || base.endsWith("schema.sql"))) return true;
-  if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) {
+  if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|hooks\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) {
     return true;
   }
   if (base === ".golangci.yml" || base === ".golangci.yaml" || base === "biome.json" || base === "biome.jsonc") return true;
@@ -420,6 +407,7 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
         language,
         isTest: isTestFilePath(rel),
         isWorkflow: isWorkflowPath(rel),
+        ...(isDeclarationStub(rel) ? { isStub: true } : {}),
         content: effectiveContent,
         ...(sfc ? { rawContent: content } : {}),
         lines,

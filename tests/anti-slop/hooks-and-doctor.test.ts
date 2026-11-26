@@ -173,3 +173,51 @@ test("hooks admin installs/preserves/toggles/resets all 5 harness manifests and 
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("doctor rejects weakened hook manifests and root-anchored hooks fire from cd src/", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-doc-pin-"));
+  try {
+    spawnSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+    spawnSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    spawnSync("git", ["config", "user.email", "t@test.local"], { cwd: dir });
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+    fs.symlinkSync(binPath, path.join(dir, "bin", "vstack.mjs"));
+    fs.writeFileSync(path.join(dir, "src", "a.ts"), "export const a = 1;\n");
+
+    const installed = manageHooks(dir, "on", { harnesses: ["claude", "codex", "cursor"], commandPrefix: "node bin/vstack.mjs" });
+    assert.equal(installed.enabled, true);
+
+    const claudeCfg = JSON.parse(fs.readFileSync(path.join(dir, ".claude", "settings.local.json"), "utf8")) as {
+      hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout: number }> }> };
+    };
+    const cmd = claudeCfg.hooks.PreToolUse[0]?.hooks[0]?.command ?? "";
+    const shMatch = /^sh\s+-c\s+'(.+)'$/.exec(cmd);
+    assert.ok(shMatch?.[1], `Expected root-anchored sh -c hook command, got: ${cmd}`);
+    const fromSubdir = spawnSync("sh", ["-c", shMatch[1]], {
+      cwd: path.join(dir, "src"),
+      input: JSON.stringify({ cwd: path.join(dir, "src"), tool_name: "Write", tool_input: { file_path: path.join(dir, "src", "slop.ts"), content: "export const s = (1 as any);\n" } }),
+      encoding: "utf8",
+    });
+    assert.equal(fromSubdir.status, 2);
+
+    const cursorPath = path.join(dir, ".cursor", "hooks.json");
+    const cursorOrig = fs.readFileSync(cursorPath, "utf8");
+    fs.writeFileSync(cursorPath, cursorOrig.replace('"failClosed": true', '"failClosed": false'));
+    assert.equal(runDoctor(dir).healthy, false);
+    fs.writeFileSync(cursorPath, cursorOrig.replace("Write|Edit|StrReplace|Delete", "Write|Edit"));
+    assert.equal(runDoctor(dir).healthy, false);
+    fs.writeFileSync(cursorPath, cursorOrig);
+
+    const claudePath = path.join(dir, ".claude", "settings.local.json");
+    const claudeOrig = fs.readFileSync(claudePath, "utf8");
+    fs.writeFileSync(claudePath, claudeOrig.replace('"timeout": 15', '"timeout": 0.001'));
+    assert.equal(runDoctor(dir).healthy, false);
+    fs.writeFileSync(claudePath, claudeOrig.replace('"type": "command"', '"type": "prompt"'));
+    assert.equal(runDoctor(dir).healthy, false);
+    fs.writeFileSync(claudePath, JSON.stringify({ ...JSON.parse(claudeOrig), env: { VSTACK_HOOK_DISABLED: "1" } }));
+    assert.equal(runDoctor(dir).healthy, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { detectLanguage, type DiscoveredRepo, isTestFilePath } from "./discover.ts";
 import { auditDiffInvariantLoss } from "./ast/invariant-loss.ts";
+import { runGitClean } from "./rungs/config-audit.ts";
 import { maskCode } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
 import {
@@ -146,9 +146,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   if (!baseRef || baseRef.startsWith("-")) {
     throw new Error(`Invalid git baseRef "${baseRef}".`);
   }
-  const diff = spawnSync("git", ["-C", repoPath, "diff", "-M20%", baseRef, "--unified=0", "--no-color"], {
-    encoding: "utf8",
-  });
+  const diff = runGitClean(repoPath, ["diff", "--text", "--no-ext-diff", "--no-textconv", "-M20%", baseRef, "--unified=0", "--no-color"]);
   if (diff.status !== 0) {
     return [
       {
@@ -196,7 +194,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   const getBaseMaskedLine = (rel: string, lineNum: number, fallback: string): string => {
     let lines = baseMaskedCache.get(rel);
     if (lines === undefined) {
-      const show = spawnSync("git", ["-C", repoPath, "show", `${baseRef}:${rel}`], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+      const show = runGitClean(repoPath, ["show", `${baseRef}:${rel}`], { maxBuffer: 8 * 1024 * 1024 });
       lines = show.status === 0 ? maskCode(show.stdout, detectLanguage(rel)).split(/\r?\n/) : null;
       baseMaskedCache.set(rel, lines);
     }

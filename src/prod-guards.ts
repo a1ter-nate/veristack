@@ -11,7 +11,7 @@ import { analyzeTsAstGuards, parseTsAst } from "./ast/ts-ast.ts";
 import { analyzeWave5AiFirstGuards } from "./ast/wave5-ai-first.ts";
 import { analyzeWave6TitansAGuards } from "./ast/wave6-titans-a.ts";
 import { analyzeWave7TitansBGuards } from "./ast/wave7-titans-b.ts";
-import type { DiscoveredRepo } from "./discover.ts";
+import { type DiscoveredRepo, isDeclarationStub } from "./discover.ts";
 import { lineOf, maskCode } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
 import { analyzeCveAndPostmortemGuards } from "./zero-defect/cve-and-agent-guards.ts";
@@ -83,7 +83,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
       findings.push(...analyzeT3ProdGuards(file));
       continue;
     }
-    const isStub = file.rel.endsWith(".pyi") || file.rel.endsWith(".d.ts");
+    const isStub = Boolean(file.isStub) || isDeclarationStub(file.rel);
     if (!file.language || file.isTest || isStub || (GENERATED_PATH.test(file.rel) && GENERATED_HEADER.test(file.content.slice(0, 600)))) continue;
     const raw = file.content;
     const masked = maskCode(raw, file.language, true);
