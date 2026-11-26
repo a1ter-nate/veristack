@@ -346,3 +346,29 @@ test("workflow audit honors repo default branch, default-false workflow inputs, 
     fs.rmSync(turboRepo, { recursive: true, force: true });
   }
 });
+
+test("blind-panel Bucket-A calibrations: reusable workflows, extensionless scripts, node --run, strict bash shell, miri, docker compose, and EXPOSE-gated Dockerfile", () => {
+  const dir = makeTempRepo({
+    "package.json": JSON.stringify({ name: "lib", exports: { ".": "./dist/index.js" }, scripts: { "lint:check": "oxlint", "test:cov": "vitest run --coverage", test: "vitest run", "bench:ci": "vitest bench --run" } }),
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true } }),
+    "src/a.ts": "export const x = 1;\n",
+    "src/a.test.ts": "import { test, expect } from 'vitest'; import { x } from './a'; test('x', () => { expect(x).toBe(1); });\n",
+    "Dockerfile": "FROM oven/bun:1\nENTRYPOINT [\"bun\"]\n",
+    "scripts/check": "#!/usr/bin/env bash\nruff check\nmypy src\n",
+    ".github/workflows/sub.yml": "on:\n  workflow_call:\njobs:\n  sub:\n    runs-on: ubuntu-latest\n    steps:\n      - shell: bash --noprofile --norc -eo pipefail {0}\n        run: |\n          node --run lint:check\n          scripts/check\n          if [ \"$COV\" = \"true\" ]; then\n            pnpm run test:cov\n          else\n            pnpm run test\n          fi\n          node --run bench:ci\n          docker compose up -d\n",
+    ".github/workflows/ci.yml": "on: [pull_request]\njobs:\n  call:\n    uses: $/.github/workflows/sub.yml\n",
+    ".github/workflows/miri.yml": "on:\n  pull_request:\n    paths: ['crates/**']\njobs:\n  miri:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo +nightly miri test\n",
+  });
+  try {
+    const repo = discoverRepo(dir);
+    assert.equal(repo.archetype, "library");
+    assert.equal(repo.ci.runsFormatterOrLint, true);
+    assert.equal(repo.ci.runsTypeOrStructureCheck, true);
+    assert.equal(repo.ci.runsUnitTests, true);
+    assert.equal(repo.ci.runsIntegrationOrDbTests, true);
+    assert.equal(repo.ci.runsMutationOrFormal, true);
+    assert.equal(repo.ci.runsPerfOrBench, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

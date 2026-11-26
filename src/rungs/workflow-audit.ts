@@ -51,6 +51,7 @@ function isUnconditionalIf(cond: unknown, falsyInputs?: ReadonlySet<string>): bo
   if (/^matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]*['"](?:\s*&&\s*matrix\.[a-z0-9_.-]+\s*(?:==|!=)\s*['"][^'"]*['"])*$/.test(norm)) return true;
   if (/^needs\.[a-z0-9_-]+\.outputs\.[a-z0-9_-]+\s*(?:==|!=)\s*['"](?:true|false)['"]/.test(norm)) return true;
   if (/^github\.event_name\s*!=\s*['"]pull_request['"]\s*\|\|/.test(norm)) return true;
+  if (/^github\.repository\s*!=\s*['"][^'"]+['"]/.test(norm)) return true;
   return false;
 }
 
@@ -72,7 +73,8 @@ function isContinueOnError(val: unknown): boolean {
 function isAllowedShell(shellVal: unknown): boolean {
   if (shellVal === undefined || shellVal === null) return true;
   if (typeof shellVal !== "string") return false;
-  return ALLOWED_SHELLS.has(shellVal.trim().toLowerCase());
+  const s = shellVal.trim().toLowerCase();
+  return ALLOWED_SHELLS.has(s) || /^(?:bash|sh|zsh)(?:\s+(?:--noprofile|--norc|-[a-z]*o\s+pipefail|-[a-z]*e[a-z]*|\{0\}))+$/.test(s);
 }
 
 const SAFE_DOCS_IGNORE =
@@ -150,7 +152,7 @@ function extractTriggers(onField: unknown, defaultBranch?: string): {
   return { triggers: [...new Set(triggers)], isPrBlocking, ignoredPaths: [...new Set(ignoredPaths)], matchedPaths: [...new Set(matchedPaths)], hasPrOrPushTrigger, falsyInputs };
 }
 
-export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly ScannedFile[], defaultBranch?: string): ActiveWorkflowInfo {
+export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly ScannedFile[], defaultBranch?: string, depth = 0): ActiveWorkflowInfo {
   let doc: unknown;
   try {
     doc = YAML.parse(file.content);
@@ -268,6 +270,21 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
     const isDeployJob = deployJobSet.has(jobId);
     if ((deadJobSet.has(jobId) && !isDeployJob) || !isRecord(jobVal)) continue;
     if (wfPoisoned || hasPoisonedEnv(jobVal.env)) continue;
+    if (typeof jobVal.uses === "string" && depth < 2 && allFiles) {
+      const rawRef = jobVal.uses.trim().replace(/^\$\//, "").replace(/^\.\//, "").split("@")[0] ?? "";
+      if (rawRef.startsWith(".github/workflows/")) {
+        const callee = allFiles.find((f) => f.rel === rawRef);
+        if (callee) {
+          const sub = parseGitHubWorkflow(callee, allFiles, defaultBranch, depth + 1);
+          for (const c of sub.activeCommands) {
+            if (isDeployJob) deployCommands.push(c);
+            else activeCommands.push(c);
+          }
+          if (!isDeployJob && sub.scopedCommands) scopedCommands.push(...sub.scopedCommands);
+        }
+      }
+      continue;
+    }
     const jobEnvMap = new Map(wfEnvMap);
     for (const [k, v] of extractSafeEnvLiterals(jobVal.env)) jobEnvMap.set(k, v);
     const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : wfDefaults;

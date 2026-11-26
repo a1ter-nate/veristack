@@ -169,9 +169,11 @@ export function sanitizeShellBlock(runScript: string): string[] {
     if (/^set\s+-o\s+pipefail\b/.test(trimmed)) { pipefail = true; continue; }
     if (/^(?:exit(?:\s+\d+)?|exec\b)/.test(trimmed)) break;
     if (setPlusE) continue;
-    if (/^(?:elif\s+|else\b|then\b|alias\s+|\$\{\{|!(\s|$)|\[{1,2}\s+|test\s+|[A-Za-z0-9_*?|]+\))/.test(trimmed) || /^(?:echo|printf|true|sleep|:)(?:\s|;|$)/.test(trimmed) || /^false(?:\s|&&|\|\||;|$)/.test(trimmed) || /^\.\/vstack\b/.test(trimmed) || /\|\|/.test(trimmed) || /;\s*(?:true|echo|printf|:|exit)(?:\s|$)/.test(trimmed) || /(?:^|[^&>])&(?!&|>)/.test(trimmed) || /&&\s*(?:echo|printf|true|:)(?:\s|$)/.test(trimmed) || (!pipefail && /(?:^|[^|])\|(?!\|)/.test(trimmed)) || /\s(?:--help|-h|--version|-V|--list-tests)(?:\s|$)/.test(trimmed)) continue;
+    if (/^(?:elif\s+|else\b|then\b|alias\s+|\$\{\{|!(\s|$)|\[{1,2}\s+|test\s+|[A-Za-z0-9_*?|]+\))/.test(trimmed) || /^(?:echo|printf|true|sleep|:)(?:\s|;|$)/.test(trimmed) || /^false(?:\s|&&|\|\||;|$)/.test(trimmed) || /^\.\/vstack\b/.test(trimmed) || /\|\|/.test(trimmed) || /;\s*(?:true|echo|printf|:|exit)(?:\s|$)/.test(trimmed) || /(?:^|[^&>])&(?!&|>)/.test(trimmed) || /&&\s*(?:echo|printf|true|:)(?:\s|$)/.test(trimmed) || (!pipefail && /(?:^|[^|\\])\|(?!\|)/.test(trimmed)) || /\s(?:--help|-h|--version|-V|--list-tests)(?:\s|$)/.test(trimmed)) continue;
     active.push(trimmed);
   }
+  const m = /\bif\s+\[[^\]]+\];?\s*then\s*\n([^\n]+)\n\s*else\s*\n([^\n]+)\n\s*fi\b/.exec(runScript);
+  if (m?.[1] && m[2]) { const a = sanitizeShellBlock(m[1]); const b = sanitizeShellBlock(m[2]); if (a.length > 0 && b.length > 0) active.push(...a, ...b); }
   return active;
 }
 

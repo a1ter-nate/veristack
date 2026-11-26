@@ -132,7 +132,8 @@ export function mergeDossiers(dossiers: readonly GroundTruthDossier[]): Consensu
     const execVote = majorityVote(entries.map((e) => Boolean(e.prBlockingCi?.executed)));
     const trustVote = majorityVote(entries.map((e) => Boolean(e.prBlockingCi?.trustworthy)));
     const depthVote = majorityVote(entries.map((e) => e.independentDepth ?? "none"));
-    if (!execVote.unanimous || !trustVote.unanimous || !appVote.unanimous) {
+    const anyExecuted = entries.some((e) => Boolean(e.prBlockingCi?.executed));
+    if (!execVote.unanimous || (anyExecuted && !trustVote.unanimous) || !appVote.unanimous) {
       disagreements.push({
         field: `rung:${r}`,
         applicable: entries.map((e) => e.applicable),
@@ -304,6 +305,29 @@ export function sampleFindingsForAdjudication(repoRoot: string, scanReport: Mini
     }
     return { rule, totalHits: list.length, samples: picked };
   });
+}
+
+export function aggregateScorecard(diffs: ReadonlyArray<ReturnType<typeof diffAgainstVeristack>>) {
+  const n = Math.max(1, diffs.length);
+  const archMatches = diffs.filter((d) => d.archetype.match).length;
+  const ciTp = diffs.reduce((s, d) => s + d.ci.truePositives, 0);
+  const ciFn = diffs.reduce((s, d) => s + d.ci.falseNegatives.length, 0);
+  const ciFp = diffs.reduce((s, d) => s + d.ci.falsePositives.length, 0);
+  const secHolds = diffs.reduce((s, d) => s + d.ci.securityHolds.length, 0);
+  const wsFalseZeroCliffs = diffs.reduce((s, d) => s + d.workspaces.wsFalsePositives.filter((w) => w.triggersZeroCliff).length, 0);
+  const wsLinkFns = diffs.reduce((s, d) => s + d.workspaces.wsTestLinkFalseNegatives.length, 0);
+  return {
+    reposAudited: diffs.length,
+    archetypeAccuracy: Number((archMatches / n).toFixed(3)),
+    ciPrecision: Number((ciTp + ciFp > 0 ? ciTp / (ciTp + ciFp) : 1).toFixed(3)),
+    ciRecall: Number((ciTp + ciFn > 0 ? ciTp / (ciTp + ciFn) : 1).toFixed(3)),
+    ciTruePositives: ciTp,
+    ciFalseNegatives: ciFn,
+    ciFalsePositives: ciFp,
+    securityHolds: secHolds,
+    wsFalseZeroCliffs,
+    wsLinkFalseNegatives: wsLinkFns,
+  };
 }
 
 if (import.meta.main) {

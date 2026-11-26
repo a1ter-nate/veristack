@@ -50,7 +50,7 @@ const CODE_EXT_LANG = new Map<string, string>([
 
 const MANIFEST_BASES = new Set([
   "package.json", "pyproject.toml", "cargo.toml", "go.mod", "turbo.json",
-  "makefile", "justfile", "taskfile.yml", "build.ps1", "build.cake",
+  "makefile", "justfile", "taskfile.yml", "build.ps1", "build.cake", "cake.cs",
   "lefthook.yml", ".pre-commit-config.yaml", ".pre-commit-config.yml",
   "codeowners", "dockerfile", "stryker-config.json", "stryker-config.jsonc",
   "mutants.toml", "knip.json", "knip.jsonc", ".oxlintrc.json", ".oxlintrc.jsonc",
@@ -65,8 +65,8 @@ const VERIFICATION_SIGNAL_RE: ReadonlyArray<readonly [string, RegExp]> = [
   ["pbt", /\b(?:fast-check|fc\.property|fc\.asyncProperty|hypothesis|@given|proptest!|FsCheck|rapid\.Check|quick\.Check)\b/],
   ["mbt", /\b(?:fc\.commands|RuleBasedStateMachine|proptest_state_machine|stateright|rapid\.StateMachine)\b/],
   ["mutation", /\b(?:stryker|mutmut|cargo-mutants|cargo\s+mutants|gremlins|pitest|MutationTests)\b/i],
-  ["formal", /\b(?:tla|quint|dafny|kani|stateright|z3-solver|everystate|crosshair)\b/i],
-  ["perf-bench", /\b(?:k6|codspeed|criterion|BenchmarkDotNet|pytest-benchmark|tinybench|mitata|lighthouse|go\s+test[^\n]*-bench)\b/i],
+  ["formal", /\b(?:tla|quint|dafny|kani|stateright|z3-solver|everystate|crosshair|cargo\s+(?:\+\w+\s+)?miri)\b/i],
+  ["perf-bench", /\b(?:k6|codspeed|criterion|BenchmarkDotNet|pytest-benchmark|tinybench|mitata|lighthouse\s+(?:https?:|--)|@lhci\/cli|go\s+test[^\n]*-bench)\b/i],
   ["e2e", /\b(?:@playwright\/test|playwright|cypress|selenium|puppeteer|maestro)\b/i],
   ["real-db", /\b(?:testcontainers|pglite|UseNpgsql|FIRESTORE_EMULATOR_HOST|docker\s+compose|sqlx::test)\b/i],
   ["migrations", /\b(?:drizzle-kit|prisma\s+migrate|alembic|flyway|goose|golang-migrate|MigrateAsync|sqlx::migrate)\b/i],
@@ -151,7 +151,7 @@ function extractWorkflowLinks(wfContent: string, trackedSet: ReadonlySet<string>
       if (trackedSet.has(cand)) refs.add(cand);
     }
   }
-  for (const m of wfContent.matchAll(/(?:^|[\s&|;(])(?:(?:ba)?sh\s+|pwsh\s+)?(?:\.\/)?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:sh|bash|ps1))\b/g)) {
+  for (const m of wfContent.matchAll(/(?:^|[\s&|;(])(?:(?:ba)?sh\s+|pwsh\s+|dotnet\s+run\s+)?(?:\.\/)?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:sh|bash|ps1|cake)|cake\.cs)\b/g)) {
     const cand = (m[1] ?? "").replace(/^\.\//, "");
     if (trackedSet.has(cand)) refs.add(cand);
   }
@@ -239,9 +239,15 @@ export function harvestRepoEvidence(repoPath: string): RepoEvidencePacket {
     }
   }
 
-  const linkedArtifacts = [...linkedScriptSet].slice(0, 40).map((rel) => ({
+  const secondHop = new Set<string>();
+  for (const rel of linkedScriptSet) {
+    const txt = readBounded(path.join(root, rel), 8_000);
+    for (const next of extractWorkflowLinks(txt, trackedSet)) secondHop.add(next);
+  }
+  for (const rel of secondHop) linkedScriptSet.add(rel);
+  const linkedArtifacts = [...linkedScriptSet].slice(0, 45).map((rel) => ({
     path: rel,
-    content: readBounded(path.join(root, rel), 8_000),
+    content: readBounded(path.join(root, rel), 10_000),
   }));
 
   const topDirLangs = [...dirLangCounts.entries()]

@@ -196,7 +196,7 @@ function shouldReadText(rel: string): boolean {
     return true;
   }
   if (lower.endsWith(".vue") || lower.endsWith(".svelte") || lower.endsWith(".astro") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
-  if (lower.endsWith(".sh") || lower.endsWith(".bash")) return true;
+  if (lower.endsWith(".sh") || lower.endsWith(".bash") || /^scripts\/[a-z0-9_.-]+$/.test(lower) || base === "build.ps1" || base === "build.cake" || base === "cake.cs") return true;
   if (lower.endsWith(".sql") && (/(?:^|\/)(?:migrations?|supabase|policies|rls|schema|db|sql|flyway)\//.test(lower) || base.endsWith("schema.sql"))) return true;
   if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|hooks\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) {
     return true;

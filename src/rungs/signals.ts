@@ -73,6 +73,12 @@ function collectReferencedScriptNames(text: string): Array<{ name: string; recur
   for (const m of text.matchAll(/\b(?:(?:bun|pnpm|npx|yarn)\s+(?:x\s+)?)?turbo\s+(?:run\s+)?([a-zA-Z0-9:_-]+)/g)) {
     if (m[1] && m[1] !== "ls" && m[1] !== "prune") names.push({ name: m[1], recursive: true });
   }
+  for (const m of text.matchAll(/\bnode\s+--run\s+([a-zA-Z0-9:_-]+)/g)) {
+    if (m[1]) names.push({ name: m[1], recursive: false });
+  }
+  for (const m of text.matchAll(/\bpnpm\s+(?:-F|--filter)\s+[^\s]+\s+(?:run\s+)?([a-zA-Z0-9:_-]+)/g)) {
+    if (m[1] && m[1] !== "exec" && m[1] !== "install") names.push({ name: m[1], recursive: true });
+  }
   for (const m of text.matchAll(/\b(?:npm|pnpm|yarn|bun)\s+(?:(-r|--recursive)\s+)?(?:run\s+)?([a-zA-Z0-9:_-]+)/g)) {
     const c = m[2];
     if (c && c !== "install" && c !== "ci" && c !== "exec" && c !== "dlx" && c !== "x" && c !== "turbo") names.push({ name: c, recursive: Boolean(m[1]) });
@@ -111,6 +117,12 @@ function buildActivePrCiText(files: readonly ScannedFile[], defaultBranch?: stri
       }
     }
     if (info.deployCommands && info.deployCommands.length > 0) scheduledChunks.push(...info.deployCommands);
+    const isScopedSpecializedR5 =
+      !info.isPrBlocking &&
+      Boolean(info.hasPrOrPushTrigger) &&
+      Boolean(info.matchedPaths?.length) &&
+      info.activeCommands.some((c) => /\b(?:cargo\s+(?:\+\w+\s+)?miri|stryker|mutmut|cargo\s+mutants|kani)\b/i.test(c));
+    if (isScopedSpecializedR5) scheduledChunks.push(...info.activeCommands);
     const isPartitionedMain = !info.isPrBlocking && Boolean(info.hasPrOrPushTrigger) && partitionedSiblingCovered(info.ignoredPaths);
     const isPartitionedSibling = !info.isPrBlocking && Boolean(info.hasPrOrPushTrigger) && Boolean(info.matchedPaths?.some((mp) => parsedGha.some((o) => o.info.ignoredPaths?.includes(mp))));
     if ((!info.isPrBlocking && !isPartitionedMain && !isPartitionedSibling) || info.activeCommands.length === 0) continue;
@@ -138,14 +150,18 @@ function buildActivePrCiText(files: readonly ScannedFile[], defaultBranch?: stri
   for (let depth = 0; depth < 4; depth++) {
     const nextFrontier: Array<{ cwd: string; text: string }> = [];
     for (const item of frontier) {
-      for (const sm of item.text.matchAll(/(?:^|[\s&|;(])(?:(?:ba)?sh\s+)?(?:\.\/)?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.sh)\b/g)) {
+      for (const sm of item.text.matchAll(/(?:^|[\s&|;(])(?:(?:ba)?sh\s+|pwsh\s+|dotnet\s+run\s+)?(?:\.\/)?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:sh|bash|ps1|cake)|cake\.cs|scripts\/[A-Za-z0-9_.-]+)(?:\s+([A-Za-z0-9_.-]+))?\b/g)) {
         const rawPath = sm[1] ?? "";
+        const arg1 = sm[2] ?? "";
         if (!rawPath || rawPath.includes("..")) continue;
         const resolved = item.cwd ? `${item.cwd}/${rawPath}` : rawPath;
         const shFile = fileByRel.get(resolved) ?? fileByRel.get(rawPath);
-        if (!shFile || visitedShells.has(shFile.rel)) continue;
-        visitedShells.add(shFile.rel);
-        const shLines = sanitizeShellBlock(shFile.content);
+        const visitKey = `${shFile?.rel ?? ""}::${arg1}`;
+        if (!shFile || visitedShells.has(visitKey)) continue;
+        visitedShells.add(visitKey);
+        const branchIdx = arg1 ? shFile.content.indexOf(`"$1" = "${arg1}"`) : -1;
+        const slice = branchIdx >= 0 ? shFile.content.slice(branchIdx).split(/\n\s*(?:elif\s+|else\b|fi\b)/)[0]?.split("\n").slice(1).join("\n") ?? "" : shFile.content;
+        const shLines = shFile.rel.endsWith(".cs") ? slice.split(/\r?\n/) : sanitizeShellBlock(slice);
         if (shLines.length > 0) { const joined = shLines.join("\n"); chunks.push(joined); nextFrontier.push({ cwd: item.cwd, text: joined }); }
       }
       for (const { name, recursive } of collectReferencedScriptNames(item.text)) {
@@ -399,7 +415,7 @@ export function extractSignals(
   const hasFormalTool =
     hasNonEmptyFormalSpec(files) ||
     hasHostPath(/(?:^|\/)test_formal_model_check\.py$/) ||
-    /\b(?:everystate|z3-solver|Microsoft\.Z3|stateright|kani|verus|loom|shuttle|quint\s+(?:verify|run)|dafny\s+verify|crosshair)\b/i.test(`${testImportLines}\n${effectiveCiText}`) ||
+    /\b(?:everystate|z3-solver|Microsoft\.Z3|stateright|kani|verus|loom|shuttle|cargo\s+(?:\+\w+\s+)?miri|quint\s+(?:verify|run)|dafny\s+verify|crosshair)\b/i.test(`${testImportLines}\n${effectiveCiText}\n${scheduledOrDeployText}`) ||
     (hasAnyPath(/(?:^|\/)\.verification\/control-plan\.json$/) && hasAnyPath(/(?:^|\/)\.verification\/laws\/.+\.laws\.json$/));
 
   const hasFuzzTool =
@@ -411,7 +427,7 @@ export function extractSignals(
 
   const hasPerfOrLoadTool =
     hasHostPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js)|(?:tests\/load|k6)\/[^/]+\.(?:[cm]?[jt]s|py|go))$/) ||
-    /@lhci\/cli|\b(?:k6\s+run|BenchmarkDotNet|NBomber|criterion|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|web-vitals|lighthouse|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(`${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`);
+    /@lhci\/cli|\b(?:k6\s+run|BenchmarkDotNet|NBomber|criterion|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|vitest\s+bench|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*--?bench|web-vitals|lighthouse\s+(?:https?:|--)|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(`${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`);
 
   const hasE2eTool =
     /@playwright\/test|\b(?:playwright|cypress|selenium|puppeteer)\b/i.test(testImportAndManifest) ||
@@ -440,42 +456,30 @@ export function extractSignals(
     workflowFiles,
     runsFormatterOrLint:
       runsVerifyAll ||
-      (hasCiWorkflows &&
-        /\b(?:oxlint|oxfmt|eslint|prettier|biome|vp\s+(?:check|lint|fmt)|lint-ratchet|pr-lint-format|ruff\s+(?:check|format)|cargo\s+(?:fmt|clippy)|dotnet\s+(?:format|build\b[^\n]*warnaserror)|gofmt|golangci-lint|govulncheck|go\s+vet|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines|run-rung))\b/i.test(
-          effectiveCiText,
-        )),
+      (hasCiWorkflows && /\b(?:oxlint|oxfmt|eslint|prettier|biome|vp\s+(?:check|lint|fmt)|lint-ratchet|pr-lint-format|ruff\s+(?:check|format)|cargo\s+(?:fmt|clippy)|dotnet\s+(?:format|build\b[^\n]*warnaserror)|TreatAllWarningsAs|StyleCop|gofmt|golangci-lint|govulncheck|go\s+vet|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines|run-rung))\b/i.test(effectiveCiText)),
     runsTypeOrStructureCheck:
       runsVerifyAll ||
-      (hasCiWorkflows &&
-        /\b(?:tsc\b|tsgo\b|vp\s+check|typecheck|type-ratchet|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|basedpyright\b|go\s+(?:vet|build)|golangci-lint|knip\b|vulture\b|deadcode\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(
-          effectiveCiText,
-        )),
+      (hasCiWorkflows && /\b(?:tsc\b|tsgo\b|vp\s+check|typecheck|type-ratchet|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|basedpyright\b|go\s+(?:vet|build)|golangci-lint|knip\b|vulture\b|deadcode\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(effectiveCiText)),
     runsUnitTests,
     runsBoundaryOrMbtTests:
       runsVerifyAll ||
-      (hasCiWorkflows &&
-        /\b(?:pact|pact-go|schemathesis|oasdiff|storybook|test:contract|test:component|test:mbt|mobile-contracts|bun\s+test|vitest|jest|node\s+--test|vp\s+test|deno\s+test|dotnet\s+test|pytest\b|cargo\s+(?:test|nextest)|go\s+test|run-rung\s+(?:R3|all))\b/i.test(
-          effectiveCiText,
-        )),
+      (hasCiWorkflows && /\b(?:pact|pact-go|schemathesis|oasdiff|storybook|test:contract|test:component|test:mbt|mobile-contracts|bun\s+test|vitest|jest|node\s+--test|vp\s+test|deno\s+test|dotnet\s+test|pytest\b|cargo\s+(?:test|nextest)|go\s+test|run-rung\s+(?:R3|all))\b/i.test(effectiveCiText)),
     runsIntegrationOrDbTests:
       runsVerifyAll ||
       (hasCiWorkflows &&
-        ((hasInProcessRealDb && runsUnitTests) ||
-          /\b(?:testcontainers|test:int|test:integration|cloud-integration|conformance|pytest[^\n]*-m\s+["']?integration|dotnet\s+test[^\n]*--filter[^\n]*Integration|cargo\s+(?:test|nextest)[^\n]*--test\s+integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|goose\s+up|run-rung\s+(?:R4|all))\b/i.test(
-            effectiveCiText,
-          ))),
+        (((hasInProcessRealDb || (hasMigrationTest && /(?:bun:sqlite|better-sqlite3|sqlite|drizzle)/i.test(`${manifestAndConfig}\n${codeTestText}`))) && runsUnitTests) ||
+          (/\bdocker(?:\s+compose|-compose)\s+up\b/i.test(effectiveCiText) && (runsUnitTests || /\b(?:test|e2e|adapter|integration)\b/i.test(effectiveCiText))) ||
+          /\b(?:testcontainers|test:int|test:integration|cloud-integration|conformance|pytest[^\n]*-m\s+["']?integration|dotnet\s+test[^\n]*--filter[^\n]*Integration|cargo\s+(?:test|nextest)[^\n]*--test\s+integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|goose\s+up|run-rung\s+(?:R4|all))\b/i.test(effectiveCiText))),
     runsMutationOrFormal:
       runsVerifyAll ||
-      (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|gremlins|go-mutesting|go\s+test[^\n]*-fuzz|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|mutation(?:tests)?|run-rung\s+(?:R5|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`) ||
+      (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|cargo\s+(?:\+\w+\s+)?miri|pitest|gremlins|go-mutesting|go\s+test[^\n]*-fuzz|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|mutation(?:tests)?|run-rung\s+(?:R5|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`) ||
         (hasCiWorkflows && (/\bbend\b[^\n]*--check-only/i.test(effectiveCiText) || /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText)))),
     runsPerfOrBench:
       runsVerifyAll ||
-      (hasCiWorkflows &&
-        /\b(?:k6\s+run|BenchmarkDotNet|NBomber|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|lighthouse|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(effectiveCiText)),
+      (hasCiWorkflows && /\b(?:k6\s+run|BenchmarkDotNet|NBomber|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|vitest\s+bench|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*--?bench|lighthouse\s+(?:https?:|--)|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(effectiveCiText)),
     runsE2eTests:
       runsVerifyAll ||
-      (hasCiWorkflows &&
-        /\b(?:playwright\s+test|playwright-go|cypress\s+run|maestro\s+test|test:e2e|dashboard-e2e|pytest[^\n]*-m\s+["']?e2e|dotnet\s+test[^\n]*--filter[^\n]*E2E|cargo\s+(?:test|nextest)[^\n]*--test\s+e2e|go\s+test[^\n]*\/e2e|run-rung\s+(?:R7|all))\b/i.test(effectiveCiText)),
+      (hasCiWorkflows && /\b(?:playwright\s+test|playwright-go|cypress\s+run|maestro\s+test|test:e2e|dashboard-e2e|pytest[^\n]*-m\s+["']?(?:e2e|chrome|browser|playwright)|dotnet\s+test[^\n]*--filter[^\n]*E2E|cargo\s+(?:test|nextest)[^\n]*--test\s+e2e|go\s+test[^\n]*\/e2e|run-rung\s+(?:R7|all))\b/i.test(effectiveCiText)),
     runsProdVerification:
       runsVerifyAll ||
       /\b(?:synthetic|canary|production-canar|production-drift|rollback|smoke-prod|smoke-event-assets|post-deploy|healthcheck|run-rung\s+(?:R8|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`),

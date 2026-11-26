@@ -1,17 +1,24 @@
 {
-  "schemaVersion": 1,
-  "description": "Pinned public OSS calibration corpus spanning AI-first TypeScript/Python monorepos, Rust, Go, C#, and Shell/OS repos.",
+  "schemaVersion": 2,
+  "description": "Curated OSS calibration corpus tagging Pre-AI Titans vs Post-AI Titans across TypeScript, Python, Rust, Go, C#, SQL, and Shell.",
   "repos": [
-    { "id": "opencode", "url": "https://github.com/anomalyco/opencode.git", "ecosystem": "ai-first-ts-rust", "scope": "in-scope" },
-    { "id": "pydantic-ai", "url": "https://github.com/pydantic/pydantic-ai.git", "ecosystem": "ai-first-python", "scope": "in-scope" },
-    { "id": "mcp-ts-sdk", "url": "https://github.com/modelcontextprotocol/typescript-sdk.git", "ecosystem": "ai-first-ts", "scope": "in-scope" },
-    { "id": "better-auth", "url": "https://github.com/better-auth/better-auth.git", "ecosystem": "ai-first-ts", "scope": "in-scope" },
-    { "id": "hono", "url": "https://github.com/honojs/hono.git", "ecosystem": "ts-framework", "scope": "in-scope" },
-    { "id": "fastapi", "url": "https://github.com/fastapi/fastapi.git", "ecosystem": "python-framework", "scope": "in-scope" },
-    { "id": "ripgrep", "url": "https://github.com/BurntSushi/ripgrep.git", "ecosystem": "rust-cli-lib", "scope": "in-scope" },
-    { "id": "jj", "url": "https://github.com/jj-vcs/jj.git", "ecosystem": "rust-vcs", "scope": "in-scope" },
-    { "id": "caddy", "url": "https://github.com/caddyserver/caddy.git", "ecosystem": "go-server", "scope": "in-scope" },
-    { "id": "polly", "url": "https://github.com/App-vNext/Polly.git", "ecosystem": "csharp-lib", "scope": "in-scope" },
-    { "id": "omarchy", "url": "https://github.com/basecamp/omarchy.git", "ecosystem": "shell-os", "scope": "bucket-d-partial" }
+    { "id": "ripgrep", "url": "https://github.com/BurntSushi/ripgrep.git", "era": "pre-ai-titan", "ecosystem": "rust-cli-lib", "batch": "round-1", "scope": "in-scope" },
+    { "id": "fastapi", "url": "https://github.com/fastapi/fastapi.git", "era": "pre-ai-titan", "ecosystem": "python-framework", "batch": "round-1", "scope": "in-scope" },
+    { "id": "caddy", "url": "https://github.com/caddyserver/caddy.git", "era": "pre-ai-titan", "ecosystem": "go-server", "batch": "round-1", "scope": "in-scope" },
+    { "id": "jj", "url": "https://github.com/jj-vcs/jj.git", "era": "pre-ai-titan", "ecosystem": "rust-vcs", "batch": "round-1", "scope": "in-scope" },
+    { "id": "polly", "url": "https://github.com/App-vNext/Polly.git", "era": "pre-ai-titan", "ecosystem": "csharp-lib", "batch": "round-1-pilot", "scope": "in-scope" },
+    { "id": "hono", "url": "https://github.com/honojs/hono.git", "era": "post-ai-titan", "ecosystem": "ts-framework", "batch": "round-1", "scope": "in-scope" },
+    { "id": "opencode", "url": "https://github.com/anomalyco/opencode.git", "era": "post-ai-titan", "ecosystem": "ai-first-ts-rust", "batch": "round-1-pilot", "scope": "in-scope" },
+    { "id": "pydantic-ai", "url": "https://github.com/pydantic/pydantic-ai.git", "era": "post-ai-titan", "ecosystem": "ai-first-python", "batch": "round-1", "scope": "in-scope" },
+    { "id": "mcp-ts-sdk", "url": "https://github.com/modelcontextprotocol/typescript-sdk.git", "era": "post-ai-titan", "ecosystem": "ai-first-ts", "batch": "round-1", "scope": "in-scope" },
+    { "id": "better-auth", "url": "https://github.com/better-auth/better-auth.git", "era": "post-ai-titan", "ecosystem": "ai-first-ts", "batch": "round-1-pilot", "scope": "in-scope" },
+    { "id": "omarchy", "url": "https://github.com/basecamp/omarchy.git", "era": "post-ai-titan", "ecosystem": "shell-os", "batch": "round-1", "scope": "bucket-d-partial" },
+    { "id": "fast-check", "url": "https://github.com/dubzzz/fast-check.git", "era": "pre-ai-titan", "ecosystem": "ts-pbt-lib", "batch": "og-wave-2", "scope": "in-scope" },
+    { "id": "httpx", "url": "https://github.com/encode/httpx.git", "era": "pre-ai-titan", "ecosystem": "python-http", "batch": "og-wave-2", "scope": "in-scope" },
+    { "id": "nats-server", "url": "https://github.com/nats-io/nats-server.git", "era": "pre-ai-titan", "ecosystem": "go-messaging", "batch": "og-wave-2", "scope": "in-scope" },
+    { "id": "xunit", "url": "https://github.com/xunit/xunit.git", "era": "pre-ai-titan", "ecosystem": "csharp-test-fw", "batch": "og-wave-2", "scope": "in-scope" },
+    { "id": "drizzle-orm", "url": "https://github.com/drizzle-team/drizzle-orm.git", "era": "post-ai-titan", "ecosystem": "ts-sql-orm", "batch": "og-wave-2", "scope": "in-scope" },
+    { "id": "uv", "url": "https://github.com/astral-sh/uv.git", "era": "post-ai-titan", "ecosystem": "rust-py-toolchain", "batch": "og-wave-2", "scope": "in-scope" },
+    { "id": "browser-use", "url": "https://github.com/browser-use/browser-use.git", "era": "post-ai-titan", "ecosystem": "ai-first-python-agent", "batch": "og-wave-2", "scope": "in-scope" }
   ]
 }

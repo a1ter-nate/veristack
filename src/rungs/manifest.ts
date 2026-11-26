@@ -139,7 +139,7 @@ function extractManifestDependencyText(files: readonly ScannedFile[]): { prodDep
   const prodChunks: string[] = [];
   const uiChunks: string[] = [];
   for (const f of files) {
-    if (f.isTest || f.isWorkflow || f.language) continue;
+    if (f.isTest || f.isWorkflow || f.language || /(?:^|\/)(?:test|tests)\//i.test(f.rel)) continue;
     const base = path.posix.basename(f.rel).toLowerCase();
     if (base === "package.json") {
       try {
@@ -167,7 +167,7 @@ function extractManifestDependencyText(files: readonly ScannedFile[]): { prodDep
       uiChunks.push(depLines);
       continue;
     }
-    if (base === "cargo.toml" || base === "go.mod" || base.endsWith(".csproj") || base === "directory.packages.props" || /^next\.config\.|^astro\.config\./.test(base)) {
+    if (base === "cargo.toml" || base === "go.mod" || base.endsWith(".csproj") || /^next\.config\.|^astro\.config\./.test(base)) {
       prodChunks.push(f.content);
       uiChunks.push(f.content);
     }
@@ -176,8 +176,9 @@ function extractManifestDependencyText(files: readonly ScannedFile[]): { prodDep
 }
 
 export function inferArchetypeFromFiles(files: readonly ScannedFile[], relPaths: readonly string[]): RepoArchetype {
-  const hostFiles = files.filter((f) => isHostRepoFile(f.rel));
-  const hostPaths = relPaths.filter((p) => isHostRepoFile(p)).map((p) => p.toLowerCase());
+  const isArchHost = (rel: string): boolean => isHostRepoFile(rel) && !/^e2e\//i.test(rel.replace(/\\/g, "/"));
+  const hostFiles = files.filter((f) => isArchHost(f.rel));
+  const hostPaths = relPaths.filter((p) => isArchHost(p)).map((p) => p.toLowerCase());
   const { prodDeps, uiDeps } = extractManifestDependencyText(hostFiles);
   const prodSourceFiles = hostFiles.filter((f) => f.language && !f.isTest && !/(?:^|\/)(?:fixtures|testdata|__fixtures__)\//i.test(f.rel));
   const testPathSet = new Set(hostFiles.filter((f) => f.isTest).map((f) => f.rel.toLowerCase()));
@@ -191,12 +192,16 @@ export function inferArchetypeFromFiles(files: readonly ScannedFile[], relPaths:
         !/\.(?:test|spec)\.[cm]?[jt]sx$/i.test(p) &&
         (p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".vue") || p.endsWith(".svelte") || p.endsWith(".astro")),
     );
+  const hasExposedDockerfile = hostFiles.some(
+    (f) => /^dockerfile(?:\.|$)/i.test(path.posix.basename(f.rel)) && /^\s*EXPOSE\s+\d+/m.test(f.content),
+  );
   const hasBackendService =
     /\b(?:express|fastify|hono|@hono\/node-server|elysia|nestjs|koa|fastapi|django|flask|actix-web|axum|gin-gonic|labstack\/echo|go-chi\/chi|gofiber\/fiber|google\.golang\.org\/grpc|microsoft\.aspnetcore|microsoft\.net\.sdk\.web)\b/i.test(
       prodDeps,
     ) ||
     prodSourceFiles.some((f) => HTTP_LISTENER_SIGNAL.test(stripLiteralsAndComments(f.content)) || /\b(?:http\.Serve|e\.Start)\s*\(/.test(stripLiteralsAndComments(f.content))) ||
-    hostPaths.some((p) => p.includes("dockerfile") || p.includes("controllers/") || p.includes("routes/"));
+    hasExposedDockerfile ||
+    hostPaths.some((p) => p.includes("controllers/") || p.includes("routes/"));
 
   if (hasReactOrUi && hasBackendService) return "fullstack";
   if (hasReactOrUi) return "frontend";
@@ -285,7 +290,7 @@ export function discoverWorkspaces(
     }
     const dir = path.posix.dirname(norm);
     if (dir === "." || dir === "" || seen.has(dir)) continue;
-    if (/(?:^|\/)(?:node_modules|fixtures|testdata|__fixtures__|test|tests|lint|benchmarks?|bench|fuzz|scripts|perf-measures|docs_src|docs|samples|demo|demos|snippets|e2e|stories|website|site|proc-macros?|gen-protos?|npm)(?:\/|$)|^tools\/(?:oxlint|eslint|lint)(?:\/|$)|^common\/[^/]*config(?:\/|$)|(?:^|\/)(?:eslint|vitest|tsconfig|prettier|biome)-config(?:\/|$)|^web\/docs(?:\/|$)/i.test(dir)) continue;
+    if (/(?:^|\/)(?:node_modules|fixtures|testdata|__fixtures__|test|tests|lint|benchmarks?|bench|fuzz|scripts|perf-measures|docs_src|docs|samples|demo|demos|snippets|e2e|stories|website|site|playground|integration-tests|proc-macros?|gen-protos?|npm)(?:\/|$)|^tools\/(?:oxlint|eslint|lint)(?:\/|$)|^common\/[^/]*config(?:\/|$)|(?:^|\/)(?:eslint|vitest|tsconfig|prettier|biome)-config(?:\/|$)|(?:^|\/)[^/]+-bench(?:\/|$)|(?:^|\/)[^/]*\.generator(?:s|utility)(?:\/|$)|^web\/docs(?:\/|$)/i.test(dir)) continue;
     if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests|specs?)$/i.test(dir)) continue;
     if (base === "Cargo.toml" && /^\s*\[workspace\]/m.test(file.content) && !/^\s*\[package\]/m.test(file.content)) continue;
     if (base.endsWith(".csproj") && (/<IsTestProject>\s*true\s*<\/IsTestProject>/i.test(file.content) || /Microsoft\.NET\.Test\.Sdk|PackageReference\s+Include="(?:xunit|NUnit|MSTest\.TestFramework)"/i.test(file.content))) continue;
