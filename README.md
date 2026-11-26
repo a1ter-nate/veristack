@@ -31,7 +31,8 @@ bunx veristack scan .
 
 # Or install as a dev dependency
 npm install -D veristack        # or: pnpm add -D veristack / bun add -d veristack
-npx vstack scan . --json        # Full ladder + anti-slop + agent-doc report
+npx vstack scan . --strict      # Zero-ratchet, zero-finding strict gate
+npx vstack hooks on             # Install two-tier agent hooks (Claude Code, Codex, Cursor)
 npx vstack diff-cheats . --base origin/main --fail
 npx vstack review-brief . --base origin/main --md
 ```
@@ -69,6 +70,7 @@ R8  Live Production Verification & Boot BIST      (Always  | 3–10 probes)
 ### 2. Anti-Slop Review & Knowledge-Base Hygiene
 - **Stakes-Ranked Human Review Brief (`vstack review-brief`):** measures PR slop-asymmetry (non-lockfile lines added, shotgun-surgery directory spread, doc-dump volume, additive-only deletion ratio, newly added `HACK`/`WORKAROUND` or fallback-swallow catches, and `diff-cheats` hits), sorts changed files into a **Must Review First** queue, explicitly lists where automated checks are blind, and outputs a paste-ready `--md` ownership & AI-disclosure checklist.
 - **Agent Instruction Hygiene (`vstack scan`):** audits `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `REVIEW.md`, `.cursorrules`, and `copilot-instructions.md` for context bloat (`agent-doc-bloat`), dead repo file references (`agent-doc-stale-path`), and mechanical rules stuck in prose (`agent-doc-unpromoted-rules`).
+- **Real-Time Agent Harness Hooks (`vstack hooks on` + `vstack check-file` + `vstack doctor`):** installs millisecond two-tier hooks (immediate per-edit single-file scan + deduplicated `Stop` deep/diff pass, plus Cursor `preToolUse` write blocking) for Claude Code, Codex, Cursor, GitHub Copilot, and Grok Build so any model auto-fixes slop on the next turn without waiting for CI.
 - **Anti-Cheat, Supply-Chain & Brownfield Locks:** blocks `continue-on-error: true`, `|| true`, `--no-verify`, test skips/retries, unpinned third-party GitHub Actions, missing `persist-credentials: false` on OIDC workflows, stealth `.vstack.json`/`.verification/invariants.json` weakening, and supports auto-shrinking `--ratchet` baselines, `.verification/chokepoints.json`, `vstack formal-sync`, `red-before-fix`, `mcdc`, `spc`, `big-o`, and 90/10 BYO System 1 circuits (`vstack circuit list`).
 
 ---
@@ -134,7 +136,7 @@ bun run test:csharp  # Roslyn VStack.Analyzers + .NET 10 reference solution
 Veristack is an original, from-scratch MIT implementation synthesizing ideas from anti-slop engineering, open-source tooling, and reliability literature:
 
 - **Anti-slop & human-judgment inspiration:** [The No AI Slop Manifesto](https://gist.github.com/dexhorthy/4cc96f01be5b1208519e75dad250a948) (*AIE Code Summit 2026* — Dex Horthy, Lauren Tan / `@poteto`, et al.) and [*Why Software Factories Fail*](https://github.com/humanlayer/advanced-context-engineering-for-coding-agents/blob/main/wsff.md).
-- **Open-source tooling inspiration:** [`deterministic-machines/deslop-please`](https://github.com/deterministic-machines/deslop-please), [`dmmulroy/anti-slop`](https://github.com/dmmulroy/anti-slop), [`@interfere/landmines`](https://github.com/interfere-inc/landmines), [`mattpocock/skills`](https://github.com/mattpocock/skills) (including `writing-for-agents`), [`cursor/plugins` (`pstack`)](https://github.com/cursor/plugins/tree/main/pstack), [`bendlang/bend`](https://github.com/bendlang/bend), [`antithesishq/bombadil`](https://github.com/antithesishq/bombadil), and [`tigerbeetle/tigerbeetle`](https://github.com/tigerbeetle/tigerbeetle) (`TIGER_STYLE.md`).
+- **Open-source tooling inspiration:** [`pbakaus/impeccable`](https://github.com/pbakaus/impeccable) (two-tier per-edit + `Stop` agent hooks & `doctor`), [`deterministic-machines/deslop-please`](https://github.com/deterministic-machines/deslop-please), [`dmmulroy/anti-slop`](https://github.com/dmmulroy/anti-slop), [`@interfere/landmines`](https://github.com/interfere-inc/landmines), [`mattpocock/skills`](https://github.com/mattpocock/skills) (including `writing-for-agents`), [`cursor/plugins` (`pstack`)](https://github.com/cursor/plugins/tree/main/pstack), [`bendlang/bend`](https://github.com/bendlang/bend), [`antithesishq/bombadil`](https://github.com/antithesishq/bombadil), and [`tigerbeetle/tigerbeetle`](https://github.com/tigerbeetle/tigerbeetle) (`TIGER_STYLE.md`).
 - **Research & literature:** Dawson Engler et al. (*Bugs as Deviant Behavior*, SOSP 2001), Michael Ernst et al. (*Daikon Dynamic Invariant Detection*), Matteo Vaccari (*Tests as Data*), John Ousterhout (*A Philosophy of Software Design*), Meta Engineering (*Just-in-Time Catching Test Generation*, `arXiv:2601.22832`), TypeSafe AI (JEV), Shopify Packwerk, Shigeo Shingo (*Poka-Yoke*), Toyota (*Jidoka* / *A3*), Shewhart (*SPC*), NASA JPL (*Power of 10*), DO-178C (*MC/DC*), SQLite (*TH3*), and seL4.
 
 See [skill/references/04-source-patterns-digest.md](skill/references/04-source-patterns-digest.md) for the full traceability map.

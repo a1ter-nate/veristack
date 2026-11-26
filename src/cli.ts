@@ -3,6 +3,7 @@ import { scanGitDiffCheats } from "./ci-auditor.ts";
 import { createSystem1Engine, formatCircuitReport, listDefaultCircuits, runRepoCircuit } from "./circuits/index.ts";
 import { discoverRepo } from "./discover.ts";
 import { formatFindingsList, formatMarkdownReport, formatSystem1Report, formatTerminalReport } from "./format.ts";
+import { handleHooksAndDoctorCli } from "./hooks/index.ts";
 import { scanRepo } from "./ladder.ts";
 import { lintNoComments } from "./no-comments.ts";
 import {
@@ -52,6 +53,10 @@ function usage(): string {
     "  vstack state-machines [dir] [--json] [--fail]",
     "  vstack diff-cheats [dir] [--base <ref>] [--json] [--fail]",
     "  vstack review-brief [dir] [--base <ref>] [--max-lines <n>] [--max-dirs <n>] [--max-doc-lines <n>] [--json | --md] [--fail]",
+    "  vstack check-file <file> [--tier immediate|all] [--max-lines <n>] [--strict] [--json] [--fail]",
+    "  vstack hook <post-edit|pre-edit|stop> [--harness claude|codex|cursor|copilot|grok] [--tier immediate|all]",
+    "  vstack hooks <on|off|status|reset> [dir] [--harness claude,codex,cursor,copilot,grok] [--command <cmd>] [--json]",
+    "  vstack doctor [dir] [--json] [--fail]",
     "  vstack formal-sync [dir] [--json] [--fail]",
     "  vstack laws [dir] [--verify] [--json] [--fail]",
     "  vstack bench [dir] [--corpus <dir>] [--replay <dir>] [--json] [--fail]",
@@ -95,6 +100,8 @@ function firstPositional(args: readonly string[]): string {
     "--corpus",
     "--replay",
     "--baseline",
+    "--tier",
+    "--harness",
   ]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -138,6 +145,9 @@ async function run(): Promise<number> {
   const target = firstPositional(rest);
   const asJson = rest.includes("--json");
   const asMd = rest.includes("--md");
+
+  const hookOrDoctorCode = handleHooksAndDoctorCli(cmd, rest, target, asJson);
+  if (hookOrDoctorCode !== null) return hookOrDoctorCode;
 
   if (cmd === "scan") {
     const strict = rest.includes("--strict");
