@@ -250,10 +250,13 @@ export function extractToolHead(tokens: readonly string[], repoRoot?: string): {
     return extractToolHead([t0, ...tokens.slice(3)], repoRoot);
   }
   if (low0 === "pnpm" && (tokens[1] === "--filter" || tokens[1] === "-F") && tokens[2] && tokens[3]) {
-    const sub = tokens[3].toLowerCase();
-    if (sub !== "exec" || !tokens[4]) {
-      return { head: "", toolArgs: [], error: `pnpm ${tokens[1]} requires 'exec <tool>' or an expanded workspace script` };
+    const f = tokens[2];
+    if (repoRoot) {
+      if ((f.startsWith(".") || f.startsWith("/") || f.includes("..")) && !isPathInsideRepo(f, repoRoot)) return { head: "", toolArgs: [], error: `pnpm ${tokens[1]} '${f}' escapes repo root` };
+      const cDir = path.resolve(repoRoot, f);
+      if (fs.existsSync(cDir) && fs.statSync(cDir).isDirectory()) { const cfgErr = auditRunnerConfigs(repoRoot, [cDir]); if (cfgErr) return { head: "", toolArgs: [], error: cfgErr }; }
     }
+    if (tokens[3].toLowerCase() !== "exec" || !tokens[4]) return { head: "", toolArgs: [], error: `pnpm ${tokens[1]} requires 'exec <tool>' or an expanded workspace script` };
     return extractToolHead(tokens.slice(4), repoRoot);
   }
   if ((low0 === "pnpm" || low0 === "yarn") && (tokens[1] ?? "").toLowerCase() === "exec") {
@@ -330,6 +333,7 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
     if (!tok.startsWith("-")) {
       if (head === "hyperfine") { const nested = parseAndValidateCommandArgv(rung, tok, repoRoot); if (nested.error) return `hyperfine command '${tok}' rejected: ${nested.error}`; continue; }
       if (repoRoot && (tok.startsWith("/") || tok.includes("..")) && !isPathInsideRepo(tok, repoRoot)) return `positional path '${tok}' on '${head}' escapes repo root`;
+      if (repoRoot && isPathInsideRepo(tok, repoRoot)) { const rp = path.resolve(repoRoot, tok); if (fs.existsSync(rp)) extraAuditDirs.push(fs.statSync(rp).isFile() ? path.dirname(rp) : rp); }
       continue;
     }
     const eqIdx = tok.indexOf("="); const colonIdx = isDotnet ? tok.indexOf(":") : -1;
@@ -447,6 +451,10 @@ export function parseAndValidateCommandArgv(
     if ((head === "node bin/vstack.mjs" || head === "bun src/cli.ts") && repoRoot && !isOwnVeristackBin(repoRoot, head === "node bin/vstack.mjs" ? "bin/vstack.mjs" : "src/cli.ts")) {
       return { steps: [], error: `Rung ${rung}: local '${head}' is only allowed inside the veristack repository (binary realpath mismatch).` };
     }
+    const ownScriptMatch = /^(?:bun|node)\s+(scripts\/check-(?:max-lines|perf-budget)\.mjs)$/.exec(head);
+    if (ownScriptMatch?.[1] && repoRoot && !isOwnVeristackBin(repoRoot, ownScriptMatch[1])) {
+      return { steps: [], error: `Rung ${rung}: '${head}' is only allowed inside the veristack repository (use 'vstack big-o', 'k6', 'hyperfine', etc.).` };
+    }
     const argErr = validateArgsWithPositiveSchema(head, toolArgs, rung, repoRoot);
     if (argErr) return { steps: [], error: `Rung ${rung}: ${argErr}` };
     if (head === "vstack" || head === "node bin/vstack.mjs" || head === "bun src/cli.ts") {
@@ -454,15 +462,7 @@ export function parseAndValidateCommandArgv(
       if (!ALLOWED_VSTACK_BY_RUNG[rung].has(sub)) return { steps: [], error: `Rung ${rung}: disallowed vstack subcommand '${sub}' for ${rung}.` };
       if (VSTACK_REQUIRES_FAIL.has(sub) && !toolArgs.includes("--fail")) return { steps: [], error: `Rung ${rung}: vstack ${sub} must include --fail.` };
     }
-    if (head === "pytest" && rung === "R6" && !toolArgs.includes("--benchmark-only") && !toolArgs.includes("--benchmark-enable")) {
-      return { steps: [], error: "Rung R6: pytest must run with --benchmark-only or --benchmark-enable." };
-    }
-    if ((head === "bun scripts/check-perf-budget.mjs" || head === "node scripts/check-perf-budget.mjs") && repoRoot) {
-      const absScript = path.join(repoRoot, "scripts/check-perf-budget.mjs");
-      if (fs.existsSync(absScript) && !/\b(?:performance\.now|hrtime|fitEmpiricalBigO)\b/.test(fs.readFileSync(absScript, "utf8"))) {
-        return { steps: [], error: `Rung ${rung}: scripts/check-perf-budget.mjs lacks real timing measurement.` };
-      }
-    }
+    if (head === "pytest" && rung === "R6" && !toolArgs.includes("--benchmark-only") && !toolArgs.includes("--benchmark-enable")) return { steps: [], error: "Rung R6: pytest must run with --benchmark-only or --benchmark-enable." };
     if (rung === "R1" && /^(?:tsc|tsgo|mypy|pyright|basedpyright|cargo\s+(?:check|clippy)|dotnet\s+build|go\s+(?:vet|build))$/.test(head)) hasR1Typecheck = true;
   }
   if (rung === "R1" && !hasR1Typecheck) return { steps: [], error: `Rung R1 command '${command}' must run a real typechecker/compiler.` };

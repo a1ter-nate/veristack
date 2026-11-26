@@ -1,11 +1,10 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isTestFilePath } from "../discover.ts";
 import { maskCode } from "../test-lexical.ts";
 import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
-import { runGitClean } from "./config-audit.ts";
+import { runGitClean, runGitCleanBuffer } from "./config-audit.ts";
 import { parseRunnerTestCounts } from "./runner-metrics.ts";
 
 export interface TwoSidedOracleResult {
@@ -18,7 +17,7 @@ export interface TwoSidedOracleResult {
 }
 
 const ORACLE_CONFIG_SURFACE =
-  /(?:^|\/)(?:\.gitattributes|package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config(?:\.toml)?|\.config\/nextest\.toml|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|sitecustomize\.py|usercustomize\.py|conftest\.py|go\.mod|go\.work|babel\.config\.[cm]?[jt]s|vitest\.workspace\.[cm]?[jt]s|(?:vitest|vite|jest|playwright|cypress)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|phpunit\.xml(?:\.dist)?|\.rspec|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|[^/]+\.csproj|[^/]+\.runsettings|\.env\.test|\.verification\/rungs\.json|examples\/[^/]+\/manifest\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
+  /(?:^|\/)(?:\.gitattributes|package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|\.cargo\/config(?:\.toml)?|\.config\/nextest\.toml|build\.rs|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|sitecustomize\.py|usercustomize\.py|conftest\.py|go\.mod|go\.work|babel\.config\.[^/]+|\.babelrc(?:\.[^/]+)?|\.swcrc|vitest\.workspace\.[cm]?[jt]s|(?:vitest|vite|jest|playwright|cypress|ava)\.config\.[cm]?[jt]s|jest\.config\.json|\.mocharc\.[^/]+|phpunit\.xml(?:\.dist)?|\.rspec|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|global\.json|[^/]+\.csproj|[^/]+\.runsettings|\.env(?:\.[^/]+)?|\.verification\/rungs\.json|examples\/[^/]+\/manifest\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
 
 const TEST_DIR_SURFACE =
   /(?:^|\/)(?:tests|test|__tests__|spec|specs|testdata|fixtures|__fixtures__|golden|goldens|[^/]+\.(?:Tests|UnitTests|IntegrationTests|Specs))\//i;
@@ -89,7 +88,7 @@ function spliceBaseRustTestsIntoHead(headRaw: string, baseRaw: string): string |
 
 function loadBaseApprovedBehaviorChanges(repoRoot: string, baseRef: string): Set<string> {
   const approved = new Set<string>();
-  const baseShow = spawnSync("git", ["-C", repoRoot, "show", `${baseRef}:.verification/behavior-changes.json`], { encoding: "utf8" });
+  const baseShow = runGitClean(repoRoot, ["show", `${baseRef}:.verification/behavior-changes.json`]);
   if (baseShow.status !== 0) return approved;
   try {
     const parsed = JSON.parse(baseShow.stdout) as { changes?: Array<{ file?: string; reason?: string; approvedBy?: string }> };
@@ -180,7 +179,13 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   const parsedCmd = parseAndValidateCommandArgv("canary", testCmd, root);
   if (parsedCmd.error) return fail(-1, -1, `Rejected oracle --test-cmd: ${parsedCmd.error}`);
   const childEnv = scrubChildEnv();
-  const headRun = runArgvChain(parsedCmd.steps, root, childEnv, 120_000, parsedCmd.stepCwds);
+  const headHome = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oh-head-"));
+  let headRun: ReturnType<typeof runArgvChain>;
+  try {
+    headRun = runArgvChain(parsedCmd.steps, root, makeSandboxPythonEnv(childEnv, root, headHome), 120_000, parsedCmd.stepCwds);
+  } finally {
+    fs.rmSync(headHome, { recursive: true, force: true });
+  }
   const headExit = headRun.status;
   if (headExit !== 0) return fail(headExit, -1, `Head test suite fails (exit ${headExit}).`);
   const headCounts = parseRunnerTestCounts(`${headRun.stdout}\n${headRun.stderr}`, parsedCmd.steps);
@@ -238,7 +243,7 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oh-"));
   try {
     for (const rel of changedOracleFiles) {
-      const baseContent = spawnSync("git", ["-C", root, "show", `${baseRef}:${rel}`], { maxBuffer: 32 * 1024 * 1024 });
+      const baseContent = runGitCleanBuffer(root, ["show", `${baseRef}:${rel}`]);
       const dest = path.resolve(sandboxDir, rel);
       if (baseContent.status === 0) {
         safeWriteInSandbox(sandboxDir, rel, baseContent.stdout);

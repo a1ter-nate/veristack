@@ -10,25 +10,9 @@ import { type CheckFileTier, scanSingleFile } from "./check-file.ts";
 
 export type HookEventKind = "post-edit" | "pre-edit" | "stop";
 export type HookHarness = "claude" | "codex" | "cursor" | "copilot" | "grok";
-
-export interface HookProjectConfig {
-  enabled: boolean;
-  tier: CheckFileTier;
-  auditLog?: string;
-  harnesses: HookHarness[];
-}
-
-interface SessionState {
-  touchedFiles: string[];
-  reportedKeys: string[];
-}
-
-export interface HookExecutionResult {
-  exitCode: number;
-  stdout: string;
-  stderr?: string;
-  findings: Finding[];
-}
+export interface HookProjectConfig { enabled: boolean; tier: CheckFileTier; auditLog?: string; harnesses: HookHarness[]; }
+interface SessionState { touchedFiles: string[]; reportedKeys: string[]; }
+export interface HookExecutionResult { exitCode: number; stdout: string; stderr?: string; findings: Finding[]; }
 
 const PROTECTED_CONTROL_PLANE =
   /(?:^|\/)(?:\.?vstack\.json|\.vstackignore|\.gitignore|\.gitattributes|\.npmrc|\.mcp\.json|Makefile|bun\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.toml|Cargo\.lock|bunfig\.toml|conftest\.py|sitecustomize\.py|usercustomize\.py|tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc(?:\.jsonc?)?|oxlint\.config\.ts|lefthook(?:-local)?\.ya?ml|CODEOWNERS|package\.json|pyproject\.toml|pytest\.ini|pytest\.toml|setup\.cfg|tox\.ini|mypy\.ini|pyrightconfig\.json|biome\.jsonc?|\.?ruff\.toml|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.(?:props|targets)|Directory\.Packages\.props|control-plan\.json|escapes\.json|invariants\.json|chokepoints\.json|(?:vitest|vite|jest|playwright|cypress|eslint|stryker)\.config\.[cm]?[jt]s|jest\.config\.json|\.eslintrc(?:\.[^/]+)?|stryker-config\.json|mutants\.toml)$|(?:^|\/)(?:\.verification\/|\.git\/|\.husky\/|\.cargo\/|node_modules\/|bin\/vstack\.mjs$|dist\/|scripts\/|src\/hooks\/|templates\/formal\/|examples\/[^/]+\/manifest\.json$|\.claude\/|\.cursor\/|\.codex\/|\.github\/|\.grok\/|docs\/CODEOWNERS$)/i;
@@ -39,6 +23,7 @@ function getSelfImportClosure(repoRoot: string): ReadonlySet<string> {
   const cached = importClosureCache.get(repoRoot);
   if (cached) return cached;
   const out = new Set<string>();
+  const seen = new Set<string>();
   if (!fs.existsSync(path.join(repoRoot, "bin", "vstack.mjs")) || !fs.existsSync(path.join(repoRoot, "src", "cli.ts"))) {
     importClosureCache.set(repoRoot, out);
     return out;
@@ -46,15 +31,17 @@ function getSelfImportClosure(repoRoot: string): ReadonlySet<string> {
   const queue = ["src/cli.ts", "src/hooks/index.ts"];
   while (queue.length > 0) {
     const rel = queue.pop() ?? "";
-    if (!rel || out.has(rel)) continue;
+    const low = rel.toLowerCase();
+    if (!rel || seen.has(low)) continue;
     const abs = path.join(repoRoot, rel);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
-    out.add(rel);
+    seen.add(low);
+    out.add(low);
     const content = fs.readFileSync(abs, "utf8");
     for (const m of content.matchAll(/(?:from|import)\s+["'](\.[^"']+)["']/g)) {
       const spec = m[1] ?? "";
       const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(rel), spec));
-      if (!out.has(resolved)) queue.push(resolved);
+      if (!seen.has(resolved.toLowerCase())) queue.push(resolved);
     }
   }
   importClosureCache.set(repoRoot, out);
@@ -63,7 +50,7 @@ function getSelfImportClosure(repoRoot: string): ReadonlySet<string> {
 
 function isProtectedPath(repoRoot: string, rel: string): boolean {
   const norm = rel.replace(/\\/g, "/");
-  return PROTECTED_CONTROL_PLANE.test(norm) || getSelfImportClosure(repoRoot).has(norm);
+  return PROTECTED_CONTROL_PLANE.test(norm) || getSelfImportClosure(repoRoot).has(norm.toLowerCase());
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -71,9 +58,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 function safeRealpath(p: string): string {
-  try { return fs.realpathSync(p); } catch {
+  const rp = fs.realpathSync.native ?? fs.realpathSync;
+  try { return rp(p); } catch {
     const parent = path.dirname(p);
-    if (parent !== p) { try { return path.join(fs.realpathSync(parent), path.basename(p)); } catch { return path.resolve(p); } }
+    if (parent !== p) { try { return path.join(rp(parent), path.basename(p)); } catch { return path.resolve(p); } }
     return path.resolve(p);
   }
 }
@@ -275,21 +263,49 @@ function formatPreEditDeny(harness: HookHarness, count: number, msg: string): { 
 }
 
 function checkBashCommandTamper(cmd: string, repoRoot: string, baseDir: string): Finding | null {
-  if (/\bgit\s+(?:remote\s+(?:remove|rm|set-url)|update-ref|config\s+(?:--local\s+)?core\.attributesFile|update-index\s+--assume-unchanged)\b/i.test(cmd)) {
-    return { id: "HOOK:bash-git-tamper", rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: ".git", line: 1, message: "Direct agent git control-plane tampering command is blocked.", fix: "Do not tamper with git remotes, refs, attributes, or index flags." };
+  if (/\bgit\s+(?:remote\s+(?:remove|rm|rename|set-url)|update-ref|checkout\b|restore\b|reset\b|config\s+(?:--local\s+)?(?:core\.(?:attributesFile|hooksPath)|diff\.noprefix|remote\.origin\.url)|update-index\s+--(?:assume-unchanged|skip-worktree))\b/i.test(cmd)) {
+    return { id: "HOOK:bash-git-tamper", rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: ".git", line: 1, message: "Direct agent git control-plane tampering command is blocked.", fix: "Do not tamper with git remotes, refs, config, index flags, or checkout/restore protected files." };
+  }
+  const cdDirs: string[] = [baseDir];
+  for (const cm of cmd.matchAll(/\bcd\s+["']?([^\s"'|;&]+)["']?/g)) {
+    if (cm[1]) cdDirs.push(path.isAbsolute(cm[1]) ? cm[1] : path.resolve(baseDir, cm[1]));
   }
   const targets: string[] = [];
-  for (const m of cmd.matchAll(/(?:>>?|tee(?:\s+-a)?|rm(?:\s+-[rf]+)?|mv|cp|sed\s+-i(?:\s+['"][^'"]*['"])?)\s+["']?([^\s"'|;&]+)["']?/g)) {
+  for (const m of cmd.matchAll(/(?:>>?\s*|tee(?:\s+-a)?\s+|rm(?:\s+-[rf]+)?\s+|mv\s+|cp\s+|ln(?:\s+-[sf]+)?\s+|install\s+|truncate\s+|dd\s+[^\n|;&]*?of=|sed\s+-i[^\n|;&]*?\s+)["']?([^\s"'|;&]+)["']?/g)) {
     if (m[1]) targets.push(m[1]);
   }
+  if (/\b(?:sed\s+-i|perl\s+-[a-z]*i|node\s+-e|bun\s+-e|python3?\s+-c|dd\s+|truncate\s+|install\s+|ln\s+|cp\s+|mv\s+|rm\s+|tee\s+|>>?)/i.test(cmd)) {
+    for (const m of cmd.matchAll(/["']?([A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+|\.verification\/[^\s"'|;&]+|\.claude\/[^\s"'|;&]+|\.codex\/[^\s"'|;&]+|\.cursor\/[^\s"'|;&]+|\.github\/[^\s"'|;&]+|\.gitattributes|\.gitignore|\.vstackignore|\.vstack\.json|CODEOWNERS)["']?/g)) {
+      if (m[1]) targets.push(m[1]);
+    }
+  }
   for (const t of targets) {
-    const abs = safeRealpath(path.isAbsolute(t) ? t : path.resolve(baseDir, t));
-    const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
-    if (isProtectedPath(repoRoot, rel)) {
-      return { id: `HOOK:bash-protected:${rel}`, rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1, message: `Shell command mutates protected control-plane file '${rel}'.`, fix: "Do not modify verification configs, manifests, hooks, or gate code via shell." };
+    if (t.startsWith("-")) continue;
+    for (const dir of cdDirs) {
+      const abs = safeRealpath(path.isAbsolute(t) ? t : path.resolve(dir, t));
+      const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
+      if (isProtectedPath(repoRoot, rel)) {
+        return { id: `HOOK:bash-protected:${rel}`, rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1, message: `Shell command mutates protected control-plane file '${rel}'.`, fix: "Do not modify verification configs, manifests, hooks, or gate code via shell." };
+      }
     }
   }
   return null;
+}
+
+function findDirtyControlPlaneFindings(repoRoot: string): Finding[] {
+  const hits: Finding[] = [];
+  for (const rel of listGitDirtyFiles(repoRoot)) {
+    if (isProtectedPath(repoRoot, rel)) {
+      hits.push({ id: `HOOK:dirty-cp:${rel}`, rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1, message: `Protected control-plane file '${rel}' was modified in the working tree.`, fix: `Revert changes to '${rel}' (git checkout -- ${rel}) instead of mutating verification controls.` });
+    }
+  }
+  for (const key of ["core.hooksPath", "core.attributesFile", "diff.noprefix"]) {
+    const cfg = runGitClean(repoRoot, ["config", "--local", "--get", key]);
+    if (cfg.status === 0 && cfg.stdout.trim() && !(key === "diff.noprefix" && cfg.stdout.trim() === "false")) {
+      hits.push({ id: `HOOK:git-cfg:${key}`, rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: ".git/config", line: 1, message: `Local git config '${key}=${cfg.stdout.trim()}' tampers with verification hooks or diffs.`, fix: `Run 'git config --local --unset ${key}'.` });
+    }
+  }
+  return hits;
 }
 
 function listGitDirtyFiles(repoRoot: string): string[] {
@@ -381,17 +397,7 @@ export function executeHookEvent(
       if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) continue;
       const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
       if (isProtectedPath(repoRoot, rel)) {
-        findings.push({
-          id: `HOOK:protected:${rel}`,
-          rule: "hook-protected-control-plane",
-          category: "cheat",
-          rung: "R0",
-          severity: "error",
-          file: rel,
-          line: 1,
-          message: `Direct agent edit to verification control-plane/config file '${rel}' is blocked by pre-edit policy.`,
-          fix: "Fix the underlying code defect instead of weakening verification configs, manifests, receipts, or hooks.",
-        });
+        findings.push({ id: `HOOK:protected:${rel}`, rule: "hook-protected-control-plane", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1, message: `Direct agent edit to verification control-plane/config file '${rel}' is blocked by pre-edit policy.`, fix: "Fix the underlying code defect instead of weakening verification configs, manifests, receipts, or hooks." });
         continue;
       }
       if (hookDisabledEnv || !config.enabled) continue;
@@ -421,18 +427,19 @@ export function executeHookEvent(
 
   if (event === "post-edit") {
     const edited = extractEditedPaths(payload);
-    if (edited.length === 0) return { exitCode: 0, stdout: "", findings: [] };
-    const state = readSessionState(statePath);
-    const touchedSet = new Set(state.touchedFiles);
-    const findings: Finding[] = [];
-    for (const filePath of edited) {
-      const abs = safeRealpath(path.isAbsolute(filePath) ? filePath : path.resolve(baseDir, filePath));
-      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
-      const res = scanSingleFile(abs, { repoRoot, tier, strict: true });
-      touchedSet.add(res.file);
-      findings.push(...res.findings);
+    const findings: Finding[] = [...findDirtyControlPlaneFindings(repoRoot)];
+    if (edited.length > 0) {
+      const state = readSessionState(statePath);
+      const touchedSet = new Set(state.touchedFiles);
+      for (const filePath of edited) {
+        const abs = safeRealpath(path.isAbsolute(filePath) ? filePath : path.resolve(baseDir, filePath));
+        if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
+        const res = scanSingleFile(abs, { repoRoot, tier, strict: true });
+        touchedSet.add(res.file);
+        findings.push(...res.findings);
+      }
+      writeSessionState(statePath, { touchedFiles: [...touchedSet], reportedKeys: state.reportedKeys });
     }
-    writeSessionState(statePath, { touchedFiles: [...touchedSet], reportedKeys: state.reportedKeys });
     appendAuditLog(repoRoot, config.auditLog, { event, harness, files: edited, findings: findings.length });
     if (findings.length === 0 || harness === "grok") return { exitCode: 0, stdout: "", findings };
     const msg = formatReminder(`Veristack detected ${findings.length} issue(s) on your edit — fix before continuing:`, findings);
@@ -447,7 +454,7 @@ export function executeHookEvent(
 
   const state = readSessionState(statePath);
   const candidateFiles = new Set<string>([...state.touchedFiles, ...listGitDirtyFiles(repoRoot)]);
-  const findings: Finding[] = [];
+  const findings: Finding[] = [...findDirtyControlPlaneFindings(repoRoot)];
   for (const rel of candidateFiles) {
     const abs = path.resolve(repoRoot, rel);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;

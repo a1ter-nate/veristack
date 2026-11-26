@@ -13,7 +13,7 @@ const AUTHZ_RAW_PATH_MATCH =
   /(?:r\.URL\.(?:RawPath|EscapedPath\s*\(\s*\))|r\.RequestURI|req\.originalUrl)/g;
 
 const SQL_SELECT_LIMIT_NO_ORDER =
-  /\bSELECT\b[\s\S]{0,420}?\bFROM\b[\s\S]{0,360}?\b(?:LIMIT\s+[1-9]\d*|OFFSET\s+[1-9]\d*|FETCH\s+(?:FIRST|NEXT)\s+[1-9]\d*)/gi;
+  /\bSELECT\b[^;]{0,420}?\bFROM\b[^;]{0,360}?\b(?:LIMIT\s+[1-9]\d*|OFFSET\s+[1-9]\d*|FETCH\s+(?:FIRST|NEXT)\s+[1-9]\d*)/gi;
 const SQL_EQ_NULL = /\b(?:WHERE|AND|OR|HAVING|ON)\b[^;\n]{0,160}?(?:=|!=|<>)\s*NULL\b/gi;
 const SQL_NOT_IN_SUBQUERY = /\bNOT\s+IN\s*\(\s*SELECT\s+[A-Za-z_][A-Za-z0-9_.]*\b[^)]{0,220}\)/gi;
 
@@ -34,7 +34,7 @@ const CS_ATOMIC_TOCTOU =
 
 const PY_DEL_DEF = /^([ \t]*)def\s+__del__\s*\([^)]*\)(?:\s*->\s*[^:\n]+)?\s*:/gm;
 const PY_DST_REPLACE_TZ =
-  /\.replace\s*\(\s*tzinfo\s*=\s*(?!None\b|timezone\.utc\b|datetime\.timezone\.utc\b|pytz\.UTC\b|ZoneInfo\s*\(\s*["']UTC["']\s*\))[^)\n]+\)/g;
+  /\.replace\s*\(\s*tzinfo\s*=\s*(?!None\b|UTC\b|datetime\.UTC\b|timezone\.utc\b|datetime\.timezone\.utc\b|pytz\.UTC\b|ZoneInfo\s*\(\s*["']UTC["']\s*\))[^)\n]+\)/g;
 const PY_COND_IF_WAIT = /^\s*if\b[^:\n]*:\s*\r?\n(?:[ \t]+[^\n]*\r?\n){0,3}[ \t]+[A-Za-z_][A-Za-z0-9_.]*\.wait\s*\(/gm;
 
 const TS_ANGULAR_DECORATOR = /@(?:Component|Directive|Injectable)\s*\(/;
@@ -93,7 +93,7 @@ function sliceUntilScopeClose(code: string, fromIdx: number, maxChars: number): 
 
 function scanSqlTitansA(file: ScannedFile, findings: Finding[]): void {
   const raw = file.content;
-  const masked = raw.replace(/--[^\n]*/g, (m) => " ".repeat(m.length)).replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+  const masked = maskCode(raw, "sql", true);
 
   for (const m of masked.matchAll(SQL_SELECT_LIMIT_NO_ORDER)) {
     const idx = m.index ?? 0;

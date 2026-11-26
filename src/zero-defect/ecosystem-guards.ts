@@ -5,7 +5,7 @@ import { lineOf, maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const TS_ANY_ANNOTATION = /(?:[,({]\s*[A-Za-z_$][A-Za-z0-9_$]*\??\s*:\s*any\b|\)\s*:\s*any\b|<\s*any\s*>)/g;
-const UNBOUNDED_FETCH = /\bfetch\s*\(\s*[^,)\n]+\s*\)/g;
+const UNBOUNDED_FETCH = /(?<![.\w$])fetch\s*\(\s*[^,)\n]+\s*\)/g;
 const DYNAMIC_IMPORT_VAR = /\bimport\s*\(\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\)/g;
 const ARGV_EMPTY_ONLY = /\bprocess\.argv\s*\[\s*\d+\s*\]\s*!==?\s*(?:""|'')/g;
 const EVALUATOR_PASS_LITERAL = /\bstatus\s*:\s*["']pass["']/g;

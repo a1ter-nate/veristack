@@ -60,14 +60,24 @@ export function hasPathologicalNesting(source: string, language = "typescript"):
 export function parseTsAst(file: ScannedFile): AstNode | null {
   if (file.language !== "typescript" && file.language !== "javascript") return null;
   if (hasPathologicalNesting(file.content, file.language)) return null;
-  const virtualName = /\.(?:vue|svelte|astro)$/i.test(file.rel)
-    ? `${file.rel}.${file.language === "typescript" ? "ts" : "js"}`
-    : file.rel;
+  const sfcExt = file.rawContent && /\blang\s*=\s*["']tsx["']/i.test(file.rawContent)
+    ? "tsx"
+    : file.rawContent && /\blang\s*=\s*["']jsx["']/i.test(file.rawContent)
+      ? "jsx"
+      : file.language === "typescript"
+        ? "ts"
+        : "js";
+  const virtualName = /\.(?:vue|svelte|astro)$/i.test(file.rel) ? `${file.rel}.${sfcExt}` : file.rel;
   try {
     const res = parseSync(virtualName, file.content);
     if (res.errors.length === 0 && isAstNode(res.program)) return res.program;
+    if (/\.js$/i.test(virtualName) && /<[A-Za-z]/.test(file.content)) {
+      const jsxRes = parseSync(`${virtualName}x`, file.content);
+      if (jsxRes.errors.length === 0 && isAstNode(jsxRes.program)) return jsxRes.program;
+    }
     if (file.language === "javascript" && res.errors.some((e) => /return/i.test(e.message))) {
-      const wrapped = parseSync(virtualName, `(function(){\n${file.content}\n})();`);
+      const body = file.content.startsWith("#!") ? file.content.replace(/^#![^\n]*\n?/, "") : file.content;
+      const wrapped = parseSync(virtualName, `(function(){\n${body}\n})();`);
       if (wrapped.errors.length === 0 && isAstNode(wrapped.program)) return wrapped.program;
     }
     return null;
@@ -105,11 +115,19 @@ function push(
 const TAINT_ROOTS = /^(?:req|request)\.(?:body|query|params|headers)(?:\.|$)|^process\.argv$|^window\.location(?:\.|$)/;
 const SQL_VERB = /^\s*(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER)\b/i;
 
+const SANITIZER_CALL = /^(?:Number|parseInt|parseFloat|encodeURIComponent|encodeURI|Boolean|String\.prototype|Math\.\w+)$/;
+
+function isSanitizedExpr(node: AstNode | null | undefined): boolean {
+  if (!node || node.type !== "CallExpression" || !isAstNode(node.callee)) return false;
+  return SANITIZER_CALL.test(getMemberChain(node.callee));
+}
+
 function nodeContainsTaint(node: AstNode | null | undefined, tainted: Set<string>): boolean {
   if (!node) return false;
   let hit = false;
   walkAst(node, (cur) => {
-    if (hit) return;
+    if (hit) return false;
+    if (isSanitizedExpr(cur)) return false;
     if (cur.type === "Identifier" && typeof cur.name === "string" && tainted.has(cur.name)) {
       hit = true;
       return;
@@ -165,6 +183,15 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
   walkAst(body, (cur, parent) => {
     if (cur !== body && (cur.type === "FunctionDeclaration" || cur.type === "FunctionExpression" || cur.type === "ArrowFunctionExpression")) {
       return false;
+    }
+    if (cur.type === "IfStatement" && isAstNode(cur.test) && isAstNode(cur.consequent)) {
+      const testSlice = file.content.slice(cur.test.start ?? 0, cur.test.end ?? 0);
+      const consSlice = file.content.slice(cur.consequent.start ?? 0, cur.consequent.end ?? 0);
+      if (/\b(?:return|throw)\b/.test(consSlice)) {
+        for (const m of testSlice.matchAll(/\.\s*(?:has|includes)\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)/g)) {
+          if (m[1]) tainted.delete(m[1]);
+        }
+      }
     }
     if (cur.type === "VariableDeclarator" && isAstNode(cur.id) && isAstNode(cur.init)) {
       if (cur.id.type === "Identifier" && typeof cur.id.name === "string") {
@@ -284,7 +311,8 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
             isAstNode(stmt.argument.callee)
           ) {
             const callName = getMemberChain(stmt.argument.callee);
-            if (!callName.endsWith("Sync") && /^(?:fetch|load|read|write|save|send|query|commit|create|update|delete)|(?:Async|Promise|Fetch|Query)$/i.test(callName)) {
+            const isSyncBuilder = /^(?:create|build|make)(?:Error|Response|Result|Header|Payload|Dto|View|Message|Event|Option|Config)/i.test(callName);
+            if (!isSyncBuilder && !callName.endsWith("Sync") && (/^(?:fetch|load|read|write|save|send|query|commit)|(?:Async|Promise|Fetch|Query)$/i.test(callName) || /\.(?:create|update|delete|find|insert|save|load|send|query|execute|fetch)$/.test(callName))) {
               push(
                 findings,
                 file,
@@ -392,105 +420,39 @@ function analyzeFunctionTaintAndEffects(fnNode: AstNode, file: ScannedFile, find
 }
 
 export function analyzeTsAstGuards(file: ScannedFile, program?: AstNode | null): Finding[] {
-  if (file.language !== "typescript" && file.language !== "javascript") return [];
-  if (file.isStub) return [];
+  if ((file.language !== "typescript" && file.language !== "javascript") || file.isStub) return [];
   if (program === undefined && hasPathologicalNesting(file.content, file.language)) {
-    return [{
-      id: `AST:syntax-bomb:${file.rel}:1`,
-      rule: "syntax-nesting-bomb",
-      category: "cheat",
-      rung: "R0",
-      severity: "error",
-      file: file.rel,
-      line: 1,
-      message: `File '${file.rel}' exceeds safe AST nesting/size bounds (>128 depth or >2 MiB) — refusing to skip AST security analysis.`,
-      fix: "Refactor deeply nested expressions or oversized generated payloads so AST verification can run.",
-    }];
+    return [{ id: `AST:syntax-bomb:${file.rel}:1`, rule: "syntax-nesting-bomb", category: "cheat", rung: "R0", severity: "error", file: file.rel, line: 1, message: `File '${file.rel}' exceeds safe AST nesting/size bounds (>128 depth or >2 MiB) — refusing to skip AST security analysis.`, fix: "Refactor deeply nested expressions or oversized generated payloads so AST verification can run." }];
   }
   const ast = program ?? parseTsAst(file);
   if (!ast) {
-    return [{
-      id: `AST:parse-error:${file.rel}:1`,
-      rule: "ts-syntax-parse-error",
-      category: "structure",
-      rung: "R0",
-      severity: "error",
-      file: file.rel,
-      line: 1,
-      message: `File '${file.rel}' failed TS/JS AST parsing — refusing to silently drop AST security/invariant rules.`,
-      fix: "Fix the syntax error so OXC AST verification can analyze this file.",
-    }];
+    return [{ id: `AST:parse-error:${file.rel}:1`, rule: "ts-syntax-parse-error", category: "structure", rung: "R0", severity: "error", file: file.rel, line: 1, message: `File '${file.rel}' failed TS/JS AST parsing — refusing to silently drop AST security/invariant rules.`, fix: "Fix the syntax error so OXC AST verification can analyze this file." }];
   }
   const findings: Finding[] = [];
   let nonNullCount = 0;
 
   walkAst(ast, (node) => {
-    if (file.language === "typescript" && node.type === "TSNonNullExpression") {
-      if (++nonNullCount <= 5) {
-        push(
-          findings,
-          file,
-          node.start ?? 0,
-          "no-non-null-assertion",
-          "R0",
-          "warn",
-          "Postfix non-null assertion ('!') silences null/undefined checks at compile time and hides contract bugs.",
-          "Narrow explicitly with an invariant guard or handle the missing value.",
-        );
-      }
+    if (file.language === "typescript" && node.type === "TSNonNullExpression" && ++nonNullCount <= 5) {
+      push(findings, file, node.start ?? 0, "no-non-null-assertion", "R0", "warn", "Postfix non-null assertion ('!') silences null/undefined checks at compile time and hides contract bugs.", "Narrow explicitly with an invariant guard or handle the missing value.");
     }
-
     if (node.type === "CallExpression" && isAstNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "eval") {
-      push(
-        findings,
-        file,
-        node.start ?? 0,
-        "ast-unsafe-eval-or-function",
-        "R0",
-        "error",
-        "Dynamic eval() execution enables code injection (CWE-94/95) and defeats static analysis.",
-        "Replace eval() with a static lookup table, JSON.parse, or a sandboxed expression parser.",
-      );
+      push(findings, file, node.start ?? 0, "ast-unsafe-eval-or-function", "R0", "error", "Dynamic eval() execution enables code injection (CWE-94/95) and defeats static analysis.", "Replace eval() with a static lookup table, JSON.parse, or a sandboxed expression parser.");
     }
-
     if (node.type === "NewExpression" && isAstNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "Function") {
-      push(
-        findings,
-        file,
-        node.start ?? 0,
-        "ast-unsafe-eval-or-function",
-        "R0",
-        "error",
-        "Dynamic new Function() code generation enables code injection (CWE-94/95).",
-        "Replace new Function() with declarative dispatch or a safe parser.",
-      );
+      push(findings, file, node.start ?? 0, "ast-unsafe-eval-or-function", "R0", "error", "Dynamic new Function() code generation enables code injection (CWE-94/95).", "Replace new Function() with declarative dispatch or a safe parser.");
     }
-
     if (node.type === "SwitchStatement" && Array.isArray(node.cases)) {
       const seen = new Set<string>();
       for (const c of node.cases) {
         if (!isAstNode(c) || !isAstNode(c.test) || c.test.type !== "Literal") continue;
         const key = `${typeof c.test.value}:${String(c.test.value)}`;
-        if (seen.has(key)) {
-          push(
-            findings,
-            file,
-            c.start ?? 0,
-            "ast-duplicate-switch-case",
-            "R0",
-            "error",
-            `Duplicate switch case literal (${JSON.stringify(c.test.value)}) makes the later branch dead code.`,
-            "Remove or merge the duplicate switch case.",
-          );
-        }
+        if (seen.has(key)) push(findings, file, c.start ?? 0, "ast-duplicate-switch-case", "R0", "error", `Duplicate switch case literal (${JSON.stringify(c.test.value)}) makes the later branch dead code.`, "Remove or merge the duplicate switch case.");
         seen.add(key);
       }
     }
-
     if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
       analyzeFunctionTaintAndEffects(node, file, findings);
     }
   });
-
   return findings;
 }

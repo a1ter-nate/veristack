@@ -56,67 +56,8 @@ function extractBlockAfter(text: string, startIndex: number): string {
   return text.slice(open, Math.min(text.length, open + 1500));
 }
 
-function stripCommentsAndRegexes(masked: string): string {
-  const out = [...masked];
-  let lastNonWs = "";
-  for (let i = 0; i < out.length; i++) {
-    const ch = out[i] ?? "";
-    const next = out[i + 1] ?? "";
-    if (ch === "/" && next === "/") {
-      while (i < out.length && out[i] !== "\n") {
-        out[i] = " ";
-        i += 1;
-      }
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      out[i] = " ";
-      out[i + 1] = " ";
-      i += 2;
-      while (i < out.length) {
-        if (out[i] === "*" && out[i + 1] === "/") {
-          out[i] = " ";
-          out[i + 1] = " ";
-          i += 1;
-          break;
-        }
-        if (out[i] !== "\n") out[i] = " ";
-        i += 1;
-      }
-      continue;
-    }
-    if (ch === "/" && (lastNonWs === "" || "=(,:!&|?;{[}\n".includes(lastNonWs))) {
-      let inClass = false;
-      let escaped = false;
-      let end = -1;
-      for (let j = i + 1; j < out.length; j++) {
-        const c = out[j] ?? "";
-        if (c === "\n" || c === "\r") break;
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (c === "\\") {
-          escaped = true;
-          continue;
-        }
-        if (c === "[") inClass = true;
-        else if (c === "]") inClass = false;
-        else if (c === "/" && !inClass) {
-          end = j;
-          break;
-        }
-      }
-      if (end > i) {
-        for (let k = i; k <= end; k++) out[k] = " ";
-        i = end;
-        lastNonWs = ")";
-        continue;
-      }
-    }
-    if (ch.trim()) lastNonWs = ch;
-  }
-  return out.join("");
+function stripCommentsAndRegexes(raw: string, language?: string): string {
+  return maskCode(raw, language);
 }
 
 function extractFunctionBody(text: string, startIndex: number): string {

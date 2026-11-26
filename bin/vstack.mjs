@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -6,12 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const distCli = path.join(rootDir, "dist", "cli.mjs");
 const srcCli = path.join(rootDir, "src", "cli.ts");
-const entry = fs.existsSync(distCli) ? distCli : srcCli;
 
-try {
-  await import(pathToFileURL(entry).href);
-} catch (err) {
-  const msg = err instanceof Error ? err.message : String(err);
+function failClosedStartup(msg) {
   if (process.argv[2] === "hook") {
     const sub = process.argv[3];
     const hIdx = process.argv.indexOf("--harness");
@@ -31,4 +28,18 @@ try {
   }
   console.error(msg);
   process.exit(1);
+}
+
+if (fs.existsSync(srcCli)) {
+  const res = spawnSync("bun", [srcCli, ...process.argv.slice(2)], { stdio: "inherit" });
+  if (res.error) {
+    failClosedStartup(`tracked src/cli.ts requires bun (${res.error.message}); refusing unverified dist/cli.mjs`);
+  }
+  process.exit(res.status ?? 1);
+}
+
+try {
+  await import(pathToFileURL(distCli).href);
+} catch (err) {
+  failClosedStartup(err instanceof Error ? err.message : String(err));
 }

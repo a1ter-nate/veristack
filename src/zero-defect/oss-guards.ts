@@ -22,7 +22,6 @@ const FLOOR_CEILING_INVERSION =
   /\bMath\.(?:min|Min)\s*\([^,\n]+,\s*[A-Za-z0-9_$.]*(?:min|Min|floor|Floor)[A-Za-z0-9_]*\s*\)|\bMath\.(?:max|Max)\s*\([^,\n]+,\s*[A-Za-z0-9_$.]*(?:max|Max|cap|Cap|ceiling|Ceiling)[A-Za-z0-9_]*\s*\)/g;
 
 const PY_EAGER_ASYNCIO = /\basyncio\.(?:Lock|Event|Semaphore|BoundedSemaphore|Condition|Queue)\s*\(/g;
-const PY_OPEN_CALL = /\bopen\s*\(([^)\n]+)\)/g;
 const PY_ORM_DYNAMIC_KWARG = /\.\s*(?:annotate|aggregate|alias|extra)\s*\(\s*\*\*[A-Za-z_][A-Za-z0-9_.]*/g;
 const PY_MKSTEMP_CALL = /\b(?:tempfile\.)?mkstemp\s*\(/g;
 const PY_EXCEPT_EXCEPTION = /\bexcept\s+Exception(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*:/g;
@@ -43,15 +42,15 @@ function isSymmetricBoundMath(callText: string): boolean {
   const comma = callText.indexOf(",", open + 1);
   if (open < 0 || comma < 0) return false;
   const firstArg = callText.slice(open + 1, comma).trim();
+  const secondArg = callText.slice(comma + 1, callText.lastIndexOf(")")).trim();
   if (/^-?\d+(?:\.\d+)?$/.test(firstArg)) return true;
   const isMin = /\bMath\.(?:min|Min)\b/.test(callText.slice(0, open));
-  return isMin
-    ? /(?:min|Min|floor|Floor)/.test(firstArg)
-    : /(?:max|Max|cap|Cap|ceiling|Ceiling)/.test(firstArg);
+  if (isMin) return /(?:min|Min|floor|Floor)/.test(firstArg);
+  return /(?:max|Max|cap|Cap|ceiling|Ceiling)/.test(firstArg) || (/(?:max(?:Width|Height|Size|Len|Length|Depth|Mutants))/i.test(secondArg) && !/(?:req|requested|val|value|input|count|limit)/i.test(firstArg));
 }
 const CS_UNDISPOSED_NEW =
   /^[ \t]*(?!using\b|await\s+using\b|return\b)(?:var|[A-Za-z0-9_.<>]+)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*new\s+(?:SqlConnection|NpgsqlConnection|FileStream|StreamReader|StreamWriter|DbCommand|SqlCommand)\s*\(/gm;
-const GO_HTTP_CALL = /\b(?:http\.(?:Get|Post|PostForm|Head)|[A-Za-z_][A-Za-z0-9_.]*\.Do)\s*\(/g;
+const GO_HTTP_CALL = /\b(?:http\.(?:Get|Post|PostForm|Head)|(?:http\.DefaultClient|[A-Za-z_][A-Za-z0-9_.]*(?:[Cc]lient|hc|http\w*))\.Do)\s*\(/g;
 
 function push(
   findings: Finding[],
@@ -79,15 +78,45 @@ function extractBlock(text: string, braceIdx: number): string {
   return text.slice(braceIdx, Math.min(text.length, braceIdx + 1500));
 }
 
+function findEnclosingPythonDef(lines: readonly string[], lineIdx: number): { isAsync: boolean } | null {
+  const curLine = lines[lineIdx] ?? "";
+  const curIndent = (curLine.match(/^[ \t]*/) ?? [""])[0].length;
+  for (let i = lineIdx - 1; i >= 0; i--) {
+    const l = lines[i] ?? "";
+    const trimmed = l.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const indent = (l.match(/^[ \t]*/) ?? [""])[0].length;
+    if (indent < curIndent) {
+      const dm = /^(async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/.exec(trimmed);
+      if (dm) return { isAsync: Boolean(dm[1]) };
+      if (/^class\s+/.test(trimmed)) return null;
+    }
+  }
+  return null;
+}
+
+function extractBalancedParenArgs(text: string, openIdx: number): string | null {
+  if (text[openIdx] !== "(") return null;
+  let depth = 0; let q = "";
+  for (let i = openIdx; i < text.length && i < openIdx + 400; i++) {
+    const ch = text[i] ?? "";
+    if (q) { if (ch === "\\") { i += 1; continue; } if (ch === q) q = ""; continue; }
+    if (ch === '"' || ch === "'") { q = ch; continue; }
+    if (ch === "(") depth += 1;
+    else if (ch === ")" && --depth === 0) return text.slice(openIdx + 1, i);
+  }
+  return null;
+}
+
 function scanPythonOss(file: ScannedFile, raw: string, masked: string, findings: Finding[]): void {
   const lines = raw.split(/\r?\n/);
   for (const m of masked.matchAll(PY_EAGER_ASYNCIO)) {
     const idx = m.index ?? 0;
-    const before = raw.slice(Math.max(0, idx - 400), idx);
-    const lastDef = [...before.matchAll(/^[ \t]*(async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm)].pop();
-    if (!lastDef || !lastDef[1]) {
+    const lineNo = lineOf(raw, idx);
+    const enc = findEnclosingPythonDef(lines, lineNo - 1);
+    if (!enc || !enc.isAsync) {
       push(
-        findings, file.rel, lineOf(raw, idx), "py-no-eager-asyncio-primitive-init", "R1", "error",
+        findings, file.rel, lineNo, "py-no-eager-asyncio-primitive-init", "R1", "error",
         `Eager ${m[0].trim()}) outside an async def binds to the wrong or missing event loop.`,
         "Lazily instantiate asyncio primitives inside an async def or pass the active loop explicitly.",
       );
@@ -97,10 +126,9 @@ function scanPythonOss(file: ScannedFile, raw: string, masked: string, findings:
   for (const m of masked.matchAll(/\bopen\s*\(/g)) {
     const idx = m.index ?? 0;
     const line = lineOf(raw, idx);
-    const openMatch = PY_OPEN_CALL.exec(raw.slice(idx, idx + 140));
-    PY_OPEN_CALL.lastIndex = 0;
-    if (!openMatch) continue;
-    const args = openMatch[1] ?? "";
+    const openIdx = raw.indexOf("(", idx);
+    const args = openIdx >= 0 ? extractBalancedParenArgs(raw, openIdx) : null;
+    if (args === null) continue;
     if (/\bencoding\s*=/.test(args) || /["'][rwxat+]*b[rwxat+]*["']/.test(args)) continue;
     if (/^\s*def\s+open\b|\.\s*open\s*\(/.test(lines[line - 1] ?? "")) continue;
     push(

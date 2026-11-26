@@ -20,9 +20,12 @@ import { auditCodeownersPerimeter, checkGitHubBranchProtection } from "./workflo
 const VALID_RUNG_ARGS = new Set(["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "all"]);
 
 function parseFlagValue(args: readonly string[], flag: string): string | undefined {
-  const index = args.indexOf(flag);
-  if (index < 0) return undefined;
-  return args[index + 1];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === flag) return args[i + 1];
+    if (a.startsWith(`${flag}=`)) return a.slice(flag.length + 1);
+  }
+  return undefined;
 }
 
 function loadBaseline(repoRoot: string, ratchetPath: string, baseRef?: string): RatchetBaseline | undefined {
@@ -172,6 +175,7 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
     if (process.env.VSTACK_ALLOW_MANIFEST_CHANGE !== "1") {
       let baseToCheck = explicitBase;
       let failClosed = Boolean(explicitBase);
+      let hasTrustedOriginBase = false;
       if (!baseToCheck) {
         const isGit = runGitClean(repo.root, ["rev-parse", "--git-dir"]).status === 0;
         if (isGit) {
@@ -182,6 +186,7 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
               const mb = runGitClean(repo.root, ["merge-base", "HEAD", candidate]);
               baseToCheck = mb.status === 0 && mb.stdout.trim() ? mb.stdout.trim() : candidate;
               failClosed = true;
+              hasTrustedOriginBase = true;
               break;
             }
           }
@@ -197,14 +202,20 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
       }
       if (baseToCheck) {
         const downgrades = auditManifestDowngrade(repo.root, baseToCheck, { failClosedOnMissingBase: failClosed });
-        const headSha = (runGitClean(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"]).stdout ?? "").trim();
-        const baseSha = (runGitClean(repo.root, ["rev-parse", "--verify", `${baseToCheck}^{commit}`]).stdout ?? "").trim();
-        if (!explicitBase && headSha && baseSha === headSha) {
-          const logRes = runGitClean(repo.root, ["rev-list", "--max-count=11", "HEAD"]);
-          const ancestors = logRes.status === 0 ? logRes.stdout.trim().split(/\r?\n/).slice(1).filter(Boolean) : [];
-          for (const anc of ancestors) {
-            const ancDowngrades = auditManifestDowngrade(repo.root, anc, { downgradeOnly: true });
-            if (ancDowngrades.length > 0) { downgrades.push(...ancDowngrades); break; }
+        if (!explicitBase && !hasTrustedOriginBase) {
+          const manifestHist = runGitClean(repo.root, ["log", "--format=%H", "--", ".verification/rungs.json", "package.json", ".gitattributes"]);
+          const touchedCommits = manifestHist.status === 0 ? manifestHist.stdout.trim().split(/\r?\n/).filter(Boolean) : [];
+          const checkedRefs = new Set<string>();
+          for (const sha of touchedCommits) {
+            for (const cand of [sha, `${sha}~1`]) {
+              if (checkedRefs.has(cand)) continue;
+              checkedRefs.add(cand);
+              const rev = runGitClean(repo.root, ["rev-parse", "--verify", `${cand}^{commit}`]);
+              if (rev.status !== 0) continue;
+              const ancDowngrades = auditManifestDowngrade(repo.root, rev.stdout.trim(), { downgradeOnly: true });
+              if (ancDowngrades.length > 0) { downgrades.push(...ancDowngrades); break; }
+            }
+            if (downgrades.length > 0) break;
           }
         }
         if (downgrades.length > 0) {

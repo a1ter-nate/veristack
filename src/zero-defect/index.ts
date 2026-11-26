@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
 import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "../rungs/command-audit.ts";
+import { runGitClean } from "../rungs/config-audit.ts";
 import type { Finding, RungId } from "../types.ts";
 import { auditFormalSync } from "./formal-sync.ts";
 import { auditLaws } from "./laws.ts";
@@ -316,8 +316,8 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
     throw new Error(`Invalid git baseRef "${baseRef}".`);
   }
   const root = path.resolve(repoPath);
-  const changed = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
-  const diffNames = spawnSync("git", ["diff", "--name-only", baseRef, "--"], { cwd: root, encoding: "utf8" });
+  const changed = runGitClean(root, ["status", "--porcelain"]);
+  const diffNames = runGitClean(root, ["diff", "--name-only", baseRef, "--"]);
 
   const candidates = new Set<string>();
   for (const line of `${changed.stdout ?? ""}\n${diffNames.stdout ?? ""}`.split(/\r?\n/)) {
@@ -343,10 +343,7 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-rbf-"));
   const worktreeDir = path.join(tmpDir, "base");
   try {
-    const addWt = spawnSync("git", ["worktree", "add", "--detach", worktreeDir, baseRef], {
-      cwd: root,
-      encoding: "utf8",
-    });
+    const addWt = runGitClean(root, ["worktree", "add", "--detach", worktreeDir, baseRef]);
     if (addWt.status !== 0) {
       return {
         passed: false,
@@ -403,7 +400,7 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
             : `Test command still fails on working tree (exit ${headCode}).`,
     };
   } finally {
-    spawnSync("git", ["worktree", "remove", "--force", worktreeDir], { cwd: root, encoding: "utf8" });
+    runGitClean(root, ["worktree", "remove", "--force", worktreeDir]);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }

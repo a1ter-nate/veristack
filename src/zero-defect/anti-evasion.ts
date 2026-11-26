@@ -289,12 +289,26 @@ export function auditDiffAntiEvasion(
   return findings;
 }
 
-function collectReferencedScriptsAndFiles(commands: readonly string[], pkgScripts: Record<string, string>): { scripts: Set<string>; localScripts: Set<string> } {
+function collectReferencedScriptsAndFiles(
+  commands: readonly string[],
+  pkgScripts: Record<string, string>,
+): { scripts: Set<string>; localScripts: Set<string>; subPkgRefs: Array<{ pkgRel: string; scriptName: string }> } {
   const scripts = new Set<string>();
   const localScripts = new Set<string>();
+  const subPkgRefs: Array<{ pkgRel: string; scriptName: string }> = [];
   const queue = [...commands];
   for (let qi = 0; qi < queue.length; qi++) {
     const cmd = queue[qi] ?? "";
+    for (const m of cmd.matchAll(/\bbun\s+--cwd\s+["']?([^\s"']+)["']?\s+(?:run\s+)?([A-Za-z0-9:_-]+)/g)) {
+      const subDir = (m[1] ?? "").replace(/^\.\//, "").replace(/\/+$/, "");
+      const name = m[2] ?? "";
+      if (subDir && name) subPkgRefs.push({ pkgRel: `${subDir}/package.json`, scriptName: name });
+    }
+    for (const m of cmd.matchAll(/\bpnpm\s+(?:--filter|-F)\s+["']?([^\s"']+)["']?\s+(?:run\s+)?([A-Za-z0-9:_-]+)/g)) {
+      const subDir = (m[1] ?? "").replace(/^\.\//, "").replace(/\/+$/, "");
+      const name = m[2] ?? "";
+      if (subDir && name && name !== "exec") subPkgRefs.push({ pkgRel: `${subDir}/package.json`, scriptName: name });
+    }
     for (const m of cmd.matchAll(/\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?([A-Za-z0-9:_-]+)/g)) {
       const name = m[1] ?? "";
       if (name && pkgScripts[name] && !scripts.has(name)) {
@@ -309,30 +323,27 @@ function collectReferencedScriptsAndFiles(commands: readonly string[], pkgScript
       if (m[1]) localScripts.add(m[1]);
     }
   }
-  return { scripts, localScripts };
+  return { scripts, localScripts, subPkgRefs };
 }
 
-const MONOTONIC_UPGRADE_FLAGS = new Set([
-  "--max-mutants",
-  "--min-kill-rate",
-  "--threshold-efficacy",
-  "--timeout",
-]);
+const MONOTONIC_HIGHER_FLAGS = new Set(["--max-mutants", "--min-kill-rate", "--threshold-efficacy", "--cov-fail-under"]);
+const MONOTONIC_LOWER_FLAGS = new Set(["--max-crap", "--max-time-exp", "--max-space-exp"]);
 
 function isStrictCommandWeakening(baseCmd: string, headCmd: string): boolean {
   if (headCmd === baseCmd) return false;
   const baseTokens = baseCmd.trim().split(/\s+/).filter(Boolean);
   const headTokens = headCmd.trim().split(/\s+/).filter(Boolean);
-  const headSet = new Set(headTokens);
+  if (baseTokens.length !== headTokens.length) return true;
   for (let i = 0; i < baseTokens.length; i++) {
-    const tok = baseTokens[i] ?? "";
-    if (headSet.has(tok)) continue;
+    const bTok = baseTokens[i] ?? "";
+    const hTok = headTokens[i] ?? "";
+    if (bTok === hTok) continue;
     const prev = i > 0 ? (baseTokens[i - 1] ?? "") : "";
-    if (MONOTONIC_UPGRADE_FLAGS.has(prev)) {
-      const hIdx = headTokens.indexOf(prev);
-      const baseNum = Number(tok);
-      const headNum = hIdx >= 0 ? Number(headTokens[hIdx + 1]) : Number.NaN;
-      if (Number.isFinite(baseNum) && Number.isFinite(headNum) && headNum >= baseNum) continue;
+    const bNum = Number(bTok);
+    const hNum = Number(hTok);
+    if (Number.isFinite(bNum) && Number.isFinite(hNum)) {
+      if (MONOTONIC_HIGHER_FLAGS.has(prev) && hNum >= bNum) continue;
+      if (MONOTONIC_LOWER_FLAGS.has(prev) && hNum <= bNum && hNum > 0) continue;
     }
     return true;
   }
@@ -396,7 +407,7 @@ export function auditManifestDowngrade(
         for (const t of baseTargets) {
           if (!headTargets.has(t)) findings.push(makeErr(`canary-target-${rung}-${t}`, ".verification/rungs.json", `Removed canary target '${t}' on ${rung} vs ${baseRef}.`));
         }
-        if (!options.downgradeOnly && headTargets.size > baseTargets.size) {
+        if (headTargets.size > baseTargets.size) {
           findings.push(makeErr(`canary-dilute-${rung}`, ".verification/rungs.json", `Added unreviewed canary target(s) on ${rung} vs ${baseRef} (risks diluting per-file mutation coverage).`));
         }
       }
@@ -422,10 +433,24 @@ export function auditManifestDowngrade(
             findings.push(makeErr(`pkg-script-${sName}`, "package.json", `Modified rung-referenced package.json script '${sName}' vs ${baseRef}.`));
           }
         }
+        for (const subRef of refs.subPkgRefs) {
+          const baseSubShow = runGitClean(repoRoot, ["show", `${baseRef}:${subRef.pkgRel}`]);
+          const headSubPath = path.join(repoRoot, subRef.pkgRel);
+          if (baseSubShow.status === 0 && fs.existsSync(headSubPath)) {
+            try {
+              const bSub = (JSON.parse(baseSubShow.stdout) as { scripts?: Record<string, string> }).scripts ?? {};
+              const hSub = (JSON.parse(fs.readFileSync(headSubPath, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {};
+              const changed = options.downgradeOnly ? isStrictCommandWeakening(bSub[subRef.scriptName] ?? "", hSub[subRef.scriptName] ?? "") : hSub[subRef.scriptName] !== bSub[subRef.scriptName];
+              if (changed) findings.push(makeErr(`subpkg-${subRef.pkgRel}-${subRef.scriptName}`, subRef.pkgRel, `Modified rung-referenced sub-package script '${subRef.scriptName}' in ${subRef.pkgRel} vs ${baseRef}.`));
+            } catch {
+              findings.push(makeErr(`subpkg-invalid-${subRef.pkgRel}`, subRef.pkgRel, `Modified ${subRef.pkgRel} is not valid JSON.`));
+            }
+          }
+        }
         for (const relScript of refs.localScripts) {
           const baseSc = runGitClean(repoRoot, ["show", `${baseRef}:${relScript}`]);
           const headScPath = path.join(repoRoot, relScript);
-          if (baseSc.status === 0 && (!fs.existsSync(headScPath) || fs.readFileSync(headScPath, "utf8") !== baseSc.stdout)) {
+          if (baseSc.status === 0 && (!fs.existsSync(headScPath) || (!options.downgradeOnly && fs.readFileSync(headScPath, "utf8") !== baseSc.stdout))) {
             findings.push(makeErr(`gate-script-${relScript}`, relScript, `Modified or deleted rung-referenced gate script '${relScript}' vs ${baseRef}.`));
           }
         }

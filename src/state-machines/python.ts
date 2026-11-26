@@ -1,4 +1,5 @@
 import type { ScannedFile } from "../discover.ts";
+import { maskCode } from "../test-lexical.ts";
 import type { Finding } from "../types.ts";
 
 const LIFECYCLE_BOOL_NAME =
@@ -41,7 +42,7 @@ function collectClassBlocks(lines: readonly string[]): Array<{ name: string; lin
 
 export function lintPythonStateMachines(file: ScannedFile): Finding[] {
   const findings: Finding[] = [];
-  const lines = file.content.split(/\r?\n/);
+  const lines = maskCode(file.content, "python").split(/\r?\n/);
 
   for (const cls of collectClassBlocks(lines)) {
     if (CONFIG_TYPE_SUFFIX.test(cls.name)) continue;
@@ -158,11 +159,13 @@ export function lintPythonStateMachines(file: ScannedFile): Finding[] {
 
     let hasExhaustiveWildcard = false;
     let hasSilentWildcard = false;
+    let hasNumericCase = false;
     for (let j = i + 1; j < lines.length; j++) {
       const next = lines[j] ?? "";
       const trimmed = next.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
       if (indentOf(next) <= baseIndent) break;
+      if (/^case\s+\d+\b/.test(trimmed)) hasNumericCase = true;
       if (/^case\s+_\s*:/.test(trimmed)) {
         const caseIndent = indentOf(next);
         const caseBody: string[] = [trimmed.replace(/^case\s+_\s*:/, "").trim()];
@@ -174,7 +177,7 @@ export function lintPythonStateMachines(file: ScannedFile): Finding[] {
           caseBody.push(innerTrim);
         }
         const joined = caseBody.join(" ");
-        if (/\b(?:assert_never|raise)\b/.test(joined)) hasExhaustiveWildcard = true;
+        if (hasNumericCase || /\b(?:assert_never|raise)\b/.test(joined)) hasExhaustiveWildcard = true;
         else hasSilentWildcard = true;
       }
     }

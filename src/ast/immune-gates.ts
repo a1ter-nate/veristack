@@ -160,6 +160,14 @@ function auditContainerImage(file: ScannedFile, lines: readonly string[], img: u
   }
 }
 
+function firstNonFlagTok(toks: readonly string[]): string | undefined {
+  for (let i = 1; i < toks.length; i++) {
+    const t = toks[i];
+    if (t && !t.startsWith("-")) return t;
+  }
+  return undefined;
+}
+
 function auditRunScriptSupplyChain(file: ScannedFile, lines: readonly string[], runScript: string, findings: Finding[]): void {
   const joinedLines: string[] = [];
   let buf = "";
@@ -196,10 +204,18 @@ function auditRunScriptSupplyChain(file: ScannedFile, lines: readonly string[], 
         continue;
       }
       if (downloadedFiles.size > 0) {
+        const toks = st.split(/\s+/).map((t) => t.replace(/^["']|["']$/g, ""));
+        const cmdHead = (toks[0] ?? "").replace(/^(?:\/[\w.-]+)*\//, "");
+        const isExecInterp = /^(?:sh|bash|zsh|dash|node|bun|python3?|perl|ruby|source|\.)$/.test(cmdHead);
+        const firstNonFlagArg = firstNonFlagTok(toks);
+        const isChmodExec = cmdHead === "chmod" && /\+x|755|700/.test(st);
         for (const f of downloadedFiles) {
           if (verifiedFiles.has(f) || globalChecksumVerified) continue;
-          if (!st.includes(f) || /^\s*(?:curl|wget|rm|echo|printf)\b/.test(st)) continue;
-          if (/\b(?:(?:\/[\w.-]+)*\/)?(?:sh|bash|zsh|dash|node|python3?|perl|ruby|source|\.)\b|\bchmod\s+\+x\b/.test(st) || st.includes(`./${f}`)) {
+          if (!st.includes(f) || /^(?:curl|wget|rm|echo|printf)$/.test(cmdHead)) continue;
+          const directExec = toks[0] === `./${f}` || toks[0] === f;
+          const chmodExec = isChmodExec && toks.includes(f);
+          const interpExec = isExecInterp && (firstNonFlagArg === f || firstNonFlagArg === `./${f}`);
+          if (directExec || chmodExec || interpExec) {
             push(findings, file.rel, findLineForNeedle(lines, f), "ci-curl-pipe-shell", "R0", "error", `Script downloads and executes '${f}' without prior verified checksum ('sha256sum -c' / 'gpg --verify').`, "Verify sha256sum -c against a pinned digest before executing downloaded scripts.");
           }
         }

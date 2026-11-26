@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { runGitClean } from "./rungs/config-audit.ts";
 import { inferArchetypeFromFiles, isHostRepoFile, loadRungManifest } from "./rungs/manifest.ts";
 import { extractSignals } from "./rungs/signals.ts";
 import type {
@@ -91,6 +91,22 @@ export function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStar
         if (!q) {
           if (ch === "/" && nx === "/") { while (j < raw.length && raw[j] !== "\n") j += 1; continue; }
           if (ch === "/" && nx === "*") { const e = raw.indexOf("*/", j + 2); j = e < 0 ? raw.length : e + 2; continue; }
+          if (ch === "/" && nx !== "/" && nx !== "*") {
+            let p = j - 1;
+            while (p >= bodyStart && /\s/.test(raw[p] ?? "")) p -= 1;
+            const prevCh = p >= bodyStart ? (raw[p] ?? "") : "";
+            if (!prevCh || "=({[,;:!?&|+-*~%^".includes(prevCh)) {
+              let rj = j + 1; let inCls = false; let ok = false;
+              while (rj < raw.length && raw[rj] !== "\n" && raw[rj] !== "\r") {
+                if (raw[rj] === "\\") { rj += 2; continue; }
+                if (raw[rj] === "[") inCls = true;
+                else if (raw[rj] === "]") inCls = false;
+                else if (raw[rj] === "/" && !inCls) { ok = true; break; }
+                rj += 1;
+              }
+              if (ok) { j = rj + 1; continue; }
+            }
+          }
           if (ch === '"' || ch === "'" || ch === "`") { q = ch; j += 1; continue; }
           if (ch === "<" && nx === "/") {
             const cm = /^<\/script\s*>/i.exec(raw.slice(j, j + 16));
@@ -285,7 +301,7 @@ function isMinifiedJs(rel: string, content: string, lines: number): boolean {
 
 function loadGitTrackedDirs(root: string): Set<string> {
   const trackedDirs = new Set<string>();
-  const res = spawnSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  const res = runGitClean(root, ["ls-files", "-z"]);
   if (res.status !== 0) return trackedDirs;
   for (const rel of res.stdout.split("\0")) {
     if (!rel) continue;

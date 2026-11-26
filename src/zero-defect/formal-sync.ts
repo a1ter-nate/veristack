@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
+import { runGitClean } from "../rungs/config-audit.ts";
 import type { Finding } from "../types.ts";
 
 export interface FormalCheckEntry {
@@ -191,10 +191,7 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       continue;
     }
 
-    const gitEnv = { ...process.env };
-    delete gitEnv.GIT_DIR;
-    delete gitEnv.GIT_WORK_TREE;
-    const runGit = (args: readonly string[]) => spawnSync("git", ["-C", repo.root, ...args], { encoding: "utf8", env: gitEnv });
+    const runGit = (args: readonly string[]) => runGitClean(repo.root, args);
     const specAbs = path.resolve(repo.root, entry.specFile);
     const specText = fs.existsSync(specAbs) && fs.statSync(specAbs).isFile() ? fs.readFileSync(specAbs, "utf8") : "";
     if (!specText.trim()) {

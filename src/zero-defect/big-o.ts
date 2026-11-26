@@ -154,14 +154,24 @@ export function fitEmpiricalBigO(
       }
     }
     const first = ordered[0];
-    if (first && last && last.timeMs > first.timeMs * 1.4 && ordered.length >= 4) {
-      const offset = first.timeMs;
-      const deltas = ordered.slice(1).filter((s) => s.timeMs > offset);
-      if (deltas.length >= 3) {
-        const deltaFit = fitLogLogSlope(deltas.map((s) => s.n), deltas.map((s) => s.timeMs - offset));
-        if (deltaFit.r2 >= 0.85 && deltaFit.slope > thresholds.maxTimeExponent + 0.25) {
+    if (first && last && last.timeMs - first.timeMs > 0.5 && ordered.length >= 4) {
+      const mids: number[] = [];
+      const marginals: number[] = [];
+      for (let i = 0; i < ordered.length - 1; i++) {
+        const a = ordered[i];
+        const b = ordered[i + 1];
+        if (!a || !b || b.n <= a.n) continue;
+        const dt = b.timeMs - a.timeMs;
+        if (dt <= 0) { mids.length = 0; break; }
+        mids.push((a.n + b.n) / 2);
+        marginals.push(dt / (b.n - a.n));
+      }
+      if (mids.length >= 3) {
+        const marginalFit = fitLogLogSlope(mids, marginals);
+        const inferredExp = Number((1 + marginalFit.slope).toFixed(3));
+        if (marginalFit.r2 >= 0.85 && inferredExp > thresholds.maxTimeExponent + 0.25) {
           reasons.push(
-            `Intercept-adjusted time scaling exponent ${deltaFit.slope} (${classifyExponent(deltaFit.slope)}) exceeds budget <= ${thresholds.maxTimeExponent} (constant overhead masking super-linear growth).`,
+            `Intercept-adjusted time scaling exponent ${inferredExp} (${classifyExponent(inferredExp)}) exceeds budget <= ${thresholds.maxTimeExponent} (constant overhead masking super-linear growth).`,
           );
         }
       }

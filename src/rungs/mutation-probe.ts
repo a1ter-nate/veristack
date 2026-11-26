@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -8,6 +7,7 @@ import { isTestFilePath } from "../discover.ts";
 import { maskCode } from "../test-lexical.ts";
 import type { PlantedFaultReport, PlantedFaultSurvivor } from "../types.ts";
 import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
+import { runGitClean } from "./config-audit.ts";
 import { parseRunnerTestCounts, stripAnsi } from "./runner-metrics.ts";
 
 interface MutantCandidate { file: string; line: number; start: number; end: number; replacement: string; operator: string; original: string; mutated: string; }
@@ -278,6 +278,7 @@ export function insertSemanticNoOp(rel: string, source: string, variant: number)
       if (l.startsWith("from __future__ import")) { if ((l.includes("(") && !l.includes(")")) || l.endsWith("\\")) inFuture = true; i += 1; continue; }
       const ds = /^(?:[rRbBuUfF]{0,2})("""|''')/.exec(l);
       if (ds?.[1]) { if (!l.slice(ds[0].length).includes(ds[1])) inTriple = ds[1]; i += 1; continue; }
+      if (/^(?:[rRbBuUfF]{0,2})(?:"[^"\n]*"|'[^'\n]*')$/.test(l)) { i += 1; continue; }
       break;
     }
     return [...lines.slice(0, i), variant % 2 === 0 ? "if False:\n    pass" : `_${id} = 0`, ...lines.slice(i)].join("\n");
@@ -319,7 +320,7 @@ function resolveTargetFiles(options: CanaryOptions): string[] {
   if (options.targets) for (const rel of options.targets) addSafe(rel);
   const ref = options.baseRef ?? (targets.size === 0 ? "HEAD" : undefined);
   if (ref) {
-    const diff = spawnSync("git", ["-C", absRoot, "diff", "--name-only", ref, "--"], { encoding: "utf8" });
+    const diff = runGitClean(absRoot, ["diff", "--name-only", ref, "--"]);
     if (diff.status === 0) {
       for (const raw of (diff.stdout ?? "").split(/\r?\n/)) {
         const rel = raw.trim();
@@ -406,7 +407,7 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
   if (parsedCmd.error) return failReport(0, 1);
 
   const targets = resolveTargetFiles(options).sort();
-  const seedHasher = crypto.createHash("sha256").update(options.testCmd);
+  const seedHasher = crypto.createHash("sha256").update(options.testCmd).update(process.env.GITHUB_RUN_ID ?? process.env.VSTACK_CANARY_NONCE ?? "");
   for (const rel of targets) {
     seedHasher.update(rel).update(fs.readFileSync(path.join(absRoot, rel), "utf8"));
   }
@@ -433,45 +434,32 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
     const sb = copyRepoForIsolatedCanary(absRoot);
     try { return fn(sb); } finally { fs.rmSync(sb, { recursive: true, force: true }); }
   };
-
   const baselineStart = performance.now();
   const baselineRun = withFreshSandbox((sb) => withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, 120_000, parsedCmd.stepCwds)));
   const baselineMs = Math.max(500, Math.round(performance.now() - baselineStart));
   const taskTimeoutMs = Math.round(Math.max(25_000, Math.min(120_000, baselineMs * 6)));
-  if (baselineRun.status !== 0) return failReport(candidates.length, candidates.length);
-
+  const baseCounts = parseRunnerTestCounts(stripAnsi(`${baselineRun.stdout}\n${baselineRun.stderr}`), parsedCmd.steps);
+  if (baselineRun.status !== 0 || (baseCounts.hasTestRunner && (!baseCounts.matched || baseCounts.passed <= 0 || baseCounts.failed > 0))) return failReport(candidates.length, candidates.length);
   const uniqueTargetFiles = [...new Set(candidates.map((c) => c.file))];
-  const runNoOpCheck = (variant: number): boolean =>
-    withFreshSandbox((sb) => {
-      for (const rel of uniqueTargetFiles) {
-        const p = path.join(sb, rel);
-        if (!safeWriteSandboxText(sb, rel, insertSemanticNoOp(rel, fs.readFileSync(p, "utf8"), variant))) return false;
-      }
-      return withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, taskTimeoutMs, parsedCmd.stepCwds)).status === 0;
-    });
-
-  type Task = { kind: "noop"; variant: number } | { kind: "mutant"; mutant: MutantCandidate };
-  const tasks: Task[] = [
-    { kind: "noop", variant: 0 },
-    ...(candidates.length >= 2 ? [{ kind: "noop" as const, variant: 1 }] : []),
-    ...candidates.map((mutant) => ({ kind: "mutant" as const, mutant })),
-  ];
+  const runNoOpCheck = (variant: number, targetRel: string): boolean => withFreshSandbox((sb) => {
+    const p = path.join(sb, targetRel);
+    if (!safeWriteSandboxText(sb, targetRel, insertSemanticNoOp(targetRel, fs.readFileSync(p, "utf8"), variant))) return false;
+    const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(parsedCmd.steps, sb, env, taskTimeoutMs, parsedCmd.stepCwds));
+    if (res.status !== 0) return false;
+    const c = parseRunnerTestCounts(stripAnsi(`${res.stdout}\n${res.stderr}`), parsedCmd.steps);
+    return !c.hasTestRunner || (c.matched && c.passed > 0 && c.failed === 0);
+  });
+  type Task = { kind: "noop"; variant: number; targetRel: string } | { kind: "mutant"; mutant: MutantCandidate };
+  const pickNoOpTarget = (idx: number): string => uniqueTargetFiles[(runSeed + idx) % uniqueTargetFiles.length] ?? uniqueTargetFiles[0] ?? "";
+  const tasks: Task[] = [{ kind: "noop", variant: 0, targetRel: pickNoOpTarget(0) }, ...(candidates.length >= 2 ? [{ kind: "noop" as const, variant: 1, targetRel: pickNoOpTarget(1) }] : []), ...candidates.map((mutant) => ({ kind: "mutant" as const, mutant }))];
   const shuffledTasks = seededShuffle(tasks, runSeed ^ 0x9e3779b9);
-
-  let killed = 0; let invalidKills = 0;
-  const survivors: PlantedFaultSurvivor[] = [];
-
+  let killed = 0; let invalidKills = 0; const survivors: PlantedFaultSurvivor[] = [];
   for (const task of shuffledTasks) {
-    if (task.kind === "noop") {
-      if (!runNoOpCheck(task.variant)) return failReport(candidates.length, candidates.length);
-      continue;
-    }
+    if (task.kind === "noop") { if (!runNoOpCheck(task.variant, task.targetRel)) return failReport(candidates.length, candidates.length); continue; }
     const mutant = task.mutant;
     const origSource = fs.readFileSync(path.join(absRoot, mutant.file), "utf8");
     const mutatedSource = `${origSource.slice(0, mutant.start)}${mutant.replacement}${origSource.slice(mutant.end)}`;
-    if (/\.[cm]?[jt]sx?$/.test(mutant.file) && parseSync(mutant.file, mutatedSource).errors.length > 0) {
-      invalidKills += 1; continue;
-    }
+    if (/\.[cm]?[jt]sx?$/.test(mutant.file) && parseSync(mutant.file, mutatedSource).errors.length > 0) { invalidKills += 1; continue; }
     withFreshSandbox((sb) => {
       if (!safeWriteSandboxText(sb, mutant.file, mutatedSource)) { invalidKills += 1; return; }
       const mutStart = performance.now();
@@ -484,12 +472,11 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
       else if (res.status !== 0) {
         const parsedCounts = parseRunnerTestCounts(cleanCombined, parsedCmd.steps);
         const runnerReportedFail = parsedCounts.matched && parsedCounts.failed > 0;
-        const hasCrash = COMPILE_OR_RUNTIME_CRASH.test(cleanCombined);
+        const crashLines = cleanCombined.split(/\r?\n/).filter((l) => !/^\s*(?:Expected|Received|Actual|[-+]\s)/.test(l)).join("\n");
+        const hasCrash = COMPILE_OR_RUNTIME_CRASH.test(crashLines) && !(runnerReportedFail && parsedCounts.passed > 0);
         if (hasCrash || (!runnerReportedFail && !STRICT_TEST_FAILURE.test(cleanCombined))) invalidKills += 1;
         else killed += 1;
-      } else {
-        survivors.push({ file: mutant.file, line: mutant.line, operator: mutant.operator, original: mutant.original, mutated: mutant.mutated });
-      }
+      } else survivors.push({ file: mutant.file, line: mutant.line, operator: mutant.operator, original: mutant.original, mutated: mutant.mutated });
     });
   }
 

@@ -72,7 +72,7 @@ function resolveImport(fromRel: string, spec: string, allFiles: Set<string>): st
 
 function analyzeTsCrossFileGraph(repo: DiscoveredRepo, findings: Finding[]): void {
   const tsFiles = repo.files.filter(
-    (f) => (f.language === "typescript" || f.language === "javascript") && !f.isTest && !f.rel.includes("examples/"),
+    (f) => (f.language === "typescript" || f.language === "javascript") && !f.isTest && !f.isStub && !f.rel.includes("examples/"),
   );
   if (tsFiles.length < 2) return;
 

@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { scanGitDiffCheats } from "../ci-auditor.ts";
 import { discoverRepo } from "../discover.ts";
+import { runGitClean } from "../rungs/config-audit.ts";
 import { buildSystem1Packet } from "../system1-classifier.ts";
 import type { CircuitId, CircuitMeta, CircuitRunReport } from "../types.ts";
 import { analyzePerfHygiene } from "../zero-defect/perf-lints.ts";
@@ -30,11 +30,7 @@ export function listDefaultCircuits(): readonly CircuitMeta[] {
 function collectPrRiskInputs(repoPath: string, baseRef: string): PrRiskInput[] {
   const cheats = scanGitDiffCheats(repoPath, baseRef);
   const cheatFiles = new Set(cheats.map((c) => c.file));
-  const numstat = spawnSync("git", ["diff", "--numstat", baseRef], {
-    cwd: repoPath,
-    encoding: "utf8",
-    maxBuffer: 2 * 1024 * 1024,
-  });
+  const numstat = runGitClean(repoPath, ["diff", "--numstat", baseRef], { maxBuffer: 2 * 1024 * 1024 });
   if (numstat.status !== 0 || !numstat.stdout.trim()) return [];
 
   const inputs: PrRiskInput[] = [];
@@ -44,11 +40,7 @@ function collectPrRiskInputs(repoPath: string, baseRef: string): PrRiskInput[] {
     if (!file) continue;
     const addedLines = Number(parts[0]) || 0;
     const removedLines = Number(parts[1]) || 0;
-    const patch = spawnSync("git", ["diff", "--unified=1", baseRef, "--", file], {
-      cwd: repoPath,
-      encoding: "utf8",
-      maxBuffer: 256 * 1024,
-    });
+    const patch = runGitClean(repoPath, ["diff", "--unified=1", baseRef, "--", file], { maxBuffer: 256 * 1024 });
     inputs.push({
       file,
       addedLines,

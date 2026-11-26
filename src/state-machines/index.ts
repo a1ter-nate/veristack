@@ -242,8 +242,9 @@ function checkNonExhaustiveSwitches(file: ScannedFile, masked: string): Finding[
     const rawBody = file.content.slice(openIdx + 1, closeIdx);
     const maskedBody = masked.slice(openIdx + 1, closeIdx);
     const hasDefault = /\bdefault\s*:/.test(maskedBody);
+    const hasNumericCases = /\bcase\s+\d+\s*:/.test(maskedBody);
     const hasExhaustive = EXHAUSTIVE_GUARD.test(rawBody);
-    if (!hasDefault || !hasExhaustive) {
+    if (!hasDefault || (!hasExhaustive && !hasNumericCases)) {
       const line = lineOf(file.content, match.index ?? 0);
       findings.push({
         id: `SM:non-exhaustive:${file.rel}:${line}`,

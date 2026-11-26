@@ -72,9 +72,12 @@ function usage(): string {
 }
 
 function parseFlagValue(args: readonly string[], flag: string): string | undefined {
-  const index = args.indexOf(flag);
-  if (index < 0) return undefined;
-  return args[index + 1];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === flag) return args[i + 1];
+    if (a.startsWith(`${flag}=`)) return a.slice(flag.length + 1);
+  }
+  return undefined;
 }
 
 function firstPositional(args: readonly string[]): string {

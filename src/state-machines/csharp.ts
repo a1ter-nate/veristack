@@ -170,9 +170,9 @@ function checkCsharpTypes(file: ScannedFile, masked: string): Finding[] {
       });
     }
 
-    const isReadView = /(?:View|Projection|Summary)$/i.test(name);
+    const isReadView = /(?:View|Projection|Summary|Response|Request)$/i.test(name);
     const isStringWireDto =
-      /(?:Dto|Response|Request|Row|Payload|ViewModel|Contract|Message|Event|Params|Options|Config|Settings|Spec)$/i.test(name) &&
+      /(?:Dto|Row|Payload|ViewModel|Contract|Message|Event|Params|Options|Config|Settings|Spec)$/i.test(name) &&
       props.some((p) => p.name === discriminantName && /^string$/i.test(p.type.trim()));
     if (discriminantName && nullableSiblings.size >= 2 && !isStringWireDto && !isReadView) {
       const optList = [...nullableSiblings].slice(0, 5).join(", ");
@@ -219,6 +219,12 @@ function checkCsharpScatteredMutations(file: ScannedFile, masked: string): Findi
     const pos = match.index ?? 0;
     const before = masked.slice(Math.max(0, pos - 40), pos);
     if (/\b(?:new\s+[A-Za-z_]|with\s*\{|var\s+|bool\s+|string\s+|int\s+)/.test(before)) continue;
+    let openBrace = -1; let bDepth = 0;
+    for (let k = pos - 1; k >= Math.max(0, pos - 400); k--) {
+      if (masked[k] === "}") bDepth += 1;
+      else if (masked[k] === "{") { if (bDepth === 0) { openBrace = k; break; } bDepth -= 1; }
+    }
+    if (openBrace >= 0 && /\b(?:new(?:\s+[A-Za-z0-9_.<>]+)?(?:\s*\([^)]*\))?|with)\s*$/.test(masked.slice(Math.max(0, openBrace - 80), openBrace))) continue;
     const lineEnd = masked.indexOf("\n", pos);
     const restOfLine = masked.slice(pos, lineEnd < 0 ? pos + 120 : lineEnd);
     if (/,\s*$/.test(restOfLine) || /\bEntityState\./.test(restOfLine) || /\bAddress\.State\b/.test(restOfLine)) continue;

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import type { ScannedFile } from "../discover.ts";
 import { sanitizeShellBlock } from "./command-audit.ts";
+import { runGitClean } from "./config-audit.ts";
 
 export interface ActiveWorkflowInfo {
   file: string;
@@ -139,8 +140,8 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
   const scopedCommands: Array<{ cwd: string; command: string }> = [];
   const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
   const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
-  const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|NODE_OPTIONS|BUN_OPTIONS|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_HOME|CARGO_BUILD_|CARGO_TARGET_.*_RUNNER|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|LD_PRELOAD|DYLD_INSERT_LIBRARIES|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES)$/i;
-  const GITHUB_ENV_POISON = />>\s*["']?\$\{?GITHUB_(?:ENV|PATH)\}?/i;
+  const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|NODE_OPTIONS|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG_)/i;
+  const GITHUB_ENV_POISON = /\bGITHUB_(?:ENV|PATH)\b/i;
   const hasPoisonedEnv = (envObj: unknown): boolean => isRecord(envObj) && Object.keys(envObj).some((k) => BAD_ENV_KEY.test(k));
   const wfPoisoned = hasPoisonedEnv(doc.env);
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
@@ -152,6 +153,7 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
     let jobEnvPoisoned = false;
     for (const step of steps) {
       if (!isRecord(step) || hasPoisonedEnv(step.env)) continue;
+      if (typeof step.uses === "string" && step.uses.trim().startsWith("./")) { jobEnvPoisoned = true; continue; }
       if (typeof step.run === "string" && GITHUB_ENV_POISON.test(step.run)) { jobEnvPoisoned = true; continue; }
       if (jobEnvPoisoned) continue;
       if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
@@ -293,7 +295,7 @@ export function checkGitHubBranchProtection(repoRoot: string): {
   adminsEnforced: boolean;
   detail: string;
 } {
-  const remote = spawnSync("git", ["-C", repoRoot, "remote", "get-url", "origin"], { encoding: "utf8" });
+  const remote = runGitClean(repoRoot, ["remote", "get-url", "origin"]);
   const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i.exec((remote.stdout ?? "").trim());
   if (!match?.[1]) {
     return {

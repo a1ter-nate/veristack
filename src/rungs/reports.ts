@@ -136,22 +136,35 @@ function parseCoberturaDetailed(content: string, repoRoot?: string): DetailedCov
     return clean;
   };
 
-  for (const m of cleaned.matchAll(/<class\b([^>]*?)>([\s\S]*?)<\/class>|<class\b([^>]*?)\/>/gi)) {
-    const attrs = m[1] ?? m[3] ?? ""; const body = m[2] ?? "";
-    const rawFile = readXmlAttr(attrs, "filename") ?? "";
+  const classTags = scanXmlTags(cleaned, "class");
+  for (let ti = 0; ti < classTags.length; ti++) {
+    const tag = classTags[ti];
+    if (!tag || tag.closing) continue;
+    let body = "";
+    if (!tag.selfClosing) {
+      let d = 1;
+      for (let tj = ti + 1; tj < classTags.length; tj++) {
+        const nextTag = classTags[tj];
+        if (!nextTag) continue;
+        if (nextTag.closing) d -= 1;
+        else if (!nextTag.selfClosing) d += 1;
+        if (d === 0) { body = cleaned.slice(tag.end, nextTag.start); ti = tj; break; }
+      }
+    }
+    const rawFile = readXmlAttr(tag.attrs, "filename") ?? "";
     if (!rawFile) continue;
     const file = resolveFile(rawFile);
     let lineCount = 0; let lineHit = 0;
-    for (const lm of body.matchAll(/<line\b([^>]*?)\/?>/gi)) {
-      const la = lm[1] ?? "";
-      const num = Number(readXmlAttr(la, "number") ?? "NaN"); const hits = Number(readXmlAttr(la, "hits") ?? "NaN");
+    for (const ltag of scanXmlTags(body, "line")) {
+      if (ltag.closing) continue;
+      const num = Number(readXmlAttr(ltag.attrs, "number") ?? "NaN"); const hits = Number(readXmlAttr(ltag.attrs, "hits") ?? "NaN");
       if (Number.isFinite(num) && num > 0 && Number.isFinite(hits)) {
         lineCount += 1; if (hits > 0) lineHit += 1;
         const fmap = lineHits.get(file) ?? new Map<number, number>();
         fmap.set(num, (fmap.get(num) ?? 0) + hits); lineHits.set(file, fmap);
       }
     }
-    const rateRaw = readXmlAttr(attrs, "line-rate");
+    const rateRaw = readXmlAttr(tag.attrs, "line-rate");
     const rate = lineCount > 0 ? lineHit / lineCount : rateRaw !== undefined ? Number(rateRaw) : Number.NaN;
     if (!Number.isFinite(rate)) continue;
     const clamped = Math.max(0, Math.min(1, rate));
@@ -188,8 +201,8 @@ function parseIntAttr(attrs: string, name: string, required = false): number | n
   return Number(raw.trim());
 }
 
-function scanXmlTags(xml: string, targetName: string): Array<{ closing: boolean; selfClosing: boolean; attrs: string }> {
-  const out: Array<{ closing: boolean; selfClosing: boolean; attrs: string }> = [];
+function scanXmlTags(xml: string, targetName: string): Array<{ closing: boolean; selfClosing: boolean; attrs: string; start: number; end: number }> {
+  const out: Array<{ closing: boolean; selfClosing: boolean; attrs: string; start: number; end: number }> = [];
   const lowTarget = targetName.toLowerCase();
   for (let i = 0; i < xml.length; i++) {
     if (xml[i] !== "<") continue;
@@ -207,7 +220,7 @@ function scanXmlTags(xml: string, targetName: string): Array<{ closing: boolean;
     if (end < 0) break;
     const rawInside = xml.slice(attrStart, end).trim();
     const selfClosing = !closing && rawInside.endsWith("/");
-    out.push({ closing, selfClosing, attrs: selfClosing ? rawInside.slice(0, -1) : rawInside });
+    out.push({ closing, selfClosing, attrs: selfClosing ? rawInside.slice(0, -1) : rawInside, start: i, end: end + 1 });
     i = end;
   }
   return out;
@@ -235,7 +248,7 @@ function parseJunitOrTrx(content: string): { passed: number; failed: number; ski
       if (t !== null) {
         if (f === null || e === null || sk === null || dis === null) { invalidAttr = true; break; }
         matchedAny = true; total += t; failed += f + e; skipped += sk + dis;
-        if (!tag.selfClosing) countedDepth = depth;
+        if (!tag.selfClosing && t > 0) countedDepth = depth;
       }
     }
     if (!tag.selfClosing) depth += 1;
@@ -453,34 +466,20 @@ export function evaluateCrapForCoverageFile(repoRoot: string, coveragePath: stri
 
   for (const [fileRel] of detailed.fileRate.entries()) {
     const absFile = path.resolve(absRoot, fileRel);
-    if (absFile !== absRoot && !absFile.startsWith(`${absRoot}${path.sep}`)) continue;
-    if (!fs.existsSync(absFile) || !fs.statSync(absFile).isFile()) continue;
-    const normRel = path.relative(absRoot, absFile).split(path.sep).join("/");
-    coveredRelSet.add(normRel);
+    if ((absFile !== absRoot && !absFile.startsWith(`${absRoot}${path.sep}`)) || !fs.existsSync(absFile) || !fs.statSync(absFile).isFile()) continue;
+    coveredRelSet.add(path.relative(absRoot, absFile).split(path.sep).join("/"));
     evaluatedFiles += 1;
     const source = fs.readFileSync(absFile, "utf8");
-    const spans = /\.[cm]?[jt]sx?$/.test(absFile)
-      ? extractJsFunctionSpans(absFile, source)
-      : extractFallbackFunctionSpans(absFile, source);
+    const spans = /\.[cm]?[jt]sx?$/.test(absFile) ? extractJsFunctionSpans(absFile, source) : extractFallbackFunctionSpans(absFile, source);
     const ownedCov = computeOwnedSpanCoverage(spans, detailed.lineHits.get(fileRel), detailed.branchHits?.get(fileRel));
-    let fileWorstCrap = 0;
-    let fileWorstCc = 1;
-    let fileWorstCov = 1;
+    let fileWorstCrap = 0; let fileWorstCc = 1; let fileWorstCov = 1;
     for (let i = 0; i < spans.length; i++) {
-      const span = spans[i];
-      if (!span) continue;
-      const cov = ownedCov.get(i) ?? 0;
-      const score = computeCrapScore(span.cc, cov);
-      if (score > fileWorstCrap) {
-        fileWorstCrap = score;
-        fileWorstCc = span.cc;
-        fileWorstCov = cov;
-      }
+      const span = spans[i]; if (!span) continue;
+      const cov = ownedCov.get(i) ?? 0; const score = computeCrapScore(span.cc, cov);
+      if (score > fileWorstCrap) { fileWorstCrap = score; fileWorstCc = span.cc; fileWorstCov = cov; }
     }
     if (fileWorstCrap > worstCrap) worstCrap = fileWorstCrap;
-    if (fileWorstCrap > maxAllowed) {
-      offenders.push({ file: normRel, cyclomaticComplexity: fileWorstCc, coveragePct: Number((fileWorstCov * 100).toFixed(1)), crapScore: fileWorstCrap });
-    }
+    if (fileWorstCrap > maxAllowed) offenders.push({ file: path.relative(absRoot, absFile).split(path.sep).join("/"), cyclomaticComplexity: fileWorstCc, coveragePct: Number((fileWorstCov * 100).toFixed(1)), crapScore: fileWorstCrap });
   }
 
   const repo = discoverRepo(absRoot);

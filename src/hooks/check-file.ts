@@ -10,7 +10,7 @@ import { analyzeWave5AiFirstGuards } from "../ast/wave5-ai-first.ts";
 import { analyzeWave6TitansAGuards } from "../ast/wave6-titans-a.ts";
 import { analyzeWave7TitansBGuards } from "../ast/wave7-titans-b.ts";
 import { auditCiWorkflows } from "../ci-auditor.ts";
-import { detectLanguage, type DiscoveredRepo, extractSfcScript, isTestFilePath, type ScannedFile } from "../discover.ts";
+import { detectLanguage, type DiscoveredRepo, extractSfcScript, isDeclarationStub, isTestFilePath, type ScannedFile } from "../discover.ts";
 import { lintNoComments } from "../no-comments.ts";
 import { analyzeProdZeroDefectRules } from "../prod-guards.ts";
 import { lintImplicitStateMachinesInFile } from "../state-machines/index.ts";
@@ -65,7 +65,7 @@ function findEmptyCatchOffsets(code: string): number[] {
     }
     if (code[p] === "{") {
       p += 1;
-      while (p < code.length && /\s/.test(code[p] ?? "")) p += 1;
+      while (p < code.length && (/\s/.test(code[p] ?? "") || code[p] === ";")) p += 1;
       if (code[p] === "}") offsets.push(idx);
     }
     idx = Math.max(idx + 5, p);
@@ -221,7 +221,16 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
     content = fs.readFileSync(abs, "utf8");
   }
 
-  if (hasPathologicalNesting(content)) {
+  const isSql = /\.sql$/i.test(rel);
+  const isShell = /\.(?:sh|bash)$/i.test(rel);
+  const isWorkflow =
+    (rel.toLowerCase().startsWith(".github/workflows/") && /\.ya?ml$/i.test(rel)) ||
+    /^(?:\.gitlab-ci\.yml|azure-pipelines\.yml|\.circleci\/config\.yml|bitbucket-pipelines\.yml)$/i.test(rel);
+  const sfc = extractSfcScript(rel, content);
+  const effectiveLang = language ?? sfc?.language;
+  const effectiveContent = sfc ? sfc.content : content;
+
+  if (hasPathologicalNesting(content, effectiveLang ?? "typescript")) {
     return {
       file: rel, tier, language: language ?? null, elapsedMs: Number((performance.now() - started).toFixed(2)),
       findings: [{
@@ -232,26 +241,19 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
     };
   }
 
-  const isSql = /\.sql$/i.test(rel);
-  const isShell = /\.(?:sh|bash)$/i.test(rel);
-  const isWorkflow =
-    (rel.toLowerCase().startsWith(".github/workflows/") && /\.ya?ml$/i.test(rel)) ||
-    /^(?:\.gitlab-ci\.yml|azure-pipelines\.yml|\.circleci\/config\.yml|bitbucket-pipelines\.yml)$/i.test(rel);
-  const sfc = extractSfcScript(rel, content);
-  const effectiveLang = language ?? sfc?.language;
-  const effectiveContent = sfc ? sfc.content : content;
-
   if (!effectiveLang && !isSql && !isShell && !isWorkflow) {
     return { file: rel, tier, language: null, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: [] };
   }
 
   const lines = content.length === 0 ? 0 : content.split(/\r?\n/).length;
+  const isStub = isDeclarationStub(rel);
   const file: ScannedFile = {
     rel,
     abs,
     language: effectiveLang,
     isTest: isTestFilePath(rel),
     isWorkflow,
+    ...(isStub ? { isStub: true } : {}),
     content: effectiveContent,
     ...(sfc ? { rawContent: content } : {}),
     lines,
@@ -272,7 +274,7 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
     rawFindings.push(...analyzeBlackHoleReplayGuards(file));
     rawFindings.push(...analyzeT3ProdGuards(file));
   } else if (effectiveLang) {
-    rawFindings.push(...lintNoComments(file.rel, file.content, effectiveLang));
+    if (!file.isStub) rawFindings.push(...lintNoComments(file.rel, file.content, effectiveLang));
 
     if (!file.isTest && file.lines > maxLines) {
       rawFindings.push({

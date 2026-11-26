@@ -175,7 +175,7 @@ function installHarnessManifest(repoRoot: string, harness: HookHarness, cmdPrefi
     hooks: [{ type: "command", command: buildHookCommand(cmdPrefix, "pre-edit", harness), timeout: 15 }],
   });
   hooks.PostToolUse = mergeHookBucket(hooks.PostToolUse, {
-    matcher: harness === "codex" ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|NotebookEdit",
+    matcher: harness === "codex" ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|NotebookEdit|Bash",
     hooks: [{ type: "command", command: buildHookCommand(cmdPrefix, "post-edit", harness), timeout: 15 }],
   });
   hooks.Stop = mergeHookBucket(hooks.Stop, {

@@ -268,7 +268,7 @@ test("receipts, reports, and manifest edge branches stay pinned against mutation
 
     fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
     fs.writeFileSync(path.join(dir, "scripts", "check-perf-budget.mjs"), "console.log('fake');\n", "utf8");
-    assert.ok(parseAndValidateCommandArgv("R6", "bun scripts/check-perf-budget.mjs", dir).error?.includes("timing"));
+    assert.ok(parseAndValidateCommandArgv("R6", "bun scripts/check-perf-budget.mjs", dir).error?.includes("veristack repository"));
 
     const wfCoe = {
       rel: ".github/workflows/coe.yml",

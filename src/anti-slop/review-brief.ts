@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { scanGitDiffCheats } from "../ci-auditor.ts";
 import { isTestFilePath } from "../discover.ts";
+import { runGitClean } from "../rungs/config-audit.ts";
 import type { Finding } from "../types.ts";
 
 export type ReviewStakesTier = "critical" | "core" | "verify" | "low";
@@ -111,9 +111,7 @@ function classifyFileStakes(
 }
 
 function collectWorkaroundSignals(repoRoot: string, baseRef: string): ReviewWorkaroundSignal[] {
-  const diff = spawnSync("git", ["-C", repoRoot, "diff", baseRef, "--unified=0", "--no-color"], {
-    encoding: "utf8",
-  });
+  const diff = runGitClean(repoRoot, ["diff", baseRef, "--unified=0", "--no-color"]);
   if (diff.status !== 0) return [];
 
   const signals: ReviewWorkaroundSignal[] = [];
@@ -176,9 +174,7 @@ export function buildReviewBrief(repoPath: string, options: ReviewBriefOptions =
   const maxDirs = options.maxDirs ?? 8;
   const maxDocLines = options.maxDocLines ?? 250;
 
-  const numstat = spawnSync("git", ["-C", repoRoot, "diff", baseRef, "--numstat", "--no-renames"], {
-    encoding: "utf8",
-  });
+  const numstat = runGitClean(repoRoot, ["diff", baseRef, "--numstat", "--no-renames"]);
   if (numstat.status !== 0) {
     throw new Error(`git diff failed for base "${baseRef}": ${(numstat.stderr ?? "").trim()}`);
   }

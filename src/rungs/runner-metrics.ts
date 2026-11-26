@@ -134,7 +134,7 @@ export function parseRunnerTestCounts(
     if (p.found || f.found) { passed += p.sum; failed += f.sum; matched = true; }
   }
   if (heads.has("pytest")) {
-    const summaryLines = output.split(/\r?\n/).filter((l) => /^=+\s+.*(?:passed|failed|error|no tests ran).*=+$|^\s*\d+\s+(?:passed|failed|errors?)\b.*\bin\s+\d/i.test(l.trim()));
+    const summaryLines = output.split(/\r?\n/).filter((l) => /^=+\s+.*(?:passed|failed|error|no tests ran).*=+$|^\s*(?:\d+\s+(?:passed|failed|errors?)\b.*\bin\s+\d|no tests ran\b)/i.test(l.trim()));
     const lastSummary = summaryLines[summaryLines.length - 1] ?? "";
     if (/no tests ran/i.test(lastSummary)) {
       matched = true;
@@ -206,8 +206,8 @@ export function parseRunnerTestCounts(
     const goFail = (output.match(/^FAIL\s+\S+/gm) ?? []).length;
     if (hasJsonFlag && (jsonPass > 0 || jsonFail > 0)) {
       passed += jsonPass; failed += jsonFail; matched = true;
-    } else if (goVerbose > 0 || goPkg > 0 || goFail > 0 || goVerboseFail > 0) {
-      passed += goVerbose > 0 ? goVerbose : goPkg;
+    } else if (goPkg > 0 || goFail > 0 || goVerboseFail > 0) {
+      passed += goPkg > 0 ? Math.max(goVerbose, goPkg) : 0;
       failed += Math.max(goFail, goVerboseFail);
       matched = true;
     }
