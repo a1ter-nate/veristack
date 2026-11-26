@@ -2,7 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { analyzeUniversalAntiSlopProd, analyzeUniversalLandminesTest } from "../anti-slop/oxc-antislop-landmines.ts";
 import { analyzeUniversalBendLaws } from "../anti-slop/universal-laws.ts";
+import { analyzeBlackHoleReplayGuards } from "../ast/blackhole-replay-guards.ts";
+import { analyzeT3ProdGuards } from "../ast/t3-immune-rules.ts";
 import { analyzeTsAstGuards, parseTsAst } from "../ast/ts-ast.ts";
+import { analyzeWave5AiFirstGuards } from "../ast/wave5-ai-first.ts";
+import { analyzeWave6TitansAGuards } from "../ast/wave6-titans-a.ts";
+import { analyzeWave7TitansBGuards } from "../ast/wave7-titans-b.ts";
 import { detectLanguage, type DiscoveredRepo, isTestFilePath, type ScannedFile } from "../discover.ts";
 import { lintNoComments } from "../no-comments.ts";
 import { lintImplicitStateMachinesInFile } from "../state-machines/index.ts";
@@ -160,16 +165,18 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
   const maxLines = options.maxLines ?? 500;
   const language = detectLanguage(rel);
 
-  if (!language) {
-    return { file: rel, tier, language: null, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: [] };
-  }
-
   let content = options.content;
   if (content === undefined) {
-    if (!fs.existsSync(abs)) {
-      return { file: rel, tier, language, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: [] };
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      throw new Error(`File not found: ${filePath}`);
     }
     content = fs.readFileSync(abs, "utf8");
+  }
+
+  const isSql = /\.sql$/i.test(rel);
+  const isShell = /\.(?:sh|bash)$/i.test(rel);
+  if (!language && !isSql && !isShell) {
+    return { file: rel, tier, language: null, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: [] };
   }
 
   const lines = content.length === 0 ? 0 : content.split(/\r?\n/).length;
@@ -184,41 +191,52 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
   };
 
   const rawFindings: Finding[] = [];
-  rawFindings.push(...lintNoComments(file.rel, file.content, language));
+  if (isSql) {
+    if (/(?:^|\/)migrations?\//i.test(file.rel)) rawFindings.push(...analyzeCveAndPostmortemGuards(file));
+    rawFindings.push(...analyzeWave6TitansAGuards(file));
+    rawFindings.push(...analyzeWave7TitansBGuards(file));
+  } else if (isShell) {
+    rawFindings.push(...analyzeWave5AiFirstGuards(file));
+    rawFindings.push(...analyzeWave7TitansBGuards(file));
+    rawFindings.push(...analyzeBlackHoleReplayGuards(file));
+    rawFindings.push(...analyzeT3ProdGuards(file));
+  } else if (language) {
+    rawFindings.push(...lintNoComments(file.rel, file.content, language));
 
-  if (!file.isTest && file.lines > maxLines) {
-    rawFindings.push({
-      id: `HF:max-file-lines:${file.rel}:1`,
-      rule: "max-file-lines",
-      category: "structure",
-      rung: "R1",
-      severity: "warn",
-      file: file.rel,
-      line: 1,
-      message: `${file.rel} has ${file.lines} lines (limit: ${maxLines}).`,
-      fix: "Split cohesive responsibilities into deeper modules with narrow interfaces.",
-    });
-  }
+    if (!file.isTest && file.lines > maxLines) {
+      rawFindings.push({
+        id: `HF:max-file-lines:${file.rel}:1`,
+        rule: "max-file-lines",
+        category: "structure",
+        rung: "R1",
+        severity: "warn",
+        file: file.rel,
+        line: 1,
+        message: `${file.rel} has ${file.lines} lines (limit: ${maxLines}).`,
+        fix: "Split cohesive responsibilities into deeper modules with narrow interfaces.",
+      });
+    }
 
-  const maskedAll = maskCode(file.content, language);
-  const cfgTestIdx = language === "rust" ? file.content.search(/#\[cfg\(test\)\]/) : -1;
-  const code = cfgTestIdx >= 0 ? maskedAll.slice(0, cfgTestIdx) : maskedAll;
-  const ast = parseTsAst(file);
+    const maskedAll = maskCode(file.content, language);
+    const cfgTestIdx = language === "rust" ? file.content.search(/#\[cfg\(test\)\]/) : -1;
+    const code = cfgTestIdx >= 0 ? maskedAll.slice(0, cfgTestIdx) : maskedAll;
+    const ast = parseTsAst(file);
 
-  if (file.isTest) {
-    scanImmediateTest(file, code, rawFindings);
-    rawFindings.push(...analyzeUniversalLandminesTest(file, code, ast));
-  } else {
-    scanImmediateProd(file, code, rawFindings);
-    rawFindings.push(...lintImplicitStateMachinesInFile(file));
-    rawFindings.push(...analyzeUniversalBendLaws(file));
-    rawFindings.push(...analyzeUniversalAntiSlopProd(file, ast));
-    rawFindings.push(...analyzeTsAstGuards(file, ast));
-    if (tier === "all") {
-      rawFindings.push(...analyzeRuntimeGuards(file));
-      rawFindings.push(...analyzeOssGuards(file));
-      rawFindings.push(...analyzeCveAndPostmortemGuards(file));
-      rawFindings.push(...analyzePerfHygiene(makeSingleFileRepo(repoRoot, file)));
+    if (file.isTest) {
+      scanImmediateTest(file, code, rawFindings);
+      rawFindings.push(...analyzeUniversalLandminesTest(file, code, ast));
+    } else {
+      scanImmediateProd(file, code, rawFindings);
+      rawFindings.push(...lintImplicitStateMachinesInFile(file));
+      rawFindings.push(...analyzeUniversalBendLaws(file));
+      rawFindings.push(...analyzeUniversalAntiSlopProd(file, ast));
+      rawFindings.push(...analyzeTsAstGuards(file, ast));
+      if (tier === "all") {
+        rawFindings.push(...analyzeRuntimeGuards(file));
+        rawFindings.push(...analyzeOssGuards(file));
+        rawFindings.push(...analyzeCveAndPostmortemGuards(file));
+        rawFindings.push(...analyzePerfHygiene(makeSingleFileRepo(repoRoot, file)));
+      }
     }
   }
 

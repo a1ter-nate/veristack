@@ -158,7 +158,16 @@ export function manageHooks(
   if (action === "status") {
     const installed = ALL_HARNESSES.filter((h) => {
       const p = manifestPathFor(repoRoot, h);
-      return fs.existsSync(p) && fs.readFileSync(p, "utf8").includes(VSTACK_MARKER);
+      if (!fs.existsSync(p)) return false;
+      try {
+        const parsed: unknown = JSON.parse(fs.readFileSync(p, "utf8"));
+        if (!isRecord(parsed) || parsed.disableAllHooks === true || !isRecord(parsed.hooks)) return false;
+        return Object.values(parsed.hooks).some(
+          (bucket) => Array.isArray(bucket) && bucket.some((entry) => containsVstackCommand(entry)),
+        );
+      } catch {
+        return false;
+      }
     });
     const envDisabled = process.env.VSTACK_HOOK_DISABLED === "1";
     const enabled = current.enabled && !envDisabled && installed.length > 0;

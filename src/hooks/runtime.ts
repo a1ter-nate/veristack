@@ -103,10 +103,21 @@ function extractEditedPaths(payload: Record<string, unknown>): string[] {
   return [...new Set(paths)];
 }
 
-function extractProposedContent(payload: Record<string, unknown>): string | undefined {
+const PROTECTED_CONTROL_PLANE =
+  /^(?:\.?vstack\.json|\.vstackignore|bunfig\.toml|\.verification\/(?:rungs|vstack|hooks|control-plan|invariants|behavior-changes|chokepoints)\.json|\.verification\/receipts\/|\.github\/CODEOWNERS$|CODEOWNERS$)/i;
+
+function extractProposedContent(payload: Record<string, unknown>, absFilePath: string): string | undefined {
   const toolInput = isRecord(payload.tool_input) ? payload.tool_input : payload;
   for (const key of ["content", "contents", "new_content", "file_text"]) {
     if (typeof toolInput[key] === "string") return toolInput[key];
+  }
+  const oldStr = typeof toolInput.old_string === "string" ? toolInput.old_string : typeof toolInput.oldString === "string" ? toolInput.oldString : undefined;
+  const newStr = typeof toolInput.new_string === "string" ? toolInput.new_string : typeof toolInput.newString === "string" ? toolInput.newString : undefined;
+  if (oldStr !== undefined && newStr !== undefined && fs.existsSync(absFilePath)) {
+    const existing = fs.readFileSync(absFilePath, "utf8");
+    if (existing.includes(oldStr)) {
+      return toolInput.replace_all === true ? existing.split(oldStr).join(newStr) : existing.replace(oldStr, newStr);
+    }
   }
   return undefined;
 }
@@ -160,10 +171,27 @@ export function executeHookEvent(
 
   if (event === "pre-edit") {
     const edited = extractEditedPaths(payload);
-    const proposed = extractProposedContent(payload);
     const findings: Finding[] = [];
     for (const filePath of edited) {
-      const res = scanSingleFile(filePath, { repoRoot, tier: "immediate", content: proposed });
+      const abs = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(repoRoot, filePath);
+      const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
+      if (PROTECTED_CONTROL_PLANE.test(rel)) {
+        findings.push({
+          id: `HOOK:protected:${rel}`,
+          rule: "hook-protected-control-plane",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: rel,
+          line: 1,
+          message: `Direct agent edit to verification control-plane file '${rel}' is blocked by pre-edit policy.`,
+          fix: "Fix the underlying code defect instead of weakening verification configs, manifests, receipts, or hooks.",
+        });
+        continue;
+      }
+      const proposed = extractProposedContent(payload, abs);
+      if (proposed === undefined && !fs.existsSync(abs)) continue;
+      const res = scanSingleFile(filePath, { repoRoot, tier: "immediate", content: proposed, strict: true });
       findings.push(...res.findings);
     }
     appendAuditLog(repoRoot, config.auditLog, { event, harness, files: edited, findings: findings.length });
@@ -192,7 +220,9 @@ export function executeHookEvent(
     const findings: Finding[] = [];
 
     for (const filePath of edited) {
-      const res = scanSingleFile(filePath, { repoRoot, tier });
+      const abs = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(repoRoot, filePath);
+      if (!fs.existsSync(abs)) continue;
+      const res = scanSingleFile(filePath, { repoRoot, tier, strict: true });
       if (res.language) touchedSet.add(res.file);
       for (const f of res.findings) {
         findings.push(f);
@@ -225,15 +255,14 @@ export function executeHookEvent(
   }
 
   const state = readSessionState(statePath);
-  const alreadyReported = new Set(state.reportedKeys);
   const findings: Finding[] = [];
 
   for (const rel of state.touchedFiles) {
-    const res = scanSingleFile(rel, { repoRoot, tier: "all" });
+    const abs = path.resolve(repoRoot, rel);
+    if (!fs.existsSync(abs)) continue;
+    const res = scanSingleFile(rel, { repoRoot, tier: "all", strict: true });
     for (const f of res.findings) {
-      if (harness === "grok" || !alreadyReported.has(findingKey(f))) {
-        findings.push(f);
-      }
+      findings.push(f);
     }
   }
 

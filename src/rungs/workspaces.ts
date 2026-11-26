@@ -123,13 +123,21 @@ export function finalizeRung(input: RungBuilderInput): RungStatus {
 export function buildWorkspaceLadders(
   repo: DiscoveredRepo,
   inventory: readonly TestFileRecord[],
+  findings: readonly { file: string; severity: string }[] = [],
 ): WorkspaceLadderSummary[] {
   const workspaces = discoverWorkspaces(repo, repo.manifest);
   if (workspaces.length === 0) return [];
   return workspaces.map((ws) => {
     const prefix = `${ws.path}/`;
-    const subProd = repo.files.filter((f) => f.language && !f.isTest && f.rel.startsWith(prefix));
-    const subInv = inventory.filter((t) => t.file.startsWith(prefix));
+    const childPrefixes = workspaces
+      .filter((other) => other.path !== ws.path && other.path.startsWith(prefix))
+      .map((other) => `${other.path}/`);
+    const belongsToWs = (rel: string): boolean =>
+      rel.startsWith(prefix) && !childPrefixes.some((cp) => rel.startsWith(cp));
+
+    const subProd = repo.files.filter((f) => f.language && !f.isTest && belongsToWs(f.rel));
+    const subInv = inventory.filter((t) => belongsToWs(t.file));
+    const subErrors = findings.filter((f) => f.severity === "error" && belongsToWs(f.file)).length;
     const highRiskFiles = subProd.filter((f) => HIGH_RISK_PATH.test(f.rel)).length;
     const subR2 = subInv.filter((t) => t.rung === "R2").length;
     const subR3 = subInv.filter((t) => t.rung === "R3").length;
@@ -139,7 +147,8 @@ export function buildWorkspaceLadders(
     const needsR7 = ws.archetype !== "library";
     const checks = [subR2 > 0, subR3 > 0, ...(needsR4 ? [subR4 > 0] : []), ...(needsR7 ? [subR7 > 0] : [])];
     const wellCoveredCount = checks.filter(Boolean).length;
-    const score = Math.round((wellCoveredCount / Math.max(1, checks.length)) * 100);
+    let score = Math.round((wellCoveredCount / Math.max(1, checks.length)) * 100);
+    if (subErrors > 0) score = Math.min(score, 50);
     return {
       name: ws.name,
       path: ws.path,

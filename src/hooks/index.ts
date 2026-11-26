@@ -28,6 +28,18 @@ function readStdinSync(): string {
   }
 }
 
+function firstPositionalArg(args: readonly string[], valueFlags: ReadonlySet<string>): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (valueFlags.has(a)) {
+      i += 1;
+      continue;
+    }
+    if (!a.startsWith("-")) return a;
+  }
+  return undefined;
+}
+
 export function handleHooksAndDoctorCli(
   cmd: string,
   rest: readonly string[],
@@ -35,7 +47,7 @@ export function handleHooksAndDoctorCli(
   asJson: boolean,
 ): number | null {
   if (cmd === "check-file") {
-    const fileArg = rest.find((a) => !a.startsWith("-"));
+    const fileArg = firstPositionalArg(rest, new Set(["--tier", "--max-lines"]));
     if (!fileArg) throw new Error("vstack check-file requires a file path.");
     const tier = parseTier(parseFlag(rest, "--tier")) ?? "immediate";
     const maxRaw = parseFlag(rest, "--max-lines");
@@ -69,7 +81,7 @@ export function handleHooksAndDoctorCli(
       throw new Error(`Unsupported hooks action "${rawAction}". Expected: on | off | status | reset.`);
     }
     const action: HooksAdminAction = rawAction;
-    const dirArg = rest.slice(1).find((a) => !a.startsWith("-")) ?? ".";
+    const dirArg = firstPositionalArg(rest.slice(1), new Set(["--harness", "--command"])) ?? ".";
     const harnessesRaw = parseFlag(rest, "--harness");
     const harnesses = harnessesRaw
       ? harnessesRaw.split(",").map((s) => parseHarness(s.trim())).filter((h): h is HookHarness => Boolean(h))

@@ -18,7 +18,6 @@ export interface CodeownersPerimeterResult {
   passed: boolean;
 }
 
-const VALID_CODEOWNERS_PATHS = new Set([".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]);
 const VALID_OWNER_TOKEN = /^(?:@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9_.-]+)?|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})$/;
 const ALLOWED_SHELLS = new Set(["bash", "sh", "pwsh", "powershell", "zsh"]);
 
@@ -54,6 +53,9 @@ function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
   if (name !== "pull_request" && name !== "push") return false;
   if (!isRecord(cfg)) return true;
   const defaultBranches = new Set(["main", "master", "trunk", "**", "*"]);
+  if (name === "push" && Array.isArray(cfg.tags) && cfg.tags.length > 0 && (!Array.isArray(cfg.branches) || cfg.branches.length === 0)) {
+    return false;
+  }
   if (Array.isArray(cfg.paths) && cfg.paths.length > 0) return false;
   if (Array.isArray(cfg["paths-ignore"]) && cfg["paths-ignore"].length > 0) {
     const risky = cfg["paths-ignore"].some(
@@ -135,14 +137,18 @@ export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
 
   const activeCommands: string[] = [];
   const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
+  const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
     if (deadJobSet.has(jobId) || !isRecord(jobVal)) continue;
     const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : wfDefaults;
+    const jobWorkDir = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run["working-directory"] : wfWorkDir;
     const steps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
     for (const step of steps) {
       if (!isRecord(step)) continue;
       if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
       if (!isAllowedShell(step.shell ?? jobShell)) continue;
+      const wd = step["working-directory"] ?? jobWorkDir;
+      if (typeof wd === "string" && wd.trim() !== "" && wd.trim() !== "." && wd.trim() !== "./") continue;
       if (typeof step.run === "string") {
         activeCommands.push(...sanitizeShellBlock(step.run));
       }
@@ -177,7 +183,10 @@ export function auditCodeownersPerimeter(
   files: readonly ScannedFile[],
   allRelPaths: readonly string[],
 ): CodeownersPerimeterResult {
-  const coFile = files.find((f) => VALID_CODEOWNERS_PATHS.has(f.rel));
+  const coFile =
+    files.find((f) => f.rel === ".github/CODEOWNERS") ??
+    files.find((f) => f.rel === "CODEOWNERS") ??
+    files.find((f) => f.rel === "docs/CODEOWNERS");
   if (!coFile) {
     return { hasFile: false, uncoveredSurfaces: [".github/CODEOWNERS"], passed: false };
   }

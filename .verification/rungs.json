@@ -29,7 +29,7 @@
           "src/rungs/mutation-probe.ts",
           "src/rungs/oracle-check.ts"
         ],
-        "maxMutants": 8,
+        "maxMutants": 12,
         "minKillRate": 0.75
       }
     },

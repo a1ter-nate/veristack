@@ -45,7 +45,7 @@ jobs:
           node scripts/check-max-lines.mjs
       - run: bun run check
       - run: bun src/cli.ts bench . --fail
-      - run: bun run build && node bin/vstack.mjs --help > /dev/null && node bin/vstack.mjs scan . --strict > /dev/null
+      - run: bun run build && node bin/vstack.mjs verify . --strict > /dev/null
       - name: Ensure npm supports Trusted Publishing OIDC
         run: npm install -g npm@latest
       - name: Resolve next monotonic version

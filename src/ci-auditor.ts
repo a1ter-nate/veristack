@@ -1,12 +1,17 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { DiscoveredRepo } from "./discover.ts";
+import { type DiscoveredRepo, isTestFilePath } from "./discover.ts";
 import { auditDiffInvariantLoss } from "./ast/invariant-loss.ts";
-import { auditManifestDowngrade } from "./rungs/command-audit.ts";
 import { maskStrings } from "./test-lexical.ts";
 import type { Finding } from "./types.ts";
-import { auditDiffAntiEvasion, type DiffLineEvent } from "./zero-defect/anti-evasion.ts";
+import {
+  auditDiffAntiEvasion,
+  auditManifestDowngrade,
+  type DiffLineEvent,
+  normalizeDiffMigrationPairs,
+  scanUntrackedConfigCheats,
+} from "./zero-defect/anti-evasion.ts";
 import { auditExtendedCiRules, auditMaestroFlow } from "./zero-defect/ci-workflow-rules.ts";
 
 const CHECK_TOOL =
@@ -135,7 +140,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   if (!baseRef || baseRef.startsWith("-")) {
     throw new Error(`Invalid git baseRef "${baseRef}".`);
   }
-  const diff = spawnSync("git", ["-C", repoPath, "diff", baseRef, "--unified=0", "--no-color"], {
+  const diff = spawnSync("git", ["-C", repoPath, "diff", "-M20%", baseRef, "--unified=0", "--no-color"], {
     encoding: "utf8",
   });
   if (diff.status !== 0) {
@@ -156,9 +161,12 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
 
   const findings: Finding[] = [];
   const diffEvents: DiffLineEvent[] = [];
+  const renamedJsToTsFiles = new Set<string>();
   let prevOldFile = "";
+  let renameFrom = "";
   let currentFile = "<diff>";
   let currentLine = 1;
+  let delLine = 1;
 
   const maskedCache = new Map<string, string[] | null>();
   const getMaskedLine = (rel: string, lineNum: number, fallback: string): string => {
@@ -178,12 +186,45 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   };
 
   for (const raw of diff.stdout.split(/\r?\n/)) {
+    const hdr = /^diff --git a\/(.+?) b\/(.+)$/.exec(raw);
+    if (hdr) {
+      prevOldFile = hdr[1] ?? "";
+      currentFile = hdr[2] ?? "<diff>";
+      renameFrom = "";
+      continue;
+    }
+    if (raw.startsWith("rename from ")) {
+      renameFrom = raw.slice(12).trim();
+      continue;
+    }
+    if (raw.startsWith("rename to ")) {
+      const renameTo = raw.slice(10).trim();
+      const jsStem = /^(.+)\.([cm]?)js(x?)$/i.exec(renameFrom);
+      if (jsStem && renameTo === `${jsStem[1]}.${jsStem[2]}ts${jsStem[3]}`) {
+        renamedJsToTsFiles.add(renameTo);
+      }
+      if (renameFrom && isTestFilePath(renameFrom) && !isTestFilePath(renameTo)) {
+        findings.push({
+          id: `DIFF:test-renamed-out:${renameFrom}`,
+          rule: "diff-test-file-deleted",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: renameTo,
+          line: 1,
+          message: `Test file '${renameFrom}' was renamed out of test discovery to '${renameTo}'.`,
+          fix: "Keep test files matching test discovery globs so they stay executed in CI.",
+        });
+      }
+      renameFrom = "";
+      continue;
+    }
     if (raw.startsWith("--- a/")) {
       prevOldFile = raw.slice(6);
       continue;
     }
     if (raw === "+++ /dev/null") {
-      if (prevOldFile && /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.go$|_tests?\.rs$|(?:^|\/)test_[^/]+\.py$|tests?\.cs$)/i.test(prevOldFile)) {
+      if (prevOldFile && isTestFilePath(prevOldFile)) {
         findings.push({
           id: `DIFF:test-file-deleted:${prevOldFile}`,
           rule: "diff-test-file-deleted",
@@ -203,16 +244,18 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
       currentFile = raw.slice(6);
       continue;
     }
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(raw);
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(raw);
     if (hunk) {
-      currentLine = Number(hunk[1]);
+      delLine = Math.max(1, Number(hunk[1]));
+      currentLine = Math.max(1, Number(hunk[2]));
       continue;
     }
     if (raw.startsWith("-") && !raw.startsWith("---")) {
       const removed = raw.slice(1);
       if (!/\.(?:md|mdx|txt|rst)$/.test(currentFile.toLowerCase())) {
-        diffEvents.push({ file: currentFile, line: currentLine, kind: "del", raw: removed, code: removed });
+        diffEvents.push({ file: currentFile, line: delLine, kind: "del", raw: removed, code: removed });
       }
+      delLine += 1;
       continue;
     }
     if (!raw.startsWith("+") || raw.startsWith("+++")) continue;
@@ -235,213 +278,48 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
       : added;
     diffEvents.push({ file: currentFile, line: currentLine, kind: "add", raw: added, code: codeLine });
 
+    const pushCheat = (idSuffix: string, rule: string, message: string, fix: string): void => {
+      findings.push({ id: `DIFF:${idSuffix}:${currentFile}:${currentLine}`, rule, category: "cheat", rung: "R0", severity: "error", file: currentFile, line: currentLine, message, fix });
+    };
+
     if (isWorkflowOrScript && /git\s+(?:push|commit)\b[^#\n]*--no-verify|\bHUSKY=0\b/.test(stripped)) {
-      findings.push({
-        id: `DIFF:no-verify:${currentFile}:${currentLine}`,
-        rule: "diff-hook-bypass",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added hook bypass (--no-verify or HUSKY=0) in diff.",
-        fix: "Remove the hook bypass and make the pre-push/pre-commit check pass cleanly.",
-      });
+      pushCheat("no-verify", "diff-hook-bypass", "Added hook bypass (--no-verify or HUSKY=0) in diff.", "Remove the hook bypass and make the pre-push/pre-commit check pass cleanly.");
     }
-
     if (isWorkflowOrScript && /\|\|\s*(?:true\b|:)/.test(stripped) && CHECK_TOOL.test(stripped)) {
-      findings.push({
-        id: `DIFF:swallowed:${currentFile}:${currentLine}`,
-        rule: "diff-swallowed-failure",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added '|| true' after a check command in diff.",
-        fix: "Remove '|| true' and fix the failing check.",
-      });
+      pushCheat("swallowed", "diff-swallowed-failure", "Added '|| true' after a check command in diff.", "Remove '|| true' and fix the failing check.");
     }
-
-    if (
-      /\[(?:Fact|Theory|Test|TestMethod)\s*\([^\]]*\bSkip\s*=|\[Ignore\b/.test(codeLine) &&
-      lowerFile.endsWith(".cs")
-    ) {
-      findings.push({
-        id: `DIFF:cs-skip:${currentFile}:${currentLine}`,
-        rule: "diff-csharp-skipped-test",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added skipped/ignored C# test attribute in diff.",
-        fix: "Fix or delete the test instead of skipping it with Skip= or [Ignore].",
-      });
+    if (/\[(?:Fact|Theory|Test|TestMethod)\s*\([^\]]*\bSkip\s*=|\[Ignore\b/.test(codeLine) && lowerFile.endsWith(".cs")) {
+      pushCheat("cs-skip", "diff-csharp-skipped-test", "Added skipped/ignored C# test attribute in diff.", "Fix or delete the test instead of skipping it with Skip= or [Ignore].");
     }
-
-    if (
-      /<TreatWarningsAsErrors>\s*false\s*<\/TreatWarningsAsErrors>/i.test(added) &&
-      /(?:\.csproj|Directory\.Build\.props)$/i.test(currentFile)
-    ) {
-      findings.push({
-        id: `DIFF:cs-warn-false:${currentFile}:${currentLine}`,
-        rule: "diff-csproj-warnings-not-errors",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Disabled TreatWarningsAsErrors in MSBuild config diff.",
-        fix: "Keep <TreatWarningsAsErrors>true</TreatWarningsAsErrors> enabled.",
-      });
+    if (/<TreatWarningsAsErrors>\s*false\s*<\/TreatWarningsAsErrors>/i.test(added) && /(?:\.csproj|Directory\.Build\.props)$/i.test(currentFile)) {
+      pushCheat("cs-warn-false", "diff-csproj-warnings-not-errors", "Disabled TreatWarningsAsErrors in MSBuild config diff.", "Keep <TreatWarningsAsErrors>true</TreatWarningsAsErrors> enabled.");
     }
-
-    if (
-      /<NoWarn>\s*[^<\s][^<]*<\/NoWarn>/i.test(added) &&
-      /(?:\.csproj|Directory\.Build\.props)$/i.test(currentFile)
-    ) {
-      findings.push({
-        id: `DIFF:cs-nowarn:${currentFile}:${currentLine}`,
-        rule: "diff-csproj-nowarn",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added <NoWarn> suppression in MSBuild config diff.",
-        fix: "Fix the warning at the source instead of adding global <NoWarn> entries.",
-      });
+    if (/<NoWarn>\s*[^<\s][^<]*<\/NoWarn>/i.test(added) && /(?:\.csproj|Directory\.Build\.props)$/i.test(currentFile)) {
+      pushCheat("cs-nowarn", "diff-csproj-nowarn", "Added <NoWarn> suppression in MSBuild config diff.", "Fix the warning at the source instead of adding global <NoWarn> entries.");
     }
-
-    if (
-      /^\s*#pragma\s+warning\s+disable\b/.test(codeLine) &&
-      !/(?:\/\/\s*(?:WARNING|SAFETY):|--\s*\S)/i.test(added) &&
-      lowerFile.endsWith(".cs")
-    ) {
-      findings.push({
-        id: `DIFF:cs-pragma:${currentFile}:${currentLine}`,
-        rule: "diff-csharp-pragma-disable",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added unjustified #pragma warning disable in diff.",
-        fix: "Fix the warning or document a concrete // WARNING: or // SAFETY: reason.",
-      });
+    if (/^\s*#pragma\s+warning\s+disable\b/.test(codeLine) && !/(?:\/\/\s*(?:WARNING|SAFETY):|--\s*\S)/i.test(added) && lowerFile.endsWith(".cs")) {
+      pushCheat("cs-pragma", "diff-csharp-pragma-disable", "Added unjustified #pragma warning disable in diff.", "Fix the warning or document a concrete // WARNING: or // SAFETY: reason.");
     }
-
     if (/^\s*#\[ignore\b/.test(codeLine) && lowerFile.endsWith(".rs")) {
-      findings.push({
-        id: `DIFF:rs-ignore:${currentFile}:${currentLine}`,
-        rule: "diff-rust-ignored-test",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added #[ignore] on a Rust test in diff.",
-        fix: "Fix or delete the test instead of ignoring it.",
-      });
+      pushCheat("rs-ignore", "diff-rust-ignored-test", "Added #[ignore] on a Rust test in diff.", "Fix or delete the test instead of ignoring it.");
     }
-
-    if (
-      /#!?\s*\[\s*allow\s*\([^)]*(?:warnings|clippy::all|clippy::unwrap_used|clippy::wildcard_enum_match_arm)/i.test(
-        codeLine,
-      ) &&
-      !/reason\s*=/.test(added) &&
-      lowerFile.endsWith(".rs")
-    ) {
-      findings.push({
-        id: `DIFF:rs-allow:${currentFile}:${currentLine}`,
-        rule: "diff-rust-allow-lint",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added blanket #[allow(...)] lint suppression in Rust diff.",
-        fix: 'Fix the warning or use #[expect(..., reason = "<invariant>")].',
-      });
+    if (/#!?\s*\[\s*allow\s*\([^)]*(?:warnings|clippy::all|clippy::unwrap_used|clippy::wildcard_enum_match_arm)/i.test(codeLine) && !/reason\s*=/.test(added) && lowerFile.endsWith(".rs")) {
+      pushCheat("rs-allow", "diff-rust-allow-lint", "Added blanket #[allow(...)] lint suppression in Rust diff.", 'Fix the warning or use #[expect(..., reason = "<invariant>")].');
     }
-
     if (/@(?:pytest\.mark\.(?:skip|xfail)|unittest\.skip)\b/.test(codeLine) && lowerFile.endsWith(".py")) {
-      findings.push({
-        id: `DIFF:py-skip:${currentFile}:${currentLine}`,
-        rule: "diff-python-skipped-test",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added @pytest.mark.skip / xfail / @unittest.skip in Python diff.",
-        fix: "Fix or delete the test instead of skipping it.",
-      });
+      pushCheat("py-skip", "diff-python-skipped-test", "Added @pytest.mark.skip / xfail / @unittest.skip in Python diff.", "Fix or delete the test instead of skipping it.");
     }
-
     if (/#\s*(?:type:\s*ignore\s*$|noqa\s*$)/.test(added) && lowerFile.endsWith(".py")) {
-      findings.push({
-        id: `DIFF:py-suppress:${currentFile}:${currentLine}`,
-        rule: "diff-python-bare-suppression",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added bare '# type: ignore' or '# noqa' suppression in Python diff.",
-        fix: "Fix the diagnostic or attach an explicit error code and concrete reason.",
-      });
+      pushCheat("py-suppress", "diff-python-bare-suppression", "Added bare '# type: ignore' or '# noqa' suppression in Python diff.", "Fix the diagnostic or attach an explicit error code and concrete reason.");
     }
-
-    if (
-      /\b(?:describe|test|it)(?:\.concurrent)?\.(?:skip|only|todo|fixme)\s*\(|\b(?:xdescribe|xit|xtest|fdescribe|fit)\s*\(/.test(
-        codeLine,
-      ) &&
-      /\.[cm]?[jt]sx?$/.test(lowerFile)
-    ) {
-      findings.push({
-        id: `DIFF:ts-skip:${currentFile}:${currentLine}`,
-        rule: "diff-ts-skipped-test",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added skipped/focused TS/JS test (.skip/.only/.todo) in diff.",
-        fix: "Fix or delete the test instead of skipping or focusing it.",
-      });
+    if (isTestFilePath(currentFile) && /\b(?:describe|test|it)(?:\.concurrent)?\.(?:skip|only|todo|fixme)\s*\(|\b(?:xdescribe|xit|xtest|fdescribe|fit)\s*\(/.test(codeLine) && /\.[cm]?[jt]sx?$/.test(lowerFile)) {
+      pushCheat("ts-skip", "diff-ts-skipped-test", "Added skipped/focused TS/JS test (.skip/.only/.todo) in diff.", "Fix or delete the test instead of skipping or focusing it.");
     }
-
     if (/\bgc\.disable\s*\(\s*\)|#\s*pragma\s+GCC\s+optimize\b|\bGC\.TryStartNoGCRegion\s*\(/.test(codeLine)) {
-      findings.push({
-        id: `DIFF:perf-cheat:${currentFile}:${currentLine}`,
-        rule: "diff-perf-benchmark-tampering",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added GC-disabling or compiler-pragma benchmark tampering in diff.",
-        fix: "Remove benchmark tampering and optimize the actual algorithm or data layout.",
-      });
+      pushCheat("perf-cheat", "diff-perf-benchmark-tampering", "Added GC-disabling or compiler-pragma benchmark tampering in diff.", "Remove benchmark tampering and optimize the actual algorithm or data layout.");
     }
-
-    if (
-      (/\bgit\s+(?:log\s+--all|show\s+origin\/|rev-list\s+--all)\b/.test(added) && /test|spec/i.test(lowerFile)) ||
-      /\bprocess\.env\.NODE_ENV\s*===?\s*["']test["']\s*&&\s*[A-Za-z0-9_.]+\s*===?\s*["']/.test(added)
-    ) {
-      findings.push({
-        id: `DIFF:agent-cheat:${currentFile}:${currentLine}`,
-        rule: "diff-agent-oracle-tampering",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: currentFile,
-        line: currentLine,
-        message: "Added agent reward-hacking pattern (test-specific input hardcoding in prod or git history mining in tests).",
-        fix: "Implement the genuine general fix without branching on test inputs or inspecting git history.",
-      });
+    if ((/\bgit\s+(?:log\s+--all|show\s+origin\/|rev-list\s+--all)\b/.test(added) && /test|spec/i.test(lowerFile)) || /\bprocess\.env\.NODE_ENV\s*===?\s*["']test["']\s*&&\s*[A-Za-z0-9_.]+\s*===?\s*["']/.test(added)) {
+      pushCheat("agent-cheat", "diff-agent-oracle-tampering", "Added agent reward-hacking pattern (test-specific input hardcoding in prod or git history mining in tests).", "Implement the genuine general fix without branching on test inputs or inspecting git history.");
     }
 
     if (isWorkflowOrScript) {
@@ -465,9 +343,12 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
     currentLine += 1;
   }
 
-  findings.push(...auditDiffAntiEvasion(diffEvents));
-  findings.push(...auditDiffInvariantLoss(diffEvents, { allowTestedPredicateRefactor: true }));
+  const { events: normalizedEvents, migratedJsToTsFiles } = normalizeDiffMigrationPairs(diffEvents);
+  for (const f of renamedJsToTsFiles) migratedJsToTsFiles.add(f);
+  findings.push(...auditDiffAntiEvasion(normalizedEvents, { migratedJsToTsFiles }));
+  findings.push(...auditDiffInvariantLoss(normalizedEvents, { allowTestedPredicateRefactor: true, migratedJsToTsFiles }));
   findings.push(...auditManifestDowngrade(repoPath, baseRef));
+  findings.push(...scanUntrackedConfigCheats(repoPath));
 
   return findings;
 }

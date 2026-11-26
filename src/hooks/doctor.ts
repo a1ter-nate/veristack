@@ -44,7 +44,16 @@ export function runDoctor(repoPath: string): DoctorReport {
     const abs = path.join(repo.root, rel);
     if (!fs.existsSync(abs)) continue;
     try {
-      JSON.parse(fs.readFileSync(abs, "utf8"));
+      const parsed = JSON.parse(fs.readFileSync(abs, "utf8")) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object" && parsed.disableAllHooks === true) {
+        findings.push({
+          id: `DOC:hooks-disabled:${rel}`,
+          level: "mention",
+          artifact: rel,
+          summary: `${rel} sets disableAllHooks: true, silently disabling Veristack agent hooks.`,
+          fix: "Remove disableAllHooks: true so per-edit and stop hooks execute.",
+        });
+      }
     } catch {
       findings.push({
         id: `DOC:malformed-hook:${rel}`,
@@ -57,17 +66,28 @@ export function runDoctor(repoPath: string): DoctorReport {
   }
 
   const cfg = loadRepoConfig(repo.root);
-  if (cfg.configPath && Object.values(cfg.rules).includes("off")) {
-    const disabled = Object.entries(cfg.rules)
-      .filter(([, sev]) => sev === "off")
-      .map(([rule]) => rule);
-    findings.push({
-      id: `DOC:disabled-rules:${cfg.configPath}`,
-      level: "mention",
-      artifact: cfg.configPath,
-      summary: `${cfg.configPath} disables ${disabled.length} Veristack rule(s): ${disabled.join(", ")}.`,
-      fix: "Re-enable disabled rules to run Veristack at full rigidity (--strict).",
-    });
+  if (cfg.configPath) {
+    const weakened = Object.entries(cfg.rules)
+      .filter(([, sev]) => sev === "off" || sev === "info")
+      .map(([rule, sev]) => `${rule}=${sev}`);
+    if (weakened.length > 0) {
+      findings.push({
+        id: `DOC:disabled-rules:${cfg.configPath}`,
+        level: "mention",
+        artifact: cfg.configPath,
+        summary: `${cfg.configPath} disables or downgrades ${weakened.length} Veristack rule(s): ${weakened.join(", ")}.`,
+        fix: "Re-enable disabled/downgraded rules to run Veristack at full rigidity (--strict).",
+      });
+    }
+    if (cfg.ignore.length > 0) {
+      findings.push({
+        id: `DOC:config-ignore:${cfg.configPath}`,
+        level: "mention",
+        artifact: cfg.configPath,
+        summary: `${cfg.configPath} ignores ${cfg.ignore.length} path pattern(s): ${cfg.ignore.join(", ")}.`,
+        fix: "Remove config ignore exclusions so all source/test paths remain verified.",
+      });
+    }
   }
 
   for (const f of auditFormalSync(repo)) {

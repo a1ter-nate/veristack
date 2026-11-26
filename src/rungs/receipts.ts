@@ -4,12 +4,14 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
 import type { Finding, PlantedFaultReport, RungId, RungManifest, RungReceipt } from "../types.ts";
-import { scrubChildEnv } from "./command-audit.ts";
+import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
 import { loadRungManifest } from "./manifest.ts";
 import { runPlantedFaultCanary } from "./mutation-probe.ts";
 import { parseStructuredReports } from "./reports.ts";
 
 const RECEIPTS_REL_DIR = ".verification/receipts";
+const EPHEMERAL_REPORT_RE =
+  /^(?:\.verification\/(?:receipts|reports)\/|junit\.xml$|test-results\/junit\.xml$|TestResults\/results\.trx$|coverage\/(?:lcov\.info|cobertura-coverage\.xml)$|lcov\.info$)/;
 
 function digestPayload(receipt: Omit<RungReceipt, "digest">, hmacKeyOverride?: string): string {
   const canonical = JSON.stringify({
@@ -38,12 +40,12 @@ function listHashablePaths(repo: DiscoveredRepo): string[] {
   });
   if (gitList.status === 0) {
     for (const rel of gitList.stdout.split("\0")) {
-      if (!rel || rel.startsWith(`${RECEIPTS_REL_DIR}/`)) continue;
+      if (!rel || EPHEMERAL_REPORT_RE.test(rel)) continue;
       paths.add(rel);
     }
   }
   for (const rel of repo.allRelPaths) {
-    if (!rel.startsWith(`${RECEIPTS_REL_DIR}/`)) paths.add(rel);
+    if (!EPHEMERAL_REPORT_RE.test(rel)) paths.add(rel);
   }
   for (const extra of [".vstackignore", ".vstack.json", ".verification/vstack.json", "bun.lock", "pnpm-lock.yaml", "package-lock.json"]) {
     if (fs.existsSync(path.join(repo.root, extra))) paths.add(extra);
@@ -92,34 +94,49 @@ function parseCommandMetrics(
   output: string,
   rung: RungId,
   minMtimeMs: number,
+  maxMtimeMs: number,
 ): RungReceipt["metrics"] {
-  const structured = parseStructuredReports(repoRoot, { minMtimeMs, rung });
+  const structured = parseStructuredReports(repoRoot, { minMtimeMs, maxMtimeMs, rung });
   const metrics: NonNullable<RungReceipt["metrics"]> = {};
-  if (structured.testsPassed !== undefined) metrics.testsPassed = structured.testsPassed;
-  if (structured.testsFailed !== undefined) metrics.testsFailed = structured.testsFailed;
-  if (structured.mutationScore !== undefined) metrics.mutationScore = structured.mutationScore;
+  if (structured.testsPassed !== undefined && Number.isFinite(structured.testsPassed)) {
+    metrics.testsPassed = structured.testsPassed;
+  }
+  if (structured.testsFailed !== undefined && Number.isFinite(structured.testsFailed)) {
+    metrics.testsFailed = structured.testsFailed;
+  }
+  if (structured.mutationScore !== undefined && Number.isFinite(structured.mutationScore)) {
+    metrics.mutationScore = structured.mutationScore;
+  }
 
   if (metrics.testsPassed === undefined) {
-    const bunPass = /\b(\d+)\s+pass\b/i.exec(output);
+    const bunPass = /^\s*(\d+)\s+pass\b/im.exec(output);
     const nodePass = /\bpass\s+(\d+)\b/i.exec(output);
     const pytestPass = /(\d+)\s+passed\b/i.exec(output);
     const cargoPass = /test result:\s*ok\.\s*(\d+)\s+passed/i.exec(output);
     const dotnetPass = /Passed:\s*(\d+)/i.exec(output);
+    const mochaPass = /\b(\d+)\s+passing\b/i.exec(output);
+    const avaPass = /\b(\d+)\s+tests?\s+passed\b/i.exec(output);
+    const phpunitPass = /OK\s*\((\d+)\s+tests?/i.exec(output);
+    const rspecPass = /(\d+)\s+examples?,\s*0\s+failures?/i.exec(output);
     const goVerbosePass = (output.match(/---\s+PASS:/g) ?? []).length;
-    const goPkgPass = (output.match(/^ok\s+\S+/gm) ?? []).length;
+    const goPkgPass = (output.match(/^ok\s+\S+(?![^\n]*\[no tests to run\])/gm) ?? []).length;
 
     if (bunPass?.[1]) metrics.testsPassed = Number(bunPass[1]);
     else if (nodePass?.[1]) metrics.testsPassed = Number(nodePass[1]);
     else if (pytestPass?.[1]) metrics.testsPassed = Number(pytestPass[1]);
     else if (cargoPass?.[1]) metrics.testsPassed = Number(cargoPass[1]);
     else if (dotnetPass?.[1]) metrics.testsPassed = Number(dotnetPass[1]);
+    else if (mochaPass?.[1]) metrics.testsPassed = Number(mochaPass[1]);
+    else if (avaPass?.[1]) metrics.testsPassed = Number(avaPass[1]);
+    else if (phpunitPass?.[1]) metrics.testsPassed = Number(phpunitPass[1]);
+    else if (rspecPass?.[1]) metrics.testsPassed = Number(rspecPass[1]);
     else if (goVerbosePass > 0) metrics.testsPassed = goVerbosePass;
     else if (goPkgPass > 0) metrics.testsPassed = goPkgPass;
 
-    const bunFail = /\b(\d+)\s+fail\b/i.exec(output);
-    const nodeFail = /\bfail\s+(\d+)\b/i.exec(output);
+    const bunFail = /^\s*(\d+)\s+fail\b/im.exec(output);
+    const nodeFail = /^\s*ℹ\s*fail\s+(\d+)\b/im.exec(output);
     const pytestFail = /(\d+)\s+failed\b/i.exec(output);
-    const cargoFail = /(\d+)\s+failed/i.exec(output);
+    const cargoFail = /test result:[^;\n]*?(\d+)\s+failed/i.exec(output);
     const dotnetFail = /Failed:\s*(\d+)/i.exec(output);
     const goFail = (output.match(/^FAIL\s+\S+/gm) ?? []).length;
     const failedCount =
@@ -148,21 +165,20 @@ export function runRungAndWriteReceipt(
   if (!entry) {
     throw new Error(`Rung ${rung} is not declared in .verification/rungs.json.`);
   }
+  const parsedCmd = parseAndValidateCommandArgv(rung, entry.command, repo.root);
+  if (parsedCmd.error) {
+    throw new Error(parsedCmd.error);
+  }
   const treeHashBefore = computeRepoTreeHash(repo);
   const commitSha = readGitHeadSha(repo.root);
   const startedEpochMs = Date.now();
   const started = performance.now();
-  const proc = spawnSync(entry.command, [], {
-    cwd: repo.root,
-    shell: true,
-    env: scrubChildEnv(),
-    encoding: "utf8",
-    timeout: 300_000,
-  });
+  const proc = runArgvChain(parsedCmd.steps, repo.root, scrubChildEnv(), 300_000);
   const durationMs = Math.round(performance.now() - started);
-  const exitCode = proc.status ?? 1;
-  const combined = `${proc.stdout ?? ""}\n${proc.stderr ?? ""}`;
-  const metrics = parseCommandMetrics(repo.root, combined, rung, startedEpochMs - 25);
+  const finishedEpochMs = Date.now();
+  const exitCode = proc.status;
+  const combined = `${proc.stdout}\n${proc.stderr}`;
+  const metrics = parseCommandMetrics(repo.root, combined, rung, startedEpochMs, finishedEpochMs + 1000);
   const treeHashAfter = computeRepoTreeHash(repo);
   const mutatedTree = treeHashBefore !== treeHashAfter;
 
@@ -177,8 +193,11 @@ export function runRungAndWriteReceipt(
     });
   }
 
+  const testsPassed = metrics?.testsPassed;
+  const testsFailed = metrics?.testsFailed ?? 0;
   const testCountMissing =
-    (rung === "R2" || rung === "R3") && (!metrics || (metrics.testsPassed ?? 0) <= 0 || (metrics.testsFailed ?? 0) > 0);
+    (rung === "R2" || rung === "R3") &&
+    (testsPassed === undefined || !Number.isFinite(testsPassed) || testsPassed <= 0 || !Number.isFinite(testsFailed) || testsFailed > 0);
   const minCanaryMutants = entry.canary?.enabled ? Math.min(4, entry.canary.maxMutants ?? 4) : 0;
   const canaryFailed = Boolean(
     canary && (!canary.passed || canary.totalMutants < minCanaryMutants || canary.invalidKills > 0),

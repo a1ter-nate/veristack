@@ -381,9 +381,17 @@ async function run(): Promise<number> {
     };
     const maxTimeRaw = parseFlagValue(rest, "--max-time-exp");
     const maxSpaceRaw = parseFlagValue(rest, "--max-space-exp");
+    const maxTimeExp = maxTimeRaw !== undefined ? Number(maxTimeRaw) : (parsed.maxTimeExponent ?? 1.45);
+    const maxSpaceExp = maxSpaceRaw !== undefined ? Number(maxSpaceRaw) : parsed.maxSpaceExponent;
+    if (!Number.isFinite(maxTimeExp) || maxTimeExp <= 0) {
+      throw new Error(`Invalid --max-time-exp '${maxTimeRaw ?? String(maxTimeExp)}'; expected a positive finite number.`);
+    }
+    if (maxSpaceExp !== undefined && (!Number.isFinite(maxSpaceExp) || maxSpaceExp <= 0)) {
+      throw new Error(`Invalid --max-space-exp '${maxSpaceRaw ?? String(maxSpaceExp)}'; expected a positive finite number.`);
+    }
     const result = fitEmpiricalBigO(parsed.samples, {
-      maxTimeExponent: maxTimeRaw ? Number(maxTimeRaw) : (parsed.maxTimeExponent ?? 1.45),
-      maxSpaceExponent: maxSpaceRaw ? Number(maxSpaceRaw) : parsed.maxSpaceExponent,
+      maxTimeExponent: maxTimeExp,
+      maxSpaceExponent: maxSpaceExp,
     });
     if (asJson) console.log(JSON.stringify(result, null, 2));
     else {
@@ -409,10 +417,13 @@ async function run(): Promise<number> {
     let diff: ReturnType<typeof compareInvariantSnapshots> | undefined;
 
     if (baselinePath) {
-      if (update || !fs.existsSync(baselinePath)) {
+      if (update) {
         writeInvariantSnapshot(baselinePath, current);
         diff = compareInvariantSnapshots(current, current, baselinePath);
       } else {
+        if (!fs.existsSync(baselinePath)) {
+          throw new Error(`Invariants baseline not found at '${baselinePath}'. Pass --update explicitly to initialize a new baseline.`);
+        }
         const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8")) as InvariantSnapshot;
         diff = compareInvariantSnapshots(baseline, current, baselinePath);
       }
@@ -420,7 +431,11 @@ async function run(): Promise<number> {
 
     if (asJson) console.log(JSON.stringify(diff ? { snapshot: current, diff } : { snapshot: current }, null, 2));
     else console.log(formatInvariantDiffReport(current, diff));
-    return rest.includes("--fail") && diff && !diff.passed ? 1 : 0;
+    if (rest.includes("--fail")) {
+      if (samples.length === 0) return 1;
+      if (diff && !diff.passed) return 1;
+    }
+    return 0;
   }
 
   console.error(`Unknown command: ${cmd}\n`);

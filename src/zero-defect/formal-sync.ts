@@ -63,7 +63,16 @@ function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: Fo
       ...parseEntries(parsed.formalChecks, "formal"),
       ...parseEntries(parsed.contractChecks, "contract"),
     ];
-    if (entries.length === 0) return null;
+    const hasFormalKey = "formalChecks" in parsed || "contractChecks" in parsed;
+    const hasControlsOnly = Array.isArray(parsed.controls) && parsed.controls.length > 0 && !hasFormalKey;
+    if (entries.length === 0) {
+      if (hasControlsOnly) return null;
+      return {
+        planRel: planFile.rel,
+        entries: [],
+        error: `${planFile.rel} declares 0 recognized formalChecks/contractChecks entries (empty control plan).`,
+      };
+    }
     return { planRel: planFile.rel, entries };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -129,6 +138,21 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       continue;
     }
 
+    if (entry.coveredPaths.length === 0) {
+      findings.push({
+        id: `FS:empty-covered:${entry.id}`,
+        rule: "formal-sync-empty-covered-paths",
+        category: "oracle-lock",
+        rung: isContract ? "R3" : "R5",
+        severity: "error",
+        file: parsed.planRel,
+        line: 1,
+        message: `${label} '${entry.id}' declares empty coveredPaths, which disables drift detection.`,
+        fix: "List all production paths governed by this formal/contract spec in coveredPaths.",
+      });
+      continue;
+    }
+
     const missingCovered = entry.coveredPaths.filter((p) => !allPathSet.has(p));
     if (missingCovered.length > 0) {
       findings.push({
@@ -163,21 +187,6 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
       continue;
     }
 
-    if (entry.coveredPaths.length === 0) {
-      findings.push({
-        id: `FS:empty-covered:${entry.id}`,
-        rule: "formal-sync-empty-covered-paths",
-        category: "oracle-lock",
-        rung: isContract ? "R3" : "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: `${label} '${entry.id}' declares empty coveredPaths, which disables drift detection.`,
-        fix: "List all production paths governed by this formal/contract spec in coveredPaths.",
-      });
-      continue;
-    }
-
     const revCheck = spawnSync("git", ["-C", repo.root, "cat-file", "-e", `${entry.syncCommit}^{commit}`], {
       encoding: "utf8",
     });
@@ -190,20 +199,38 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
         rule: "formal-sync-unknown-commit",
         category: "oracle-lock",
         rung: "R5",
-        severity: isShallow ? "info" : "warn",
+        severity: "error",
         file: parsed.planRel,
         line: 1,
         message: isShallow
-          ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history.`
+          ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history — failing closed.`
           : `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' not found in local git history (rebased or pruned).`,
         fix: isShallow
-          ? "Fetch deeper history in CI or advance syncCommit after re-verifying covered code."
+          ? "Fetch deeper history in CI, add contentHash, or advance syncCommit after re-verifying covered code."
           : "Re-verify the formal model against HEAD and update syncCommit.",
       });
       continue;
     }
 
     const watchedPaths = [...new Set([entry.specFile, ...entry.coveredPaths])];
+    const dirtyRes = spawnSync("git", ["-C", repo.root, "status", "--porcelain", "--", ...watchedPaths], {
+      encoding: "utf8",
+    });
+    const dirtyLines = (dirtyRes.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (dirtyLines.length > 0) {
+      findings.push({
+        id: `FS:dirty:${entry.id}`,
+        rule: isContract ? "contract-artifact-stale" : "formal-spec-stale",
+        category: "oracle-lock",
+        rung: isContract ? "R3" : "R5",
+        severity: "error",
+        file: entry.specFile,
+        line: 1,
+        message: `${label} '${entry.id}' has uncommitted edits on covered path(s): ${dirtyLines.join(", ")}.`,
+        fix: "Re-verify covered code, commit or update contentHash, and advance syncCommit.",
+      });
+      continue;
+    }
     const logRes = spawnSync(
       "git",
       ["-C", repo.root, "log", "--oneline", `${entry.syncCommit}..HEAD`, "--", ...watchedPaths],

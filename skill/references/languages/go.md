@@ -7,7 +7,7 @@
 | No swallowed errors | `errcheck`, `errorlint`, `vstack` `no-swallowing-catch` (`if err != nil {}`) | Silent error loss, ignored `Close()` / `Write()` errors |
 | No unsafe pointers | `gosec`, `vstack` `no-unsafe-pointer` (`unsafe.Pointer`) | Memory corruption and type-system bypass |
 | No bare linter suppressions | `nolintlint`, `vstack` `no-bare-suppression` (`//nolint`) | Unexplained rule disables hiding bugs |
-| No skipped or sleeping tests | `vstack` `no-skipped-test` (`t.Skip`), `no-fixed-sleep` (`time.Sleep`) | Flaky timing hacks and silently disabled tests |
+| No skipped or sleeping tests | `vstack` `test-discipline` (`t.Skip`), `no-fixed-sleep` (`time.Sleep`) | Flaky timing hacks and silently disabled tests |
 | No unexercised test files | `vstack` `no-unexercised-test` | Tests asserting constants without importing or calling prod code |
 | Race & concurrency safety | `go test -race ./...` + `go vet ./...` | Data races, lock inversions, goroutine leaks |
 | Module encapsulation | Go `internal/` packages + `depguard` | Cross-boundary coupling and leaky abstractions |

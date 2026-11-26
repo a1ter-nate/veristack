@@ -12,6 +12,11 @@ export function formatTerminalReport(report: ScanReport): string {
   out.push(
     `Summary: ${s.holeCount} not-covered/over-budget | ${s.poorlyCoveredCount} poorly-covered | ${s.unexecutedRungCount} not running in CI | Receipts: ${s.receiptVerifiedCount}/${s.applicableRungCount} | Excluded: ${s.excludedCount} | Ladder: ${s.overallCoverageScore}/100 (${s.wellCoveredCount}/${s.applicableRungCount} well-covered) | ${s.pushDownCount} push-down opportunities | ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} no-comments) | ${s.warnCount} warnings`,
   );
+  if (s.receiptVerifiedCount === 0) {
+    out.push(
+      "Mode: HYGIENE-ONLY SCAN (0 execution receipts verified — behavioral coverage & mutation adequacy NOT proven; run 'vstack verify . --strict')",
+    );
+  }
   if (report.config && (report.config.disabledRules.length > 0 || report.config.suppressedCount > 0)) {
     const src = report.config.path ?? "CLI";
     const disabled = report.config.disabledRules.length > 0 ? report.config.disabledRules.join(", ") : "none";
@@ -114,6 +119,11 @@ export function formatMarkdownReport(report: ScanReport): string {
   out.push(
     `- **Signals:** Ladder ${s.overallCoverageScore}/100 (${s.wellCoveredCount}/${s.applicableRungCount} well-covered, ${s.poorlyCoveredCount} poorly-covered, ${s.holeCount} not-covered/over-budget, ${s.unexecutedRungCount} not running in CI) · ${s.pushDownCount} push-down opportunities · ${s.errorCount} errors (${s.cheatCount} cheats, ${s.noCommentCount} prose comments) · ${s.warnCount} warnings`,
   );
+  if (s.receiptVerifiedCount === 0) {
+    out.push(
+      "- **Mode:** HYGIENE-ONLY SCAN (0 execution receipts verified — behavioral coverage & mutation adequacy NOT proven; run `vstack verify . --strict`)",
+    );
+  }
   out.push("");
   out.push("## 9-Rung Coverage (R0 → R8)");
   out.push("");

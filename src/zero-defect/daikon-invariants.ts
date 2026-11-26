@@ -178,8 +178,26 @@ export function compareInvariantSnapshots(
   for (const inv of baseline.invariants) baseMap.set(invariantKey(inv), inv);
 
   const violations: Finding[] = [];
+  const missingFns = new Set<string>();
   for (const baseInv of baseline.invariants) {
-    if ((current.sampleCounts[baseInv.fn] ?? 0) < 3) continue;
+    const curCount = current.sampleCounts[baseInv.fn] ?? 0;
+    if (curCount < 3) {
+      if (!missingFns.has(baseInv.fn)) {
+        missingFns.add(baseInv.fn);
+        violations.push({
+          id: `DAIKON:unobserved:${baseInv.fn}`,
+          rule: "daikon-invariant-unobserved",
+          category: "oracle-lock",
+          rung: "R3",
+          severity: "error",
+          file: baselineFile,
+          line: 1,
+          message: `Baseline function '${baseInv.fn}' has only ${curCount} trace sample(s) in current run (< 3 required) — failing closed.`,
+          fix: `Record at least 3 execution traces for '${baseInv.fn}' so locked dynamic invariants are actually checked.`,
+        });
+      }
+      continue;
+    }
     const key = invariantKey(baseInv);
     const curInv = curMap.get(key);
     let broken = !curInv;

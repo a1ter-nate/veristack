@@ -20,6 +20,7 @@ import { analyzeOssGuards } from "./zero-defect/oss-guards.ts";
 import { analyzeRuntimeGuards } from "./zero-defect/runtime-guards.ts";
 
 const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
+const GENERATED_HEADER = /(?:@generated|auto-generated|do\s+not\s+edit|generated\s+by\b)/i;
 
 const PY_TEST_ONLY_EXPORT = /\bdef\s+[a-zA-Z0-9_]*(?:_for_testing|_test_only)\s*\(/g;
 const PY_ANY_ESCAPE = /\bcast\s*\(\s*Any\b|:\s*Any\b|->\s*Any\b/g;
@@ -36,6 +37,8 @@ const CDC_WALL_CLOCK_RS = /\bSystemTime::now\s*\(\s*\)\s*\.duration_since\b|\b(?
 const CDC_WALL_CLOCK_PY = /\b(?:datetime\.(?:utc)?now\s*\([^)]*\)|time\.time\s*\(\s*\))\s*-\s*[A-Za-z_][A-Za-z0-9_.]*/g;
 
 const UNBOUNDED_LOOP = /\bwhile\s*\(\s*true\s*\)|\bwhile\s+True\s*:|\bloop\s*\{/g;
+const SILENT_CATCH_RETURN = /\bcatch\s*(?:\([^)]*\))?\s*\{\s*return\s*(?:true|\{[^}]{0,120}\b(?:accepted|ok|success)\s*:\s*true\b[^}]*\})\s*;?\s*\}/g;
+const CATCHALL_SUCCESS_STUB = /\bdefault\s*:\s*return\s*(?:Response\.json\s*\(|res\.(?:status\s*\(\s*200\s*\)\.)?json\s*\()?\{[^}]{0,120}\b(?:accepted|ok|success)\s*:\s*true\b/g;
 
 export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
   const findings: Finding[] = [];
@@ -56,7 +59,7 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
       findings.push(...analyzeT3ProdGuards(file));
       continue;
     }
-    if (!file.language || file.isTest || GENERATED_PATH.test(file.rel)) continue;
+    if (!file.language || file.isTest || (GENERATED_PATH.test(file.rel) && GENERATED_HEADER.test(file.content.slice(0, 600)))) continue;
     const raw = file.content;
     const maskedAll = maskCode(raw, file.language);
     const cfgTestIdx = file.language === "rust" ? raw.search(/#\[cfg\(test\)\]/) : -1;
@@ -223,6 +226,41 @@ export function analyzeProdZeroDefectRules(repo: DiscoveredRepo): Finding[] {
         message: `Unbounded loop (${match[0].trim()}) has no visible static iteration cap or fuel bound (V31 JPL Power of 10).`,
         fix: "Bound the loop with an explicit maxIterations/fuel ceiling or finite iterator.",
       });
+    }
+
+    if (file.language === "typescript" || file.language === "javascript" || file.language === "csharp") {
+      for (const match of raw.matchAll(SILENT_CATCH_RETURN)) {
+        const idx = match.index ?? 0;
+        if (masked[idx] === " ") continue;
+        const line = lineOf(raw, idx);
+        findings.push({
+          id: `SHAM:silent-catch-ret:${file.rel}:${line}`,
+          rule: "no-silent-catch-return",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: file.rel,
+          line,
+          message: "Catch block swallows an exception and returns a fabricated success value (true / { ok/accepted: true }).",
+          fix: "Rethrow, return a typed error variant, or surface the failure explicitly instead of returning synthetic success.",
+        });
+      }
+      for (const match of raw.matchAll(CATCHALL_SUCCESS_STUB)) {
+        const idx = match.index ?? 0;
+        if (masked[idx] === " ") continue;
+        const line = lineOf(raw, idx);
+        findings.push({
+          id: `SHAM:catchall-ok:${file.rel}:${line}`,
+          rule: "no-catchall-success-stub",
+          category: "cheat",
+          rung: "R0",
+          severity: "error",
+          file: file.rel,
+          line,
+          message: "Default/catch-all branch fabricates an accepted/ok: true success response for unknown actions/events.",
+          fix: "Reject unknown actions/events explicitly (4xx / typed error) instead of returning synthetic success.",
+        });
+      }
     }
 
     findings.push(...analyzeRuntimeGuards(file));

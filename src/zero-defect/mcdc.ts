@@ -14,6 +14,7 @@ export interface McdcResult {
 
 type BoolToken =
   | { kind: "id"; value: string }
+  | { kind: "lit"; value: boolean }
   | { kind: "op"; value: "AND" | "OR" | "NOT" }
   | { kind: "lparen" }
   | { kind: "rparen" };
@@ -59,6 +60,8 @@ function tokenizeBoolExpr(expr: string): BoolToken[] {
       if (lower === "and") tokens.push({ kind: "op", value: "AND" });
       else if (lower === "or") tokens.push({ kind: "op", value: "OR" });
       else if (lower === "not") tokens.push({ kind: "op", value: "NOT" });
+      else if (lower === "true") tokens.push({ kind: "lit", value: true });
+      else if (lower === "false") tokens.push({ kind: "lit", value: false });
       else tokens.push({ kind: "id", value: word });
       i += word.length;
       continue;
@@ -105,6 +108,10 @@ function evalBoolTokens(tokens: readonly BoolToken[], env: Readonly<Record<strin
       if (tokens[pos]?.kind !== "rparen") throw new Error("Unclosed '(' in boolean expression.");
       pos += 1;
       return val;
+    }
+    if (tok.kind === "lit") {
+      pos += 1;
+      return tok.value;
     }
     if (tok.kind === "id") {
       pos += 1;

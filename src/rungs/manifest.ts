@@ -10,9 +10,7 @@ const VALID_RUNGS = new Set<RungId>(["R0", "R1", "R2", "R3", "R4", "R5", "R6", "
 const HTTP_LISTENER_SIGNAL =
   /\b(?:createServer|app\.listen|fastify|new\s+Hono|Bun\.serve|Deno\.serve|new\s+Elysia|WebApplication\.CreateBuilder|http\.ListenAndServe|HttpServer::new|uvicorn\.run|FastAPI|Flask)\s*\(/;
 
-const FORBIDDEN_ALLOW_PREFIX =
-  /^(?:src|lib|app|apps|packages|services|crates|libs|pkg|internal|cmd|tests|test|__tests__|spec|bin)(?:\/|$)/i;
-const SAFE_WILDCARD_PREFIX = /^(?:examples|fixtures|testdata|__fixtures__|snapshots)\//i;
+const SAFE_ALLOW_EXCLUDED_PREFIX = /^(?:examples|fixtures|testdata|__fixtures__|snapshots)\//i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -37,11 +35,8 @@ function isDangerousAllowPattern(raw: string): string | null {
   if (!norm) return "empty pattern";
   if (norm.includes("..")) return "path traversal";
   if (norm.includes("**")) return "recursive ** wildcard";
-  if (FORBIDDEN_ALLOW_PREFIX.test(norm)) return "excludes production/test root";
-  if (norm.includes("*")) {
-    if (!SAFE_WILDCARD_PREFIX.test(norm)) {
-      return "wildcards are only permitted under examples/, fixtures/, testdata/, or snapshots/";
-    }
+  if (!SAFE_ALLOW_EXCLUDED_PREFIX.test(norm)) {
+    return "allowExcluded is strictly allowlisted to examples/, fixtures/, testdata/, __fixtures__/, or snapshots/";
   }
   return null;
 }
@@ -240,6 +235,7 @@ export function discoverWorkspaces(
     const dir = path.posix.dirname(norm);
     if (dir === "." || dir === "" || seen.has(dir)) continue;
     if (/(?:^|\/)(?:node_modules|fixtures|testdata|__fixtures__|test|tests|lint)(?:\/|$)/i.test(dir)) continue;
+    if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests|specs?)$/i.test(dir)) continue;
     seen.add(dir);
     const subFiles = repo.files.filter((f) => f.rel.startsWith(`${dir}/`));
     const subPaths = repo.allRelPaths.filter((p) => p.startsWith(`${dir}/`));

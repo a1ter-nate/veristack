@@ -1,24 +1,30 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { Finding, RungId, RungManifest } from "../types.ts";
+import type { RungId } from "../types.ts";
 
-const FORBIDDEN_RAW_SYNTAX =
-  /\|\||(?:^|[\s;&])!\s|\s&\s*$|(?:\b(?:node|bun|deno)\s+(?:-e|--eval|-p|--print)\b)|(?:\bpython3?\s+-c\b)|(?:\b(?:sh|bash|zsh)\s+-c\b)|\b(?:eval|exec|alias|sleep)\b|\bgit\s+(?:diff|status)\b|\b(?:sha256sum|md5sum|shasum|readFileSync|realpathSync)\b|\bset\s+(?:\+e|\+o\s+errexit)\b|(?:^|[\s;|&])exit(?:\s+0)?(?=$|[\s;|&])|(?:^|[\s;|&]):(?=$|[\s;|&])|\s(?:--version|-V|--help|-h|--list-tests|--list)\b/i;
-
-const RUNNER_WRAPPERS = new Set(["npx", "bunx", "pnpm", "yarn", "npm", "uv", "poetry", "pipenv", "dotnet", "cargo", "go", "env"]);
+const SHELL_META_UNQUOTED = /[;|><$`(){}\n\r~]/;
+const FORBIDDEN_ENV_PREFIX = /^(?:PATH|NODE_OPTIONS|PYTHONPATH|LD_PRELOAD|DYLD_INSERT_LIBRARIES|BASH_ENV|ENV|IFS|BUN_CONFIG_PATH|RUBYOPT|PERL5OPT)=/i;
+const FORBIDDEN_FLAGS_EXACT = new Set([
+  "--version", "-V", "--help", "-h", "--list", "--list-tests", "--co", "--collect-only", "--no-run",
+  "--passWithNoTests", "--showConfig", "--rules", "--noCheck", "--preload", "-A", "--eval", "--print",
+]);
+const FORBIDDEN_VERBS = new Set([
+  "echo", "printf", "true", "false", ":", "sleep", "exit", "exec", "eval", "alias",
+  "source", ".", "diff", "kill", "trap", "env", "sh", "bash", "zsh", "cmd", "powershell",
+]);
 
 const ALLOWED_TOOL_PREFIXES: Record<RungId | "canary", readonly RegExp[]> = {
   R0: [
-    /^(?:oxlint|oxfmt|eslint|prettier|biome|ruff|golangci-lint|gofmt|vstack|dprint|stylua|rubocop|ktlint|checkstyle)$/,
-    /^(?:cargo\s+(?:fmt|clippy)|dotnet\s+format|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts)$/,
+    /^(?:oxlint|oxfmt|eslint|prettier|biome|ruff|golangci-lint|gofmt|goimports|vstack|dprint|stylua|rubocop|ktlint|checkstyle)$/,
+    /^(?:cargo\s+(?:fmt|clippy)|dotnet\s+(?:format|build)|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts)$/,
   ],
   R1: [
-    /^(?:tsc|tsgo|mypy|pyright|basedpyright|knip|deslop-please|vulture|deadcode|import-linter|pyright)$/,
-    /^(?:cargo\s+(?:check|clippy|udeps|machete)|dotnet\s+build|go\s+(?:vet|build)|node\s+scripts\/check-max-lines\.mjs|bun\s+scripts\/check-max-lines\.mjs)$/,
+    /^(?:tsc|tsgo|mypy|pyright|basedpyright|knip|deslop-please|vulture|deadcode|staticcheck|import-linter)$/,
+    /^(?:cargo\s+(?:check|clippy|udeps|machete|deny)|dotnet\s+build|go\s+(?:vet|build)|bun\s+build|node\s+scripts\/check-max-lines\.mjs|bun\s+scripts\/check-max-lines\.mjs)$/,
   ],
   R2: [
-    /^(?:vitest|jest|mocha|ava|pytest|phpunit|rspec|xunit|nunit|ctest)$/,
+    /^(?:vitest|jest|mocha|ava|pytest|phpunit|rspec|xunit|nunit|ctest|unittest)$/,
     /^(?:bun\s+test|node\s+--test|dotnet\s+test|cargo\s+(?:test|nextest)|go\s+test)$/,
   ],
   R3: [
@@ -30,20 +36,28 @@ const ALLOWED_TOOL_PREFIXES: Record<RungId | "canary", readonly RegExp[]> = {
     /^(?:bun\s+test|node\s+--test|dotnet\s+test|cargo\s+(?:test|nextest)|go\s+test)$/,
   ],
   R5: [
-    /^(?:stryker|mutmut|pitest|gremlins|go-mutesting|crosshair|bend|quint|dafny|kani|stateright|chromatic|percy|argos|bombadil|vstack)$/,
-    /^(?:cargo\s+mutants|dotnet\s+stryker|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts)$/,
+    /^(?:stryker|mutmut|pitest|gremlins|go-mutesting|crosshair|bend|quint|dafny|kani|stateright|chromatic|percy|argos|bombadil|vstack|pytest)$/,
+    /^(?:cargo\s+(?:mutants|test|nextest)|dotnet\s+(?:stryker|test)|go\s+test|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts)$/,
   ],
   R6: [
-    /^(?:k6|lighthouse|lhci|locust|mitata|tinybench|divan|nbomber|hyperfine|criterion|vstack)$/,
-    /^(?:cargo\s+bench|pytest\s+--benchmark|go\s+test|dotnet\s+run|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts|bun\s+scripts\/check-perf-budget\.mjs|node\s+scripts\/check-perf-budget\.mjs)$/,
+    /^(?:k6|lighthouse|lhci|locust|mitata|tinybench|divan|nbomber|hyperfine|criterion|vstack|pytest)$/,
+    /^(?:cargo\s+bench|go\s+test|dotnet\s+run|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts|bun\s+scripts\/check-perf-budget\.mjs|node\s+scripts\/check-perf-budget\.mjs)$/,
   ],
-  R7: [/^(?:playwright|cypress|maestro|detox|webdriverio|wdio)$/],
+  R7: [
+    /^(?:playwright|cypress|maestro|detox|webdriverio|wdio|pytest)$/,
+    /^(?:go\s+test|cargo\s+(?:test|nextest)|dotnet\s+test|bun\s+test)$/,
+  ],
   R8: [/^(?:k6|playwright|curl|synthetic|canary|smoke-prod|healthcheck)$/],
   canary: [
-    /^(?:vitest|jest|mocha|ava|pytest|phpunit|rspec)$/,
-    /^(?:bun\s+test|node\s+--test|dotnet\s+test|cargo\s+(?:test|nextest)|go\s+test)$/,
+    /^(?:vitest|jest|mocha|ava|pytest|phpunit|rspec|xunit|nunit|ctest|unittest)$/,
+    /^(?:bun\s+test|node\s+--test|dotnet\s+test|cargo\s+(?:test|nextest)|go\s+test|(?:bun|node)\s+\S+\.(?:test|spec)\.[cm]?[jt]sx?)$/,
   ],
 };
+
+const ALLOWED_VSTACK_SUBCMDS = new Set([
+  "scan", "verify", "run-rung", "canary", "perimeter", "crap", "oracle-check",
+  "no-comments", "state-machines", "diff-cheats", "formal-sync", "laws", "bench", "big-o", "spc",
+]);
 
 export function scrubChildEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const clean: NodeJS.ProcessEnv = {};
@@ -104,6 +118,9 @@ export function sanitizeShellBlock(runScript: string): string[] {
   let heredocEnd: string | null = null;
   let inFunction = false;
   let braceDepth = 0;
+  let ifDepth = 0;
+  let loopDepth = 0;
+  let caseDepth = 0;
 
   for (const raw of joinLineContinuations(runScript)) {
     const trimmedRaw = raw.trim();
@@ -121,8 +138,7 @@ export function sanitizeShellBlock(runScript: string): string[] {
     if (!trimmed) continue;
 
     if (inFunction) {
-      braceDepth += (trimmed.match(/\{/g) ?? []).length;
-      braceDepth -= (trimmed.match(/\}/g) ?? []).length;
+      braceDepth += (trimmed.match(/\{/g) ?? []).length - (trimmed.match(/\}/g) ?? []).length;
       if (braceDepth <= 0) {
         inFunction = false;
         braceDepth = 0;
@@ -135,6 +151,32 @@ export function sanitizeShellBlock(runScript: string): string[] {
       if (braceDepth <= 0 && trimmed.includes("}")) inFunction = false;
       continue;
     }
+
+    if (/^if\s+/.test(trimmed)) {
+      if (!/\bfi\b/.test(trimmed)) ifDepth += 1;
+      continue;
+    }
+    if (/^fi(?:\s|;|$)/.test(trimmed)) {
+      ifDepth = Math.max(0, ifDepth - 1);
+      continue;
+    }
+    if (/^(?:for|while|until)\s+/.test(trimmed)) {
+      if (!/\bdone\b/.test(trimmed)) loopDepth += 1;
+      continue;
+    }
+    if (/^done(?:\s|;|$)/.test(trimmed)) {
+      loopDepth = Math.max(0, loopDepth - 1);
+      continue;
+    }
+    if (/^case\s+/.test(trimmed)) {
+      if (!/\besac\b/.test(trimmed)) caseDepth += 1;
+      continue;
+    }
+    if (/^esac(?:\s|;|$)/.test(trimmed)) {
+      caseDepth = Math.max(0, caseDepth - 1);
+      continue;
+    }
+    if (ifDepth > 0 || loopDepth > 0 || caseDepth > 0) continue;
 
     if (/^set\s+(?:\+e|\+o\s+errexit)\b/.test(trimmed)) {
       setPlusE = true;
@@ -152,14 +194,13 @@ export function sanitizeShellBlock(runScript: string): string[] {
     if (/^(?:exit(?:\s+\d+)?|exec\b)/.test(trimmed)) break;
     if (setPlusE) continue;
 
-    if (/^(?:if\s+|elif\s+|else\b|then\b|fi\b|for\s+|while\s+|until\s+|case\s+|esac\b|alias\s+|\$\{\{|!(\s|$))/.test(trimmed)) {
-      continue;
-    }
+    if (/^(?:elif\s+|else\b|then\b|alias\s+|\$\{\{|!(\s|$)|[A-Za-z0-9_*?|]+\))/.test(trimmed)) continue;
     if (/^(?:echo|printf|true|sleep)(?:\s|;|$)/.test(trimmed)) continue;
     if (/^:(?:\s|;|$)/.test(trimmed)) continue;
     if (/^false(?:\s|&&|\|\||;|$)/.test(trimmed)) continue;
     if (/^\.\/vstack\b/.test(trimmed)) continue;
     if (/\|\|/.test(trimmed)) continue;
+    if (/;\s*(?:true|echo|printf|:|exit)(?:\s|$)/.test(trimmed)) continue;
     if (/(?:^|[^&])&\s*$/.test(trimmed)) continue;
     if (/&&\s*(?:echo|printf|true|:)(?:\s|$)/.test(trimmed)) continue;
     if (!pipefail && /\|\s*(?:tee|cat|true|head|tail|grep|awk|sed)\b/.test(trimmed)) continue;
@@ -169,28 +210,61 @@ export function sanitizeShellBlock(runScript: string): string[] {
   return active;
 }
 
-function tokenizeSimple(segment: string): string[] {
-  const tokens: string[] = [];
+function splitAndChainStrict(command: string): { parts: string[][]; error?: string } {
+  const parts: string[][] = [];
+  let curTokens: string[] = [];
   let cur = "";
   let quote: "'" | '"' | null = null;
-  for (let i = 0; i < segment.length; i++) {
-    const ch = segment[i] ?? "";
+  let hasToken = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] ?? "";
+    const next = command[i + 1] ?? "";
     if (quote) {
-      if (ch === quote && segment[i - 1] !== "\\") quote = null;
-      else cur += ch;
-    } else if (ch === "'" || ch === '"') {
-      quote = ch;
-    } else if (/\s/.test(ch)) {
-      if (cur) {
-        tokens.push(cur);
-        cur = "";
+      if (ch === quote && (quote === "'" || command[i - 1] !== "\\")) {
+        quote = null;
+      } else if (quote === '"' && (ch === "$" || ch === "`")) {
+        return { parts: [], error: "Command contains forbidden shell substitution inside quotes." };
+      } else {
+        cur += ch;
       }
-    } else {
-      cur += ch;
+      continue;
     }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      hasToken = true;
+      continue;
+    }
+    if (ch === "&" && next === "&") {
+      if (hasToken || cur) {
+        curTokens.push(cur);
+        cur = "";
+        hasToken = false;
+      }
+      if (curTokens.length === 0) return { parts: [], error: "Empty segment around &&." };
+      parts.push(curTokens);
+      curTokens = [];
+      i += 1;
+      continue;
+    }
+    if (ch === "&" || SHELL_META_UNQUOTED.test(ch)) {
+      return { parts: [], error: `Command contains forbidden shell metacharacter '${ch}'.` };
+    }
+    if (/\s/.test(ch)) {
+      if (hasToken || cur) {
+        curTokens.push(cur);
+        cur = "";
+        hasToken = false;
+      }
+      continue;
+    }
+    cur += ch;
+    hasToken = true;
   }
-  if (cur) tokens.push(cur);
-  return tokens;
+  if (quote) return { parts: [], error: "Unterminated quote in command." };
+  if (hasToken || cur) curTokens.push(cur);
+  if (curTokens.length > 0) parts.push(curTokens);
+  return { parts };
 }
 
 function readPackageScripts(repoRoot?: string): Record<string, string> {
@@ -205,82 +279,206 @@ function readPackageScripts(repoRoot?: string): Record<string, string> {
   }
 }
 
-function extractToolHead(tokens: readonly string[]): string {
-  let idx = 0;
-  while (idx < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[idx] ?? "")) idx += 1;
-  const t0 = (tokens[idx] ?? "").toLowerCase();
-  const t1 = (tokens[idx + 1] ?? "").toLowerCase();
-  const t2 = (tokens[idx + 2] ?? "").toLowerCase();
-  if (!t0) return "";
-  if (t0 === "npx" || t0 === "bunx") {
-    return t1.startsWith("-") ? (tokens[idx + 2] ?? "").toLowerCase() : t1;
+function extractToolHead(tokens: readonly string[]): { head: string; toolArgs: string[]; error?: string } {
+  const t0 = tokens[0] ?? "";
+  if (!t0) return { head: "", toolArgs: [], error: "empty command" };
+  if (FORBIDDEN_ENV_PREFIX.test(t0) || /^[A-Za-z_]\w*=/.test(t0)) {
+    return { head: "", toolArgs: [], error: `env-variable override '${t0}' is forbidden` };
   }
-  if ((t0 === "pnpm" || t0 === "yarn") && t1 === "exec") return t2;
-  if (t0 === "uv" && t1 === "run") {
-    let j = idx + 2;
-    while (j < tokens.length && (tokens[j] ?? "").startsWith("-")) {
-      j += (tokens[j] === "--project" || tokens[j] === "--directory") ? 2 : 1;
+  if (t0.includes("/") || t0.includes("\\")) {
+    return { head: "", toolArgs: [], error: `path-qualified executable '${t0}' is forbidden` };
+  }
+  const low0 = t0.toLowerCase();
+  if (FORBIDDEN_VERBS.has(low0)) {
+    return { head: "", toolArgs: [], error: `forbidden no-op executable '${t0}'` };
+  }
+
+  let i = 0;
+  if (low0 === "npx" || low0 === "bunx") {
+    i = 1;
+    while (i < tokens.length && (tokens[i] ?? "").startsWith("-")) i += 1;
+    const bin = (tokens[i] ?? "").toLowerCase();
+    return { head: bin, toolArgs: tokens.slice(i + 1) };
+  }
+  if ((low0 === "pnpm" || low0 === "yarn") && (tokens[1] ?? "").toLowerCase() === "exec") {
+    const bin = (tokens[2] ?? "").toLowerCase();
+    return { head: bin, toolArgs: tokens.slice(3) };
+  }
+  if ((low0 === "uv" || low0 === "poetry" || low0 === "pipenv") && (tokens[1] ?? "").toLowerCase() === "run") {
+    i = 2;
+    while (i < tokens.length && (tokens[i] ?? "").startsWith("-")) {
+      const f = tokens[i] ?? "";
+      i += f === "--project" || f === "--directory" || f === "--with" ? 2 : 1;
     }
-    return (tokens[j] ?? "").toLowerCase();
+    const bin = (tokens[i] ?? "").toLowerCase();
+    return { head: bin, toolArgs: tokens.slice(i + 1) };
   }
-  if (t0 === "node" || t0 === "bun") {
-    return t1 ? `${t0} ${t1}` : t0;
+  if ((low0 === "python" || low0 === "python3") && tokens[1] === "-m" && tokens[2]) {
+    return { head: tokens[2].toLowerCase(), toolArgs: tokens.slice(3) };
   }
-  if (RUNNER_WRAPPERS.has(t0) && t1) return `${t0} ${t1}`;
-  return t0;
+  if (low0 === "cargo" && (tokens[1] ?? "").startsWith("+") && tokens[2]) {
+    return { head: `cargo ${tokens[2].toLowerCase()}`, toolArgs: tokens.slice(3) };
+  }
+  if (low0 === "node" || low0 === "bun" || low0 === "cargo" || low0 === "dotnet" || low0 === "go") {
+    const sub = (tokens[1] ?? "").toLowerCase();
+    return { head: sub ? `${low0} ${sub}` : low0, toolArgs: tokens.slice(2) };
+  }
+  return { head: low0, toolArgs: tokens.slice(1) };
 }
 
-function expandSegments(
+function hasForbiddenFlag(tokens: readonly string[]): string | null {
+  const bin = (tokens[0] ?? "").toLowerCase();
+  const isScriptInterp = bin === "node" || bin === "bun" || bin === "python" || bin === "python3" || bin === "ruby" || bin === "perl";
+  for (const tok of tokens) {
+    if (FORBIDDEN_FLAGS_EXACT.has(tok)) return `forbidden flag '${tok}'`;
+    if (isScriptInterp && (tok === "-e" || tok === "-p" || tok === "-c")) return `forbidden inline-eval flag '${tok}'`;
+    if (/^--(?:version|help|list-tests|no-run|passWithNoTests|showConfig|noCheck|preload)=?/i.test(tok)) {
+      return `forbidden flag '${tok}'`;
+    }
+    if (/^-run=\^\$$/.test(tok)) return `empty Go test filter '${tok}'`;
+  }
+  return null;
+}
+
+export function parseAndValidateCommandArgv(
+  rung: RungId | "canary",
   command: string,
-  scripts: Record<string, string>,
-  seenScripts: Set<string>,
-): { segments: string[]; error?: string } {
-  if (FORBIDDEN_RAW_SYNTAX.test(command)) {
-    return { segments: [], error: `Command '${command}' contains forbidden no-op, inline-eval, version/help, or failure-swallowing syntax.` };
-  }
-  if (/(?:^|[^|])\|(?:[^|]|$)/.test(command)) {
-    return { segments: [], error: `Command '${command}' uses a shell pipe, which can hide exit codes.` };
-  }
-  const activeLines = sanitizeShellBlock(command);
-  if (activeLines.length === 0) {
-    return { segments: [], error: `Command '${command}' is a no-op or swallows failures.` };
+  repoRoot?: string,
+): { steps: string[][]; error?: string } {
+  if (repoRoot) {
+    const bunfig = path.join(repoRoot, "bunfig.toml");
+    if (fs.existsSync(bunfig)) {
+      try {
+        if (/\bpreload\s*=/.test(fs.readFileSync(bunfig, "utf8"))) {
+          return { steps: [], error: `Rung ${rung}: bunfig.toml declares 'preload', which can intercept test runners.` };
+        }
+      } catch {
+        return { steps: [], error: `Rung ${rung}: unreadable bunfig.toml.` };
+      }
+    }
   }
 
-  const out: string[] = [];
-  for (const line of activeLines) {
-    for (const part of line.split(/\s*(?:&&|;)\s*/)) {
-      const seg = part.trim();
-      if (!seg) continue;
-      const tokens = tokenizeSimple(seg);
-      let idx = 0;
-      while (idx < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[idx] ?? "")) idx += 1;
-      const t0 = (tokens[idx] ?? "").toLowerCase();
-      const t1 = (tokens[idx + 1] ?? "").toLowerCase();
-      const t2 = tokens[idx + 2] ?? "";
-      if (t0 === "cd") continue;
+  const scripts = readPackageScripts(repoRoot);
+  const expand = (cmd: string, seen: Set<string>): { steps: string[][]; error?: string } => {
+    const split = splitAndChainStrict(cmd.trim());
+    if (split.error) return { steps: [], error: split.error };
+    if (split.parts.length === 0) return { steps: [], error: "empty command" };
 
+    const out: string[][] = [];
+    for (const seg of split.parts) {
+      const low0 = (seg[0] ?? "").toLowerCase();
+      const low1 = (seg[1] ?? "").toLowerCase();
       let scriptName: string | undefined;
-      if ((t0 === "bun" || t0 === "npm" || t0 === "pnpm" || t0 === "yarn") && t1 === "run" && t2) {
-        scriptName = t2;
-      } else if ((t0 === "npm" || t0 === "pnpm" || t0 === "yarn") && t1 === "test") {
+      if ((low0 === "bun" || low0 === "npm" || low0 === "pnpm" || low0 === "yarn") && low1 === "run" && seg[2]) {
+        scriptName = seg[2];
+      } else if ((low0 === "npm" || low0 === "pnpm" || low0 === "yarn") && low1 === "test") {
         scriptName = "test";
-      } else if ((t0 === "pnpm" || t0 === "yarn") && t1 && scripts[t1]) {
-        scriptName = t1;
+      } else if ((low0 === "pnpm" || low0 === "yarn") && seg[1] && scripts[seg[1]]) {
+        scriptName = seg[1];
       }
 
-      const scriptBody = scriptName ? scripts[scriptName] : undefined;
-      if (scriptName && scriptBody) {
-        if (seenScripts.has(scriptName)) continue;
-        seenScripts.add(scriptName);
-        const expanded = expandSegments(scriptBody, scripts, seenScripts);
-        if (expanded.error) return expanded;
-        out.push(...expanded.segments);
+      if (scriptName) {
+        const body = scripts[scriptName];
+        if (!body) return { steps: [], error: `unknown package.json script '${scriptName}'` };
+        if (seen.has(scriptName)) continue;
+        seen.add(scriptName);
+        for (const hook of [`pre${scriptName}`, `post${scriptName}`]) {
+          const hookBody = scripts[hook];
+          if (hookBody) {
+            const hRes = expand(hookBody, seen);
+            if (hRes.error) return { steps: [], error: `lifecycle hook '${hook}': ${hRes.error}` };
+          }
+        }
+        const sub = expand(body, seen);
+        if (sub.error) return sub;
+        out.push(...sub.steps);
       } else {
         out.push(seg);
       }
     }
+    return { steps: out };
+  };
+
+  const expanded = expand(command, new Set());
+  if (expanded.error) return { steps: [], error: `Rung ${rung}: ${expanded.error}` };
+
+  const allowed = ALLOWED_TOOL_PREFIXES[rung];
+  let hasR1Typecheck = false;
+
+  for (const seg of expanded.steps) {
+    const flagErr = hasForbiddenFlag(seg);
+    if (flagErr) return { steps: [], error: `Rung ${rung}: ${flagErr}` };
+    const { head, toolArgs, error } = extractToolHead(seg);
+    if (error) return { steps: [], error: `Rung ${rung}: ${error}` };
+    if (!allowed.some((re) => re.test(head))) {
+      return { steps: [], error: `Rung ${rung}: executable '${head}' is not an allowed ${rung} verification tool.` };
+    }
+    if (head === "node bin/vstack.mjs" || head === "bun src/cli.ts") {
+      const sub = (toolArgs[0] ?? "").toLowerCase();
+      if (!ALLOWED_VSTACK_SUBCMDS.has(sub)) {
+        return { steps: [], error: `Rung ${rung}: disallowed vstack subcommand '${sub}'.` };
+      }
+    }
+    if (head === "pytest" && rung === "R6" && !toolArgs.some((a) => a.startsWith("--benchmark"))) {
+      return { steps: [], error: "Rung R6: pytest must run with --benchmark / --benchmark-only." };
+    }
+    if (head === "bun scripts/check-perf-budget.mjs" || head === "node scripts/check-perf-budget.mjs") {
+      if (repoRoot) {
+        const absScript = path.join(repoRoot, "scripts/check-perf-budget.mjs");
+        if (fs.existsSync(absScript)) {
+          const body = fs.readFileSync(absScript, "utf8");
+          if (!/\b(?:performance\.now|hrtime|fitEmpiricalBigO)\b/.test(body)) {
+            return { steps: [], error: `Rung ${rung}: scripts/check-perf-budget.mjs lacks real timing measurement.` };
+          }
+        }
+      }
+    }
+    if (rung === "R1" && /^(?:tsc|tsgo|mypy|pyright|basedpyright|cargo\s+(?:check|clippy)|dotnet\s+build|go\s+(?:vet|build))$/.test(head)) {
+      hasR1Typecheck = true;
+    }
   }
-  return { segments: out };
+
+  if (rung === "R1" && !hasR1Typecheck) {
+    return {
+      steps: [],
+      error: `Rung R1 command '${command}' must run a real typechecker/compiler (tsc, tsgo, mypy, pyright, cargo check/clippy, dotnet build, or go vet).`,
+    };
+  }
+  return { steps: expanded.steps };
+}
+
+export function runArgvChain(
+  steps: readonly string[][],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): { status: number; stdout: string; stderr: string; signal: NodeJS.Signals | null; error?: Error } {
+  let stdout = "";
+  let stderr = "";
+  for (const argv of steps) {
+    const bin = argv[0] ?? "";
+    if (!bin) return { status: 1, stdout, stderr: `${stderr}\nempty argv`, signal: null };
+    const res = spawnSync(bin, argv.slice(1), {
+      cwd,
+      shell: false,
+      env,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    stdout += res.stdout ?? "";
+    stderr += res.stderr ?? "";
+    if (res.error || res.signal || res.status !== 0) {
+      return {
+        status: res.status ?? 1,
+        stdout,
+        stderr,
+        signal: res.signal ?? null,
+        error: res.error,
+      };
+    }
+  }
+  return { status: 0, stdout, stderr, signal: null };
 }
 
 export function validateExecutableCommand(
@@ -288,117 +486,5 @@ export function validateExecutableCommand(
   command: string,
   repoRoot?: string,
 ): string | null {
-  const scripts = readPackageScripts(repoRoot);
-  const { segments, error } = expandSegments(command, scripts, new Set());
-  if (error) return `Rung ${rung}: ${error}`;
-  if (segments.length === 0) return `Rung ${rung} command '${command}' has no executable verification steps.`;
-
-  const allowed = ALLOWED_TOOL_PREFIXES[rung];
-  let matchedRealTool = false;
-
-  for (const seg of segments) {
-    const tokens = tokenizeSimple(seg);
-    const head = extractToolHead(tokens);
-    if (!head) continue;
-    if (allowed.some((re) => re.test(head))) {
-      if (head === "bun scripts/check-perf-budget.mjs" || head === "node scripts/check-perf-budget.mjs") {
-        if (repoRoot) {
-          const absScript = path.join(repoRoot, "scripts/check-perf-budget.mjs");
-          if (fs.existsSync(absScript)) {
-            const body = fs.readFileSync(absScript, "utf8");
-            if (!/\b(?:performance\.now|hrtime|median|fitEmpiricalBigO|check-perf-budget)\b/.test(body)) {
-              return `Rung ${rung}: scripts/check-perf-budget.mjs does not contain real timing/budget measurement.`;
-            }
-          }
-        }
-      }
-      matchedRealTool = true;
-    }
-  }
-
-  if (!matchedRealTool) {
-    return `Rung ${rung} command '${command}' does not invoke a recognized ${rung} verification executable (wrapper scripts and keyword arguments are rejected).`;
-  }
-
-  if (rung === "R1") {
-    const hasTypeOrBuild = segments.some((seg) => {
-      const h = extractToolHead(tokenizeSimple(seg));
-      return /^(?:tsc|tsgo|mypy|pyright|basedpyright|cargo\s+(?:check|clippy)|dotnet\s+build|go\s+(?:vet|build))$/.test(h);
-    });
-    if (!hasTypeOrBuild) {
-      return `Rung R1 command '${command}' must run a real typechecker/compiler (tsc, tsgo, mypy, pyright, cargo check/clippy, dotnet build, or go vet).`;
-    }
-  }
-
-  return null;
-}
-
-const ARCH_RANK: Record<string, number> = { library: 0, frontend: 1, service: 2, fullstack: 3 };
-
-export function auditManifestDowngrade(repoRoot: string, baseRef: string): Finding[] {
-  const baseShow = spawnSync("git", ["-C", repoRoot, "show", `${baseRef}:.verification/rungs.json`], {
-    encoding: "utf8",
-  });
-  if (baseShow.status !== 0) return [];
-  const headPath = path.join(repoRoot, ".verification/rungs.json");
-  if (!fs.existsSync(headPath)) {
-    return [{
-      id: "DIFF:manifest-deleted:.verification/rungs.json",
-      rule: "diff-manifest-downgrade",
-      category: "cheat",
-      rung: "R0",
-      severity: "error",
-      file: ".verification/rungs.json",
-      line: 1,
-      message: "Deleted .verification/rungs.json verification manifest compared to base branch.",
-      fix: "Restore .verification/rungs.json; removing rung enforcement is forbidden.",
-    }];
-  }
-  try {
-    const base = JSON.parse(baseShow.stdout) as Partial<RungManifest>;
-    const head = JSON.parse(fs.readFileSync(headPath, "utf8")) as Partial<RungManifest>;
-    const findings: Finding[] = [];
-    const pushErr = (id: string, msg: string): void => {
-      findings.push({
-        id: `DIFF:manifest:${id}`,
-        rule: "diff-manifest-downgrade",
-        category: "cheat",
-        rung: "R0",
-        severity: "error",
-        file: ".verification/rungs.json",
-        line: 1,
-        message: msg,
-        fix: "Keep or strengthen verification manifest requirements instead of weakening them in a PR.",
-      });
-    };
-    if (base.archetype && head.archetype && (ARCH_RANK[head.archetype] ?? 0) < (ARCH_RANK[base.archetype] ?? 0)) {
-      pushErr("archetype", `Downgraded manifest archetype '${base.archetype}' -> '${head.archetype}'.`);
-    }
-    const baseAllow = new Set(base.allowExcluded ?? []);
-    for (const pat of head.allowExcluded ?? []) {
-      if (!baseAllow.has(pat)) pushErr(`allow-${pat}`, `Widened allowExcluded with '${pat}' vs ${baseRef}.`);
-    }
-    for (const [rung, baseEntry] of Object.entries(base.rungs ?? {})) {
-      if (!baseEntry) continue;
-      const headEntry = head.rungs?.[rung as RungId];
-      if (!headEntry) {
-        pushErr(`drop-${rung}`, `Removed rung ${rung} from .verification/rungs.json vs ${baseRef}.`);
-        continue;
-      }
-      if (baseEntry.canary?.enabled && !headEntry.canary?.enabled) {
-        pushErr(`canary-off-${rung}`, `Disabled planted-fault canary on rung ${rung} vs ${baseRef}.`);
-      }
-      if (baseEntry.canary?.enabled && headEntry.canary?.enabled) {
-        const bRate = baseEntry.canary.minKillRate ?? 0.8;
-        const hRate = headEntry.canary.minKillRate ?? 0.8;
-        if (hRate < bRate) pushErr(`canary-rate-${rung}`, `Lowered canary minKillRate on ${rung} (${bRate} -> ${hRate}).`);
-        const bMut = baseEntry.canary.maxMutants ?? 6;
-        const hMut = headEntry.canary.maxMutants ?? 6;
-        if (hMut < bMut) pushErr(`canary-mut-${rung}`, `Lowered canary maxMutants on ${rung} (${bMut} -> ${hMut}).`);
-      }
-    }
-    return findings;
-  } catch {
-    return [];
-  }
+  return parseAndValidateCommandArgv(rung, command, repoRoot).error ?? null;
 }

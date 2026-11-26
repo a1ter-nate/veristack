@@ -89,12 +89,25 @@ test("two-tier hooks emit PostToolUse context, deduplicate on Stop, and block Cu
     assert.equal(postPayload.hookSpecificOutput.hookEventName, "PostToolUse");
     assert.match(postPayload.hookSpecificOutput.additionalContext, /no-chained-or-any-cast/);
 
-    const dedupedStop = executeHookEvent(
+    const unfixedStop = executeHookEvent(
       "stop",
       JSON.stringify({ cwd: tmp, session_id: "s-dirty" }),
       { harness: "claude" },
     );
-    assert.equal(dedupedStop.stdout, "");
+    assert.equal(JSON.parse(unfixedStop.stdout).decision, "block");
+
+    fs.writeFileSync(badFile, "export const good = (x: number): number => x + 1;\n");
+    executeHookEvent(
+      "post-edit",
+      JSON.stringify({ cwd: tmp, session_id: "s-fixed", tool_input: { file_path: badFile } }),
+      { harness: "claude" },
+    );
+    const cleanStop = executeHookEvent(
+      "stop",
+      JSON.stringify({ cwd: tmp, session_id: "s-fixed" }),
+      { harness: "claude" },
+    );
+    assert.equal(cleanStop.stdout, "");
 
     fs.writeFileSync(badFile, "export const bad = (x: unknown) => x as any;\n");
     const grokPost = executeHookEvent(

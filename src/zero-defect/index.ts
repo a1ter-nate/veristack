@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
+import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "../rungs/command-audit.ts";
 import type { Finding, RungId } from "../types.ts";
 import { auditFormalSync } from "./formal-sync.ts";
 import { auditLaws } from "./laws.ts";
@@ -189,20 +190,27 @@ export function auditZeroDefectArtifacts(repo: DiscoveredRepo): Finding[] {
 }
 
 export function evaluateSpcSeries(metric: string, values: readonly number[], upperSpecLimit: number): SpcResult {
-  if (values.length < 3) {
-    return {
-      metric,
-      count: values.length,
-      mean: values[0] ?? 0,
-      stdDev: 0,
-      upperSpecLimit,
-      cpk: null,
-      nelsonRule2Breach: false,
-      nelsonRule3Breach: false,
-      cpkBreach: false,
-      status: (values[values.length - 1] ?? 0) > upperSpecLimit ? "spec_breach" : "in_control",
-      reasons: [],
-    };
+  const invalidFail = (reason: string): SpcResult => ({
+    metric,
+    count: Array.isArray(values) ? values.length : 0,
+    mean: 0,
+    stdDev: 0,
+    upperSpecLimit,
+    cpk: null,
+    nelsonRule2Breach: false,
+    nelsonRule3Breach: false,
+    cpkBreach: false,
+    status: "spec_breach",
+    reasons: [reason],
+  });
+  if (!Number.isFinite(upperSpecLimit)) {
+    return invalidFail(`Invalid upperSpecLimit (${String(upperSpecLimit)}); must be a finite number.`);
+  }
+  if (!Array.isArray(values) || values.length < 3) {
+    return invalidFail(`SPC requires at least 3 finite observations (received ${Array.isArray(values) ? values.length : 0}).`);
+  }
+  if (values.some((v) => typeof v !== "number" || !Number.isFinite(v))) {
+    return invalidFail("SPC series contains non-numeric or non-finite values.");
   }
 
   const mean = values.reduce((acc, v) => acc + v, 0) / values.length;
@@ -214,9 +222,11 @@ export function evaluateSpcSeries(metric: string, values: readonly number[], upp
   let nelsonRule2Breach = false;
   let consecRising = 1;
   let nelsonRule3Breach = false;
+  let nelsonRule1Outlier = false;
 
   for (let i = 0; i < values.length; i++) {
     const cur = values[i] ?? 0;
+    if (stdDev > 0 && cur > mean + 3 * stdDev) nelsonRule1Outlier = true;
     if (cur > mean) {
       consecAbove += 1;
       if (consecAbove >= 7) nelsonRule2Breach = true;
@@ -235,6 +245,7 @@ export function evaluateSpcSeries(metric: string, values: readonly number[], upp
   const cpkBreach = cpk !== null && cpk < 1.33;
   const reasons: string[] = [];
   if (latest > upperSpecLimit) reasons.push(`Latest value ${latest} exceeds USL ${upperSpecLimit}.`);
+  if (nelsonRule1Outlier) reasons.push("Nelson Rule 1: observation exceeds mean + 3*sigma control limit.");
   if (nelsonRule2Breach) reasons.push("Nelson Rule 2: >= 7 consecutive points above historical mean.");
   if (nelsonRule3Breach) reasons.push("Nelson Rule 3: >= 6 consecutive monotonically worsening points.");
   if (cpkBreach && cpk !== null) reasons.push(`Process capability Cpk=${cpk} dropped below 1.33 headroom floor.`);
@@ -347,8 +358,20 @@ export function runRedBeforeFix(repoPath: string, baseRef: string, testCmd: stri
       fs.copyFileSync(path.join(root, rel), dest);
     }
 
-    const baseRun = spawnSync(testCmd, [], { cwd: worktreeDir, shell: true, encoding: "utf8", timeout: 120_000 });
-    const headRun = spawnSync(testCmd, [], { cwd: root, shell: true, encoding: "utf8", timeout: 120_000 });
+    const parsedCmd = parseAndValidateCommandArgv("canary", testCmd, root);
+    if (parsedCmd.error) {
+      return {
+        passed: false,
+        baseRef,
+        copiedTestFiles,
+        baseExitCode: -1,
+        headExitCode: -1,
+        reason: `Unsafe red-before-fix test command rejected: ${parsedCmd.error}`,
+      };
+    }
+    const cleanEnv = scrubChildEnv();
+    const baseRun = runArgvChain(parsedCmd.steps, worktreeDir, cleanEnv, 120_000);
+    const headRun = runArgvChain(parsedCmd.steps, root, cleanEnv, 120_000);
     const baseCode = baseRun.status ?? 1;
     const headCode = headRun.status ?? 1;
     const baseOut = `${baseRun.stdout ?? ""}\n${baseRun.stderr ?? ""}`;

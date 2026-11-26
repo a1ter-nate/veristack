@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isTestFilePath } from "../discover.ts";
-import { scrubChildEnv } from "./command-audit.ts";
+import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
 
 export interface TwoSidedOracleResult {
   passed: boolean;
@@ -15,10 +15,10 @@ export interface TwoSidedOracleResult {
 }
 
 const ORACLE_CONFIG_SURFACE =
-  /(?:^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|pyproject\.toml|pytest\.ini|(?:vitest|vite|jest|playwright)\.config\.[cm]?[jt]s|jest\.config\.json|conftest\.py|\.verification\/rungs\.json)$|__snapshots__\/.*\.snap$/i;
+  /(?:^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|Cargo\.toml|pyproject\.toml|pytest\.ini|(?:vitest|vite|jest|playwright)\.config\.[cm]?[jt]s|jest\.config\.json|conftest\.py|\.verification\/rungs\.json)$|__snapshots__\/.*\.snap$|\.golden\.[^/]+$/i;
 
 const TEST_DIR_SURFACE =
-  /(?:^|\/)(?:tests|test|__tests__|spec|specs|[^/]+\.(?:Tests|UnitTests|IntegrationTests))\//i;
+  /(?:^|\/)(?:tests|test|__tests__|spec|specs|testdata|fixtures|__fixtures__|golden|goldens|[^/]+\.(?:Tests|UnitTests|IntegrationTests))\//i;
 
 function isOracleSurface(rel: string): boolean {
   const norm = rel.replace(/\\/g, "/");
@@ -104,9 +104,20 @@ export function runTwoSidedOracleCheck(
     };
   }
 
+  const parsedCmd = parseAndValidateCommandArgv("canary", testCmd, root);
+  if (parsedCmd.error) {
+    return {
+      passed: false,
+      baseRef,
+      baseTestsOnHeadCodeExit: -1,
+      headTestsOnHeadCodeExit: -1,
+      declaredBehaviorChange: false,
+      reason: `Rejected oracle --test-cmd: ${parsedCmd.error}`,
+    };
+  }
   const childEnv = scrubChildEnv();
-  const headRun = spawnSync(testCmd, [], { cwd: root, shell: true, env: childEnv, encoding: "utf8", timeout: 120_000 });
-  const headExit = headRun.status ?? 1;
+  const headRun = runArgvChain(parsedCmd.steps, root, childEnv, 120_000);
+  const headExit = headRun.status;
   if (headExit !== 0) {
     return {
       passed: false,
@@ -177,8 +188,8 @@ export function runTwoSidedOracleCheck(
       };
     }
 
-    const baseOnHead = spawnSync(testCmd, [], { cwd: sandboxDir, shell: true, env: childEnv, encoding: "utf8", timeout: 120_000 });
-    const baseExit = baseOnHead.status ?? 1;
+    const baseOnHead = runArgvChain(parsedCmd.steps, sandboxDir, childEnv, 120_000);
+    const baseExit = baseOnHead.status;
     const passed = baseExit === 0 || allApproved;
     return {
       passed,

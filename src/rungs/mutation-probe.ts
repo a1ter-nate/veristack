@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseSync } from "oxc-parser";
+import { isTestFilePath } from "../discover.ts";
 import type { PlantedFaultReport, PlantedFaultSurvivor } from "../types.ts";
-import { scrubChildEnv, validateExecutableCommand } from "./command-audit.ts";
+import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
 
 interface MutantCandidate {
   file: string;
@@ -35,6 +36,9 @@ const LOGICAL_MUTATIONS: Record<string, string> = {
 const COMPILE_OR_RUNTIME_CRASH =
   /(?:SyntaxError:\s*(?:Unexpected|invalid\s+syntax|Parse\s+error)|IndentationError:|NameError:|ImportError:|Cannot\s+find\s+module|\bTS\d{4}:|\bCS\d{4}:|error\[E\d{4}\]|cannot\s+find\s+package|syntax\s+error:|undefined:\s+\w+|expected\s+.+,\s+found\s+)/i;
 
+const TEST_FAILURE_EVIDENCE =
+  /(?:\b[1-9]\d*\s+fail(?:ed|ure|ures)?\b|\bFAIL\b|\bFAILED\b|AssertionError|Expected\s+values|assertion\s+`?left|assert\s+failed|test\s+result:\s*FAILED|Failed:\s*[1-9]\d*|not\s+ok\s+\d+|✗|×|\bERROR\b)/i;
+
 function lineAt(source: string, offset: number): number {
   let line = 1;
   for (let i = 0; i < offset && i < source.length; i++) {
@@ -49,17 +53,22 @@ function maskCommentsOnly(text: string): string {
     .replace(/(^|[^:\\])\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, " "));
 }
 
-function maskStringsAndCommentsForFallback(source: string): string {
-  const cfgIdx = source.search(/#\[cfg\(test\)\]/);
+function maskStringsAndCommentsForFallback(rel: string, source: string): string {
+  const isRust = rel.endsWith(".rs");
+  const cfgIdx = isRust ? source.search(/#\[cfg\(test\)\]\s*(?:pub\s+)?mod\b/) : -1;
   const active = cfgIdx >= 0 ? source.slice(0, cfgIdx) : source;
-  return active
+  let masked = active
     .replace(/"""[\s\S]*?"""|'''[\s\S]*?'''/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/r#*"[\s\S]*?"#*/g, (m) => m.replace(/[^\n]/g, " "))
     .replace(/`[\s\S]*?`/g, (m) => m.replace(/[^\n]/g, " "))
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
     .replace(/(^|[^:\\])\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, " "))
     .replace(/(^|\s)#[^\n]*/g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/"(?:\\.|[^"\\])*"/g, (m) => `"${" ".repeat(Math.max(0, m.length - 2))}"`)
-    .replace(/'(?:\\.|[^'\\])'/g, (m) => `'${" ".repeat(Math.max(0, m.length - 2))}'`);
+    .replace(/"(?:\\.|[^"\\])*"/g, (m) => `"${" ".repeat(Math.max(0, m.length - 2))}"`);
+  if (!isRust) {
+    masked = masked.replace(/'(?:\\.|[^'\\])*'/g, (m) => `'${" ".repeat(Math.max(0, m.length - 2))}'`);
+  }
+  return masked;
 }
 
 function seededShuffle<T>(items: readonly T[], seed: number): T[] {
@@ -165,11 +174,8 @@ function collectAstMutants(rel: string, source: string, maxPerFile: number): Mut
     }
 
     for (const val of Object.values(rec)) {
-      if (Array.isArray(val)) {
-        for (const item of val) stack.push(item);
-      } else if (val && typeof val === "object") {
-        stack.push(val);
-      }
+      if (Array.isArray(val)) for (const item of val) stack.push(item);
+      else if (val && typeof val === "object") stack.push(val);
     }
   }
 
@@ -177,7 +183,7 @@ function collectAstMutants(rel: string, source: string, maxPerFile: number): Mut
 }
 
 function collectFallbackMutants(rel: string, source: string, maxPerFile: number): MutantCandidate[] {
-  const masked = maskStringsAndCommentsForFallback(source);
+  const masked = maskStringsAndCommentsForFallback(rel, source);
   const all: MutantCandidate[] = [];
   const seenLines = new Set<number>();
   const isPython = rel.endsWith(".py");
@@ -191,7 +197,10 @@ function collectFallbackMutants(rel: string, source: string, maxPerFile: number)
     if (idx < 0) continue;
     const prevCh = idx > 0 ? (masked[idx - 1] ?? "") : "";
     const nextCh = masked[idx + op.length] ?? "";
-    if ((op === "<" || op === ">") && (/[A-Za-z0-9_:]/.test(prevCh) || nextCh === ">" || prevCh === "-" || prevCh === "=")) {
+    if (
+      (op === "<" || op === ">") &&
+      (/[A-Za-z0-9_:]/.test(prevCh) || prevCh === "-" || prevCh === "=" || prevCh === "<" || prevCh === ">" || nextCh === "-" || nextCh === "<" || nextCh === ">")
+    ) {
       continue;
     }
     const replacement =
@@ -213,16 +222,47 @@ function collectFallbackMutants(rel: string, source: string, maxPerFile: number)
   return seededShuffle(all, computeSeedForFile(rel, source)).slice(0, maxPerFile);
 }
 
-function insertInteriorNoOp(rel: string, source: string): string {
-  const lines = source.split("\n");
-  if (lines.length <= 2) return `\n${source}\n`;
-  if (rel.endsWith(".py")) {
-    const idx = lines.findIndex((l, i) => i > 0 && /^(?:def |class |async def )/.test(l));
-    const insertAt = idx > 0 ? idx : Math.floor(lines.length / 2);
-    return [...lines.slice(0, insertAt), "", ...lines.slice(insertAt)].join("\n");
+function insertSemanticNoOp(rel: string, source: string): string {
+  if (/\.[cm]?[jt]sx?$/.test(rel)) {
+    try {
+      const parsed = parseSync(rel, source);
+      const stack: unknown[] = [parsed.program];
+      while (stack.length > 0) {
+        const node = stack.pop();
+        if (!node || typeof node !== "object") continue;
+        const rec = node as Record<string, unknown>;
+        if (
+          (rec.type === "FunctionDeclaration" || rec.type === "FunctionExpression" || rec.type === "ArrowFunctionExpression") &&
+          rec.body &&
+          typeof rec.body === "object"
+        ) {
+          const body = rec.body as Record<string, unknown>;
+          if (body.type === "BlockStatement" && typeof body.start === "number") {
+            const pos = body.start + 1;
+            const candidate = `${source.slice(0, pos)} void 0; ${source.slice(pos)}`;
+            if (parseSync(rel, candidate).errors.length === 0) return candidate;
+          }
+        }
+        for (const val of Object.values(rec)) {
+          if (Array.isArray(val)) for (const item of val) stack.push(item);
+          else if (val && typeof val === "object") stack.push(val);
+        }
+      }
+    } catch {
+      return `${source}\nvoid 0;\n`;
+    }
+    return `${source}\nvoid 0;\n`;
   }
-  const mid = Math.max(1, Math.floor(lines.length / 2));
-  return [...lines.slice(0, mid), "", ...lines.slice(mid)].join("\n");
+  if (rel.endsWith(".py")) {
+    const lines = source.split("\n");
+    const insertAt = lines[0]?.startsWith("#!") ? 1 : 0;
+    return [...lines.slice(0, insertAt), "_vstack_noop = 0", ...lines.slice(insertAt)].join("\n");
+  }
+  const braceIdx = source.indexOf("{");
+  if (braceIdx > 0 && !rel.endsWith(".go")) {
+    return `${source.slice(0, braceIdx + 1)} /* vstack-noop */ ${source.slice(braceIdx + 1)}`;
+  }
+  return `${source}\n/* vstack-noop */\n`;
 }
 
 export interface CanaryOptions {
@@ -237,10 +277,15 @@ export interface CanaryOptions {
 function resolveTargetFiles(options: CanaryOptions): string[] {
   const absRoot = path.resolve(options.repoRoot);
   const targets = new Set<string>();
+  const addSafe = (rel: string): void => {
+    const norm = rel.trim().replace(/\\/g, "/");
+    if (!norm || isTestFilePath(norm)) return;
+    const resolved = path.resolve(absRoot, norm);
+    if (resolved !== absRoot && !resolved.startsWith(`${absRoot}${path.sep}`)) return;
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) targets.add(norm);
+  };
   if (options.targets) {
-    for (const rel of options.targets) {
-      if (fs.existsSync(path.join(absRoot, rel))) targets.add(rel);
-    }
+    for (const rel of options.targets) addSafe(rel);
   }
   const ref = options.baseRef ?? (targets.size === 0 ? "HEAD" : undefined);
   if (ref) {
@@ -248,14 +293,7 @@ function resolveTargetFiles(options: CanaryOptions): string[] {
     if (diff.status === 0) {
       for (const raw of (diff.stdout ?? "").split(/\r?\n/)) {
         const rel = raw.trim();
-        if (
-          rel &&
-          !/(?:test|spec)/i.test(rel) &&
-          /\.(?:[cm]?[jt]sx?|py|rs|go|cs)$/.test(rel) &&
-          fs.existsSync(path.join(absRoot, rel))
-        ) {
-          targets.add(rel);
-        }
+        if (rel && /\.(?:[cm]?[jt]sx?|py|rs|go|cs)$/.test(rel)) addSafe(rel);
       }
     }
   }
@@ -290,7 +328,8 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
   const maxMutants = Math.max(1, options.maxMutants ?? 6);
   const minKillRate = Math.max(0.75, options.minKillRate ?? 0.8);
 
-  if (validateExecutableCommand("canary", options.testCmd, absRoot) !== null) {
+  const parsedCmd = parseAndValidateCommandArgv("canary", options.testCmd, absRoot);
+  if (parsedCmd.error) {
     return {
       totalMutants: 0,
       killedMutants: 0,
@@ -336,13 +375,7 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
   const sandboxDir = copyRepoForIsolatedCanary(absRoot);
   try {
     const baselineStart = performance.now();
-    const baselineRun = spawnSync(options.testCmd, [], {
-      cwd: sandboxDir,
-      shell: true,
-      env: childEnv,
-      encoding: "utf8",
-      timeout: 90_000,
-    });
+    const baselineRun = runArgvChain(parsedCmd.steps, sandboxDir, childEnv, 90_000);
     const baselineMs = Math.max(500, Math.round(performance.now() - baselineStart));
     const mutantTimeoutMs = Math.round(Math.max(10_000, Math.min(45_000, baselineMs * 8)));
     if (baselineRun.status !== 0) {
@@ -365,15 +398,9 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
         const noOpPath = path.join(sandboxDir, rel);
         const orig = fs.readFileSync(noOpPath, "utf8");
         originals.set(rel, orig);
-        fs.writeFileSync(noOpPath, insertInteriorNoOp(rel, orig), "utf8");
+        fs.writeFileSync(noOpPath, insertSemanticNoOp(rel, orig), "utf8");
       }
-      const noOpRun = spawnSync(options.testCmd, [], {
-        cwd: sandboxDir,
-        shell: true,
-        env: childEnv,
-        encoding: "utf8",
-        timeout: mutantTimeoutMs,
-      });
+      const noOpRun = runArgvChain(parsedCmd.steps, sandboxDir, childEnv, mutantTimeoutMs);
       if (noOpRun.status !== 0) {
         return {
           totalMutants: candidates.length,
@@ -409,15 +436,9 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
       try {
         fs.writeFileSync(mutantPath, mutatedSource, "utf8");
         const mutStart = performance.now();
-        const res = spawnSync(options.testCmd, [], {
-          cwd: sandboxDir,
-          shell: true,
-          env: childEnv,
-          encoding: "utf8",
-          timeout: mutantTimeoutMs,
-        });
+        const res = runArgvChain(parsedCmd.steps, sandboxDir, childEnv, mutantTimeoutMs);
         const elapsedMs = performance.now() - mutStart;
-        const combined = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
+        const combined = `${res.stdout}\n${res.stderr}`;
         const timedOut =
           (res.signal === "SIGTERM" || (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") &&
           elapsedMs >= mutantTimeoutMs * 0.8;
@@ -426,7 +447,7 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
         } else if (res.signal === "SIGTERM" || res.error) {
           invalidKills += 1;
         } else if (res.status !== 0) {
-          if (COMPILE_OR_RUNTIME_CRASH.test(combined)) {
+          if (COMPILE_OR_RUNTIME_CRASH.test(combined) || !TEST_FAILURE_EVIDENCE.test(combined)) {
             invalidKills += 1;
           } else {
             killed += 1;

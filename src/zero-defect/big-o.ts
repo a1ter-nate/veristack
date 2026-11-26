@@ -66,18 +66,36 @@ export function fitEmpiricalBigO(
   samples: readonly ScalingSample[],
   thresholds: BigOThresholds = { maxTimeExponent: 1.45 },
 ): EmpiricalBigOResult {
-  if (samples.length < 3) {
-    return {
-      sampleCount: samples.length,
-      timeExponent: 0,
-      timeR2: 0,
-      timeClass: "insufficient_samples",
-      spaceExponent: null,
-      spaceR2: null,
-      spaceClass: null,
-      passed: false,
-      reasons: ["At least 3 scaling sizes (e.g., N, 2N, 4N, 8N) are required to fit empirical Big-O."],
-    };
+  const fail = (timeClass: string, reasons: string[]): EmpiricalBigOResult => ({
+    sampleCount: samples.length,
+    timeExponent: 0,
+    timeR2: 0,
+    timeClass,
+    spaceExponent: null,
+    spaceR2: null,
+    spaceClass: null,
+    passed: false,
+    reasons,
+  });
+
+  if (!Number.isFinite(thresholds.maxTimeExponent) || thresholds.maxTimeExponent <= 0) {
+    return fail("invalid_threshold", [`Invalid maxTimeExponent (${String(thresholds.maxTimeExponent)}); must be a finite positive number.`]);
+  }
+  if (thresholds.maxSpaceExponent !== undefined && (!Number.isFinite(thresholds.maxSpaceExponent) || thresholds.maxSpaceExponent <= 0)) {
+    return fail("invalid_threshold", [`Invalid maxSpaceExponent (${String(thresholds.maxSpaceExponent)}); must be a finite positive number.`]);
+  }
+  if (!Array.isArray(samples) || samples.length < 3) {
+    return fail("insufficient_samples", ["At least 3 scaling sizes (e.g., N, 2N, 4N, 8N) are required to fit empirical Big-O."]);
+  }
+  const invalidSample = samples.some(
+    (s) => !s || typeof s.n !== "number" || typeof s.timeMs !== "number" || !Number.isFinite(s.n) || !Number.isFinite(s.timeMs) || s.n <= 0 || s.timeMs <= 0,
+  );
+  if (invalidSample) {
+    return fail("invalid_samples", ["All scaling samples must have finite positive n and timeMs > 0."]);
+  }
+  const distinctN = new Set(samples.map((s) => s.n));
+  if (distinctN.size < 3) {
+    return fail("degenerate_samples", [`At least 3 distinct input sizes n are required (found ${distinctN.size}).`]);
   }
 
   const ordered = [...samples].sort((a, b) => a.n - b.n);
@@ -86,9 +104,9 @@ export function fitEmpiricalBigO(
   const timeFit = fitLogLogSlope(ns, times);
   const timeClass = classifyExponent(timeFit.slope);
 
-  const memPairs = ordered.filter((s) => typeof s.memoryBytes === "number" && s.memoryBytes > 0);
+  const memPairs = ordered.filter((s) => typeof s.memoryBytes === "number" && Number.isFinite(s.memoryBytes) && s.memoryBytes > 0);
   const spaceFit =
-    memPairs.length >= 3
+    memPairs.length >= 3 && new Set(memPairs.map((s) => s.n)).size >= 3
       ? fitLogLogSlope(
           memPairs.map((s) => s.n),
           memPairs.map((s) => s.memoryBytes ?? 0),
@@ -97,6 +115,9 @@ export function fitEmpiricalBigO(
   const spaceClass = spaceFit ? classifyExponent(spaceFit.slope) : null;
 
   const reasons: string[] = [];
+  if (timeFit.slope >= 0.2 && timeFit.r2 < 0.5) {
+    reasons.push(`Log-log fit R2=${timeFit.r2} is below 0.5 reliability floor (noisy or non-monotonic timings).`);
+  }
   if (timeFit.slope > thresholds.maxTimeExponent) {
     reasons.push(
       `Time scaling exponent ${timeFit.slope} (${timeClass}) exceeds budget <= ${thresholds.maxTimeExponent}.`,

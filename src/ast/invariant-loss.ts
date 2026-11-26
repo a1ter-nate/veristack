@@ -128,6 +128,7 @@ function countPattern(lines: readonly DiffLineEvent[], regex: RegExp): number {
 
 export interface InvariantLossOptions {
   allowTestedPredicateRefactor?: boolean;
+  migratedJsToTsFiles?: ReadonlySet<string>;
 }
 
 export function analyzeInvariantGuards(file: ScannedFile): Finding[] {
@@ -322,29 +323,32 @@ export function auditDiffInvariantLoss(
       }
 
       let explicitCaughtInHunk = false;
+      const isJsToTsMigration = Boolean(options.migratedJsToTsFiles?.has(file));
       for (const d of dels) {
         const lost = classifyLineInvariants(d.code);
+        if (isJsToTsMigration && (lost.has("null-nil-guard") || lost.has("type-shape-guard"))) continue;
         for (const inv of lost) {
           if (addedInvariants.has(inv) || reportedForFile.has(inv)) continue;
           reportedForFile.add(inv);
           explicitCaughtInHunk = true;
+          const line = Math.max(1, d.line);
           findings.push({
-            id: `DIFF:inv-lost:${file}:${d.line}:${inv}`,
+            id: `DIFF:inv-lost:${file}:${line}:${inv}`,
             rule: "diff-invariant-guard-dropped",
             category: "cheat",
             rung: "R0",
             severity: "warn",
             file,
-            line: d.line,
-            message: `Diff removed a '${inv}' invariant in ${file}:${d.line} without preserving an equivalent guard in the replacement lines.`,
+            line,
+            message: `Diff removed a '${inv}' invariant in ${file}:${line} without preserving an equivalent guard in the replacement lines.`,
             fix: `Restore the '${inv}' invariant or add a regression test proving the invariant is now enforced by types or a higher boundary.`,
           });
         }
       }
 
-      if (explicitCaughtInHunk || suppressStructuralPredicates) continue;
+      if (explicitCaughtInHunk || suppressStructuralPredicates || isJsToTsMigration) continue;
 
-      const firstDelLine = dels[0]?.line ?? 1;
+      const firstDelLine = Math.max(1, dels[0]?.line ?? 1);
       const emitWeakened = (kind: string, detail: string): void => {
         if (reportedForFile.has(kind)) return;
         reportedForFile.add(kind);

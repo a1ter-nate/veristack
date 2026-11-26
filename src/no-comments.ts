@@ -344,7 +344,8 @@ export function lintNoComments(
   const allowExportedTsDoc = options.allowExportedTsDoc ?? true;
   const rawHits = language === "python" ? findHashComments(source) : findSlashComments(source, language);
 
-  const isGeneratedFile = rawHits.some((hit) => hit.header && GENERATED.test(normalizeBody(hit.text)));
+  const isGeneratedPath = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i.test(file);
+  const isGeneratedFile = isGeneratedPath && rawHits.some((hit) => hit.header && GENERATED.test(normalizeBody(hit.text)));
   if (isGeneratedFile) return [];
 
   const lines = source.split(/\r?\n/);

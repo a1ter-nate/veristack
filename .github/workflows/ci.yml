@@ -93,7 +93,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: clippy, rustfmt
       - run: cargo fmt --manifest-path templates/rust-reference/Cargo.toml --check
@@ -131,6 +131,8 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: |
-          curl -fsSL https://bend-lang.com/install.sh | sh
+          curl -fsSL -o /tmp/bend-install.sh https://bend-lang.com/install.sh
+          sh /tmp/bend-install.sh
+          rm -f /tmp/bend-install.sh
           ~/.bend/bin/bend templates/bend2-reference/PROOF.bend --check-only
       - run: bun src/cli.ts bench . --fail

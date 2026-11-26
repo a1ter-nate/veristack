@@ -84,8 +84,8 @@ export function detectLanguage(rel: string): Language | undefined {
   if (lower.endsWith(".js") || lower.endsWith(".jsx") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
     return "javascript";
   }
-  if (lower.endsWith(".cs")) return "csharp";
-  if (lower.endsWith(".py")) return "python";
+  if (lower.endsWith(".cs") || lower.endsWith(".csx")) return "csharp";
+  if (lower.endsWith(".py") || lower.endsWith(".pyi")) return "python";
   if (lower.endsWith(".rs")) return "rust";
   if (lower.endsWith(".go")) return "go";
   return undefined;
@@ -93,6 +93,15 @@ export function detectLanguage(rel: string): Language | undefined {
 
 function extractSfcScript(rel: string, raw: string): { language: Language; content: string } | undefined {
   const lower = rel.toLowerCase();
+  if (lower.endsWith(".astro")) {
+    const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
+    if (!fm?.[1]) return undefined;
+    const out = Array<string>(raw.length).fill(" ");
+    for (let i = 0; i < raw.length; i++) if (raw[i] === "\n") out[i] = "\n";
+    const start = fm[0].indexOf(fm[1]);
+    for (let i = 0; i < fm[1].length; i++) out[start + i] = fm[1][i] ?? " ";
+    return { language: "typescript", content: out.join("") };
+  }
   if (!lower.endsWith(".vue") && !lower.endsWith(".svelte")) return undefined;
   const matches = [...raw.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
   if (matches.length === 0) return undefined;
@@ -134,7 +143,6 @@ function isWorkflowPath(rel: string): boolean {
   return (
     (lower.startsWith(".github/workflows/") && (lower.endsWith(".yml") || lower.endsWith(".yaml"))) ||
     lower === "azure-pipelines.yml" ||
-    lower.endsWith("/azure-pipelines.yml") ||
     lower === ".gitlab-ci.yml" ||
     lower === ".circleci/config.yml" ||
     lower === "bitbucket-pipelines.yml"
@@ -149,7 +157,7 @@ function shouldReadText(rel: string): boolean {
   if ((lower.endsWith(".yml") || lower.endsWith(".yaml")) && /(?:^|\/)(?:maestro|e2e|mobile-e2e|flows)\//.test(lower)) {
     return true;
   }
-  if (lower.endsWith(".vue") || lower.endsWith(".svelte") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
+  if (lower.endsWith(".vue") || lower.endsWith(".svelte") || lower.endsWith(".astro") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
   if (lower.endsWith(".sh") || lower.endsWith(".bash")) return true;
   if (lower.endsWith(".sql") && /(?:^|\/)(?:migrations?|supabase|policies|rls|schema)\//.test(lower)) return true;
   if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) {

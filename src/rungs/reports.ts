@@ -13,25 +13,16 @@ interface StructuredReportMetrics {
   lineCoveragePct?: number;
   fileCoverage: Map<string, number>;
 }
-
-interface CrapEntry {
-  file: string;
-  cyclomaticComplexity: number;
-  coveragePct: number;
-  crapScore: number;
-}
-
+interface CrapEntry { file: string; cyclomaticComplexity: number; coveragePct: number; crapScore: number; }
 interface CrapReport {
-  maxAllowed: number;
-  passed: boolean;
-  worstCrap: number;
-  offenders: CrapEntry[];
-  evaluatedFiles: number;
-  uncoveredRepoFiles: string[];
+  maxAllowed: number; passed: boolean; worstCrap: number;
+  offenders: CrapEntry[]; evaluatedFiles: number; uncoveredRepoFiles: string[];
 }
+interface DetailedCoverage { fileRate: Map<string, number>; lineHits: Map<string, Map<number, number>>; }
 
-function parseLcov(content: string): Map<string, number> {
+function parseLcovDetailed(content: string): DetailedCoverage {
   const accum = new Map<string, { found: number; hit: number }>();
+  const lineHits = new Map<string, Map<number, number>>();
   let currentFile = "";
   let daFound = 0;
   let daHit = 0;
@@ -42,19 +33,21 @@ function parseLcov(content: string): Map<string, number> {
     const line = raw.trim();
     if (line.startsWith("SF:")) {
       currentFile = line.slice(3).replace(/\\/g, "/");
-      daFound = 0;
-      daHit = 0;
-      lf = -1;
-      lh = -1;
-    } else if (line.startsWith("DA:")) {
+      daFound = 0; daHit = 0; lf = -1; lh = -1;
+    } else if (line.startsWith("DA:") && currentFile) {
       const parts = line.slice(3).split(",");
+      const lineNo = Number(parts[0] ?? "0");
+      const hits = Number(parts[1] ?? "0");
       daFound += 1;
-      if (Number(parts[1] ?? "0") > 0) daHit += 1;
-    } else if (line.startsWith("LF:")) {
-      lf = Number(line.slice(3));
-    } else if (line.startsWith("LH:")) {
-      lh = Number(line.slice(3));
-    } else if (line === "end_of_record" && currentFile) {
+      if (hits > 0) daHit += 1;
+      if (Number.isFinite(lineNo) && lineNo > 0) {
+        const fmap = lineHits.get(currentFile) ?? new Map<number, number>();
+        fmap.set(lineNo, (fmap.get(lineNo) ?? 0) + (Number.isFinite(hits) ? hits : 0));
+        lineHits.set(currentFile, fmap);
+      }
+    } else if (line.startsWith("LF:")) lf = Number(line.slice(3));
+    else if (line.startsWith("LH:")) lh = Number(line.slice(3));
+    else if (line === "end_of_record" && currentFile) {
       const found = daFound > 0 ? daFound : lf > 0 ? lf : 0;
       const hit = daFound > 0 ? daHit : lh >= 0 ? lh : 0;
       const prev = accum.get(currentFile) ?? { found: 0, hit: 0 };
@@ -62,35 +55,72 @@ function parseLcov(content: string): Map<string, number> {
       currentFile = "";
     }
   }
-
-  const map = new Map<string, number>();
+  const fileRate = new Map<string, number>();
   for (const [file, { found, hit }] of accum.entries()) {
-    map.set(file, found > 0 ? Math.max(0, Math.min(1, hit / found)) : 0);
+    fileRate.set(file, found > 0 ? Math.max(0, Math.min(1, hit / found)) : 0);
   }
-  return map;
+  return { fileRate, lineHits };
+}
+
+function parseLcov(content: string): Map<string, number> {
+  return parseLcovDetailed(content).fileRate;
 }
 
 function readXmlAttr(attrs: string, name: string): string | undefined {
   const target = name.toLowerCase();
-  for (const m of attrs.matchAll(/\b([a-zA-Z0-9_:-]+)\s*=\s*"([^"]*)"/g)) {
-    if ((m[1] ?? "").toLowerCase() === target) return m[2];
+  for (const m of attrs.matchAll(/\b([a-zA-Z0-9_:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    if ((m[1] ?? "").toLowerCase() === target) return m[2] ?? m[3];
   }
   return undefined;
 }
 
-function parseCoberturaXml(content: string): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const m of content.matchAll(/<class\b([^>]*?)>/gi)) {
-    const attrs = m[1] ?? "";
-    const file = (readXmlAttr(attrs, "filename") ?? "").replace(/\\/g, "/");
+function parseCoberturaDetailed(content: string, repoRoot?: string): DetailedCoverage {
+  const fileRate = new Map<string, number>();
+  const lineHits = new Map<string, Map<number, number>>();
+  const sources: string[] = [];
+  for (const sm of content.matchAll(/<source>\s*([^<]+?)\s*<\/source>/gi)) {
+    if (sm[1]) sources.push(sm[1].trim().replace(/\\/g, "/"));
+  }
+  const resolveFile = (rawFile: string): string => {
+    const clean = rawFile.replace(/\\/g, "/");
+    if (!repoRoot) return clean;
+    const direct = path.resolve(repoRoot, clean);
+    if (fs.existsSync(direct)) return clean;
+    for (const src of sources) {
+      const joined = path.resolve(src, clean);
+      if (fs.existsSync(joined)) return path.relative(repoRoot, joined).split(path.sep).join("/");
+    }
+    return clean;
+  };
+
+  for (const m of content.matchAll(/<class\b([^>]*?)>([\s\S]*?)<\/class>|<class\b([^>]*?)\/>/gi)) {
+    const attrs = m[1] ?? m[3] ?? "";
+    const body = m[2] ?? "";
+    const rawFile = readXmlAttr(attrs, "filename") ?? "";
     const rateRaw = readXmlAttr(attrs, "line-rate");
     const rate = rateRaw !== undefined ? Number(rateRaw) : Number.NaN;
-    if (!file || !Number.isFinite(rate)) continue;
+    if (!rawFile || !Number.isFinite(rate)) continue;
+    const file = resolveFile(rawFile);
     const clamped = Math.max(0, Math.min(1, rate));
-    const prev = map.get(file);
-    map.set(file, prev === undefined ? clamped : Math.min(prev, clamped));
+    const prev = fileRate.get(file);
+    fileRate.set(file, prev === undefined ? clamped : Math.min(prev, clamped));
+
+    for (const lm of body.matchAll(/<line\b([^>]*?)\/?>/gi)) {
+      const la = lm[1] ?? "";
+      const num = Number(readXmlAttr(la, "number") ?? "NaN");
+      const hits = Number(readXmlAttr(la, "hits") ?? "NaN");
+      if (Number.isFinite(num) && num > 0 && Number.isFinite(hits)) {
+        const fmap = lineHits.get(file) ?? new Map<number, number>();
+        fmap.set(num, (fmap.get(num) ?? 0) + hits);
+        lineHits.set(file, fmap);
+      }
+    }
   }
-  return map;
+  return { fileRate, lineHits };
+}
+
+function parseCoberturaXml(content: string): Map<string, number> {
+  return parseCoberturaDetailed(content).fileRate;
 }
 
 function parseStrykerJson(content: string): number | undefined {
@@ -116,60 +146,86 @@ function parseStrykerJson(content: string): number | undefined {
   }
 }
 
+function parseIntAttr(attrs: string, name: string, required = false): number | null {
+  const raw = readXmlAttr(attrs, name);
+  if (raw === undefined) return required ? null : 0;
+  if (!/^\d+$/.test(raw.trim())) return null;
+  return Number(raw.trim());
+}
+
 function parseJunitOrTrx(content: string): { passed: number; failed: number; skipped: number } | undefined {
-  const trxMatch = /<Counters\b([^>]*?)>/i.exec(content);
+  const trxMatch = /<Counters\b([^>]*?)\/?>/i.exec(content);
   if (trxMatch?.[1]) {
-    const attrs = trxMatch[1];
-    const total = Number(readXmlAttr(attrs, "total") ?? "NaN");
-    const passed = Number(readXmlAttr(attrs, "passed") ?? "0");
-    const failed =
-      Number(readXmlAttr(attrs, "failed") ?? "0") +
-      Number(readXmlAttr(attrs, "error") ?? "0") +
-      Number(readXmlAttr(attrs, "timeout") ?? "0") +
-      Number(readXmlAttr(attrs, "aborted") ?? "0");
-    if (Number.isFinite(total)) {
-      return { passed, failed, skipped: Math.max(0, total - passed - failed) };
-    }
+    const a = trxMatch[1];
+    const nums = [
+      parseIntAttr(a, "total", true), parseIntAttr(a, "passed"), parseIntAttr(a, "failed"),
+      parseIntAttr(a, "error"), parseIntAttr(a, "timeout"), parseIntAttr(a, "aborted"),
+      parseIntAttr(a, "inconclusive"), parseIntAttr(a, "notRunnable"),
+    ];
+    if (nums.some((n) => n === null)) return undefined;
+    const [total, passed, failed, err, timeout, aborted, inconclusive, notRunnable] = nums as number[];
+    const totalFailed = (failed ?? 0) + (err ?? 0) + (timeout ?? 0) + (aborted ?? 0) + (inconclusive ?? 0) + (notRunnable ?? 0);
+    return { passed: passed ?? 0, failed: totalFailed, skipped: Math.max(0, (total ?? 0) - (passed ?? 0) - totalFailed) };
   }
 
-  const suites = [...content.matchAll(/<testsuite\b([^>]*?)>/gi)];
-  if (suites.length > 0) {
-    let total = 0;
-    let failed = 0;
-    let skipped = 0;
-    let matchedAny = false;
-    for (const s of suites) {
-      const attrs = s[1] ?? "";
-      const t = Number(readXmlAttr(attrs, "tests") ?? "NaN");
-      if (!Number.isFinite(t)) continue;
-      matchedAny = true;
-      total += t;
-      failed += Number(readXmlAttr(attrs, "failures") ?? "0") + Number(readXmlAttr(attrs, "errors") ?? "0");
-      skipped += Number(readXmlAttr(attrs, "skipped") ?? "0");
+  let depth = 0;
+  let total = 0;
+  let failed = 0;
+  let skipped = 0;
+  let matchedAny = false;
+  let invalidAttr = false;
+
+  for (const tag of content.matchAll(/<(\/?)testsuite\b([^>]*?)(\/?)>/gi)) {
+    const attrs = tag[2] ?? "";
+    if (tag[1] === "/") {
+      depth = Math.max(0, depth - 1);
+      continue;
     }
-    if (matchedAny) {
-      return { passed: Math.max(0, total - failed - skipped), failed, skipped };
+    if (depth === 0) {
+      const t = parseIntAttr(attrs, "tests", true);
+      const f = parseIntAttr(attrs, "failures");
+      const e = parseIntAttr(attrs, "errors");
+      const sk = parseIntAttr(attrs, "skipped");
+      const dis = parseIntAttr(attrs, "disabled");
+      if (t !== null) {
+        if (f === null || e === null || sk === null || dis === null) {
+          invalidAttr = true;
+          break;
+        }
+        matchedAny = true;
+        total += t;
+        failed += f + e;
+        skipped += sk + dis;
+      }
     }
+    if (tag[3] !== "/") depth += 1;
   }
+
+  if (invalidAttr) return undefined;
+  if (matchedAny) return { passed: Math.max(0, total - failed - skipped), failed, skipped };
 
   const rootMatch = /<testsuites\b([^>]*?)>/i.exec(content);
   if (rootMatch?.[1]) {
-    const attrs = rootMatch[1];
-    const total = Number(readXmlAttr(attrs, "tests") ?? "NaN");
-    if (Number.isFinite(total)) {
-      const failed = Number(readXmlAttr(attrs, "failures") ?? "0") + Number(readXmlAttr(attrs, "errors") ?? "0");
-      const skipped = Number(readXmlAttr(attrs, "skipped") ?? "0");
-      return { passed: Math.max(0, total - failed - skipped), failed, skipped };
-    }
+    const a = rootMatch[1];
+    const t = parseIntAttr(a, "tests", true);
+    const f = parseIntAttr(a, "failures");
+    const e = parseIntAttr(a, "errors");
+    const sk = parseIntAttr(a, "skipped");
+    const dis = parseIntAttr(a, "disabled");
+    if (t === null || f === null || e === null || sk === null || dis === null) return undefined;
+    return { passed: Math.max(0, t - (f + e) - (sk + dis)), failed: f + e, skipped: sk + dis };
   }
   return undefined;
 }
 
-function isFreshFile(abs: string, minMtimeMs?: number): boolean {
+function isFreshFile(abs: string, minMtimeMs?: number, maxMtimeMs?: number): boolean {
   if (!fs.existsSync(abs)) return false;
-  if (minMtimeMs === undefined) return true;
+  if (minMtimeMs === undefined && maxMtimeMs === undefined) return true;
   try {
-    return fs.statSync(abs).mtimeMs >= minMtimeMs;
+    const mt = fs.statSync(abs).mtimeMs;
+    if (minMtimeMs !== undefined && mt < minMtimeMs) return false;
+    if (maxMtimeMs !== undefined && mt > maxMtimeMs) return false;
+    return true;
   } catch {
     return false;
   }
@@ -177,15 +233,16 @@ function isFreshFile(abs: string, minMtimeMs?: number): boolean {
 
 export function parseStructuredReports(
   repoRoot: string,
-  options?: { minMtimeMs?: number; rung?: RungId },
+  options?: { minMtimeMs?: number; maxMtimeMs?: number; rung?: RungId },
 ): StructuredReportMetrics {
   const result: StructuredReportMetrics = { fileCoverage: new Map() };
-  const minMtimeMs = options?.minMtimeMs;
+  const minM = options?.minMtimeMs;
+  const maxM = options?.maxMtimeMs;
   const rung = options?.rung;
 
   for (const rel of ["coverage/lcov.info", "lcov.info", ".verification/lcov.info"]) {
     const abs = path.join(repoRoot, rel);
-    if (isFreshFile(abs, minMtimeMs)) {
+    if (isFreshFile(abs, minM, maxM)) {
       result.fileCoverage = parseLcov(fs.readFileSync(abs, "utf8"));
       break;
     }
@@ -193,7 +250,7 @@ export function parseStructuredReports(
   if (result.fileCoverage.size === 0) {
     for (const rel of ["coverage/cobertura-coverage.xml", "coverage.cobertura.xml", ".verification/coverage.cobertura.xml"]) {
       const abs = path.join(repoRoot, rel);
-      if (isFreshFile(abs, minMtimeMs)) {
+      if (isFreshFile(abs, minM, maxM)) {
         result.fileCoverage = parseCoberturaXml(fs.readFileSync(abs, "utf8"));
         break;
       }
@@ -207,7 +264,7 @@ export function parseStructuredReports(
   if (!rung || rung === "R5") {
     for (const rel of ["reports/mutation/mutation.json", "StrykerOutput/mutation-report.json", ".verification/mutation.json"]) {
       const abs = path.join(repoRoot, rel);
-      if (isFreshFile(abs, minMtimeMs)) {
+      if (isFreshFile(abs, minM, maxM)) {
         const score = parseStrykerJson(fs.readFileSync(abs, "utf8"));
         if (score !== undefined) {
           result.mutationScore = score;
@@ -218,9 +275,9 @@ export function parseStructuredReports(
   }
 
   if (!rung || rung === "R2" || rung === "R3" || rung === "R4") {
-    for (const rel of ["junit.xml", "test-results/junit.xml", "TestResults/results.trx", ".verification/junit.xml"]) {
+    for (const rel of ["junit.xml", "test-results/junit.xml", "TestResults/results.trx", ".verification/junit.xml", ".verification/reports/junit.xml"]) {
       const abs = path.join(repoRoot, rel);
-      if (isFreshFile(abs, minMtimeMs)) {
+      if (isFreshFile(abs, minM, maxM)) {
         const counts = parseJunitOrTrx(fs.readFileSync(abs, "utf8"));
         if (counts) {
           result.testsPassed = counts.passed;
@@ -235,73 +292,113 @@ export function parseStructuredReports(
 }
 
 const JS_BRANCH_TYPES = new Set([
-  "IfStatement",
-  "ForStatement",
-  "ForInStatement",
-  "ForOfStatement",
-  "WhileStatement",
-  "DoWhileStatement",
-  "CatchClause",
-  "ConditionalExpression",
-  "LogicalExpression",
+  "IfStatement", "ForStatement", "ForInStatement", "ForOfStatement",
+  "WhileStatement", "DoWhileStatement", "CatchClause", "ConditionalExpression", "LogicalExpression",
 ]);
-
 const JS_FUNC_TYPES = new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+interface FunctionSpan { startLine: number; endLine: number; cc: number; }
 
-function maxJsFunctionCc(filePath: string, source: string): number {
+function lineAtOffset(source: string, offset: number): number {
+  let line = 1;
+  for (let i = 0; i < offset && i < source.length; i++) {
+    if (source.charCodeAt(i) === 10) line += 1;
+  }
+  return line;
+}
+
+function extractJsFunctionSpans(filePath: string, source: string): FunctionSpan[] {
   try {
     const parsed = parseSync(filePath, source);
-    let maxCc = 1;
-    const walk = (node: unknown, curFuncBranches: { count: number }): void => {
+    const spans: FunctionSpan[] = [];
+    const walk = (node: unknown, cur: { count: number }): void => {
       if (!node || typeof node !== "object") return;
       const rec = node as Record<string, unknown>;
       const t = typeof rec.type === "string" ? rec.type : "";
       if (JS_FUNC_TYPES.has(t)) {
-        const childCounter = { count: 1 };
+        const child = { count: 1 };
         for (const val of Object.values(rec)) {
-          if (Array.isArray(val)) for (const item of val) walk(item, childCounter);
-          else if (val && typeof val === "object") walk(val, childCounter);
+          if (Array.isArray(val)) for (const item of val) walk(item, child);
+          else if (val && typeof val === "object") walk(val, child);
         }
-        if (childCounter.count > maxCc) maxCc = childCounter.count;
+        const s = typeof rec.start === "number" ? lineAtOffset(source, rec.start) : 1;
+        const e = typeof rec.end === "number" ? lineAtOffset(source, rec.end) : s;
+        spans.push({ startLine: s, endLine: e, cc: child.count });
         return;
       }
-      if (JS_BRANCH_TYPES.has(t) || (t === "SwitchCase" && rec.test !== null)) {
-        curFuncBranches.count += 1;
-      }
+      if (JS_BRANCH_TYPES.has(t) || (t === "SwitchCase" && rec.test !== null)) cur.count += 1;
       for (const val of Object.values(rec)) {
-        if (Array.isArray(val)) for (const item of val) walk(item, curFuncBranches);
-        else if (val && typeof val === "object") walk(val, curFuncBranches);
+        if (Array.isArray(val)) for (const item of val) walk(item, cur);
+        else if (val && typeof val === "object") walk(val, cur);
       }
     };
-    const topLevel = { count: 1 };
-    walk(parsed.program, topLevel);
-    return Math.max(maxCc, topLevel.count);
+    const top = { count: 1 };
+    walk(parsed.program, top);
+    if (spans.length === 0) spans.push({ startLine: 1, endLine: source.split(/\r?\n/).length, cc: top.count });
+    return spans;
   } catch {
-    return 1;
+    return [{ startLine: 1, endLine: source.split(/\r?\n/).length, cc: 1 }];
   }
 }
 
-function stripNonCode(source: string): string {
-  return source
-    .replace(/"""[\s\S]*?"""|'''[\s\S]*?'''/g, " ")
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
+function stripNonCode(filePath: string, source: string): string {
+  const isRust = filePath.endsWith(".rs");
+  let s = source
+    .replace(/"""[\s\S]*?"""|'''[\s\S]*?'''/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/r#*"[\s\S]*?"#*/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/`[\s\S]*?`/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
     .replace(/(^|[^:\\])\/\/[^\n]*/g, "$1 ")
     .replace(/(^|\s)#[^\n]*/g, "$1 ")
-    .replace(/"(?:\\.|[^"\\])*"/g, '""')
-    .replace(/'(?:\\.|[^'\\])*'/g, "''");
+    .replace(/"(?:\\.|[^"\\])*"/g, '""');
+  if (!isRust) s = s.replace(/'(?:\\.|[^'\\])*'/g, "''");
+  return s;
 }
 
-function estimateMaxFunctionCc(filePath: string, source: string): number {
-  if (/\.[cm]?[jt]sx?$/.test(filePath)) return maxJsFunctionCc(filePath, source);
-  const cleaned = stripNonCode(source);
-  const chunks = cleaned.split(/\n(?=(?:def |async def |pub\s+fn |fn |func ))/);
-  let maxCc = 1;
-  for (const chunk of chunks) {
-    const branches = chunk.match(/\b(?:if|elif|else\s+if|for|while|case|catch|except|and|or)\b|&&|\|\||=>|\?(?![.?])/g);
-    const cc = 1 + (branches ? branches.length : 0);
-    if (cc > maxCc) maxCc = cc;
+function extractFallbackFunctionSpans(filePath: string, source: string): FunctionSpan[] {
+  const cleaned = stripNonCode(filePath, source);
+  const lines = cleaned.split(/\r?\n/);
+  const isCs = filePath.endsWith(".cs");
+  const starts: number[] = [0];
+  for (let i = 1; i < lines.length; i++) {
+    const l = lines[i] ?? "";
+    if (
+      /^\s*(?:async\s+)?def\s+\w+\s*\(/.test(l) ||
+      /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+\w+/.test(l) ||
+      /^\s*func\s+(?:\([^)]+\)\s+)?\w+\s*\(/.test(l) ||
+      (isCs && /^\s*(?:public|private|internal|protected)\s+(?:static\s+|async\s+|virtual\s+|override\s+)*[A-Za-z0-9_<>,.\s?]+\s+\w+\s*\(/.test(l))
+    ) {
+      starts.push(i);
+    }
   }
-  return maxCc;
+  const branchRe = isCs
+    ? /\b(?:if|else\s+if|for|foreach|while|case|catch)\b|&&|\|\|/g
+    : /\b(?:if|elif|else\s+if|for|while|case|catch|except|and|or)\b|&&|\|\||=>|\?(?![.?])/g;
+  const spans: FunctionSpan[] = [];
+  for (let idx = 0; idx < starts.length; idx++) {
+    const startIdx = starts[idx] ?? 0;
+    const endIdx = (starts[idx + 1] ?? lines.length) - 1;
+    const chunk = lines.slice(startIdx, endIdx + 1).join("\n");
+    const branches = chunk.match(branchRe);
+    spans.push({ startLine: startIdx + 1, endLine: endIdx + 1, cc: 1 + (branches ? branches.length : 0) });
+  }
+  return spans;
+}
+
+function spanCoverageFraction(
+  span: FunctionSpan,
+  lineMap: ReadonlyMap<number, number> | undefined,
+  fallbackFileCov: number,
+): number {
+  if (!lineMap || lineMap.size === 0) return fallbackFileCov;
+  let found = 0;
+  let hit = 0;
+  for (const [ln, hits] of lineMap.entries()) {
+    if (ln >= span.startLine && ln <= span.endLine) {
+      found += 1;
+      if (hits > 0) hit += 1;
+    }
+  }
+  return found > 0 ? hit / found : fallbackFileCov;
 }
 
 export function computeCrapScore(cyclomaticComplexity: number, coverageFraction: number): number {
@@ -321,35 +418,52 @@ export function evaluateCrapForCoverageFile(
   const absRoot = path.resolve(repoRoot);
   const absCov = path.isAbsolute(coveragePath) ? coveragePath : path.join(absRoot, coveragePath);
   const raw = fs.readFileSync(absCov, "utf8");
-  const covMap = raw.trimStart().startsWith("<") ? parseCoberturaXml(raw) : parseLcov(raw);
+  const detailed = raw.trimStart().startsWith("<")
+    ? parseCoberturaDetailed(raw, absRoot)
+    : parseLcovDetailed(raw);
   const offenders: CrapEntry[] = [];
   const coveredRelSet = new Set<string>();
   let worstCrap = 0;
   let evaluatedFiles = 0;
 
-  for (const [fileRel, covFrac] of covMap.entries()) {
+  for (const [fileRel, fileCovFrac] of detailed.fileRate.entries()) {
     const absFile = path.resolve(absRoot, fileRel);
     if (absFile !== absRoot && !absFile.startsWith(`${absRoot}${path.sep}`)) continue;
     if (!fs.existsSync(absFile) || !fs.statSync(absFile).isFile()) continue;
     const normRel = path.relative(absRoot, absFile).split(path.sep).join("/");
     coveredRelSet.add(normRel);
     evaluatedFiles += 1;
-    const cc = estimateMaxFunctionCc(absFile, fs.readFileSync(absFile, "utf8"));
-    const score = computeCrapScore(cc, covFrac);
-    if (score > worstCrap) worstCrap = score;
-    if (score > maxAllowed) {
+    const source = fs.readFileSync(absFile, "utf8");
+    const spans = /\.[cm]?[jt]sx?$/.test(absFile)
+      ? extractJsFunctionSpans(absFile, source)
+      : extractFallbackFunctionSpans(absFile, source);
+    const lineMap = detailed.lineHits.get(fileRel);
+    let fileWorstCrap = 0;
+    let fileWorstCc = 1;
+    let fileWorstCov = fileCovFrac;
+    for (const span of spans) {
+      const cov = spanCoverageFraction(span, lineMap, fileCovFrac);
+      const score = computeCrapScore(span.cc, cov);
+      if (score > fileWorstCrap) {
+        fileWorstCrap = score;
+        fileWorstCc = span.cc;
+        fileWorstCov = cov;
+      }
+    }
+    if (fileWorstCrap > worstCrap) worstCrap = fileWorstCrap;
+    if (fileWorstCrap > maxAllowed) {
       offenders.push({
         file: normRel,
-        cyclomaticComplexity: cc,
-        coveragePct: Number((covFrac * 100).toFixed(1)),
-        crapScore: score,
+        cyclomaticComplexity: fileWorstCc,
+        coveragePct: Number((fileWorstCov * 100).toFixed(1)),
+        crapScore: fileWorstCrap,
       });
     }
   }
 
   const repo = discoverRepo(absRoot);
   const uncoveredRepoFiles = repo.files
-    .filter((f) => f.language && !f.isTest && isHostRepoFile(f.rel) && !coveredRelSet.has(f.rel))
+    .filter((f) => f.language && !f.isTest && !f.rel.endsWith(".d.ts") && isHostRepoFile(f.rel) && !coveredRelSet.has(f.rel))
     .map((f) => f.rel)
     .sort();
 

@@ -269,14 +269,14 @@ export function extractSignals(
 
   const hasFormatter =
     hasHostPath(/(?:^|\/)(?:\.?prettier|oxfmt|\.editorconfig|rustfmt\.toml|\.rustfmt\.toml|biome\.jsonc?|ruff\.toml|\.ruff\.toml)/) ||
-    /\b(?:prettier|oxfmt|biome|ruff\s+format|\[tool\.ruff\]|dotnet\s+format|gofmt|rustfmt|cargo\s+fmt)\b/i.test(configAndCi);
+    /\[tool\.ruff(?:\.format)?\]|\b(?:prettier|oxfmt|biome|ruff\s+format|dotnet\s+format|gofmt|goimports|rustfmt|cargo\s+fmt)\b/i.test(configAndCi);
 
   const hasOxlint = hasHostPath(/(?:^|\/)(?:\.oxlintrc\.jsonc?|oxlint\.config\.[cm]?[jt]s)$/) || /\boxlint\b/i.test(configAndCi);
 
   const hasLinter =
     hasOxlint ||
     hasHostPath(/(?:^|\/)(?:\.?eslint|biome\.jsonc?|ruff\.toml|\.ruff\.toml|clippy\.toml|\.clippy\.toml|\.golangci\.ya?ml|directory\.build\.props)/) ||
-    /\b(?:eslint|oxlint|biome|ruff\s+check|clippy|golangci-lint|roslyn|AnalysisLevel|VStack\.Analyzers)\b/i.test(configAndCi);
+    /\[tool\.ruff(?:\.lint)?\]|\b(?:eslint|oxlint|biome|ruff\s+check|clippy|golangci-lint|staticcheck|roslyn|AnalysisLevel|VStack\.Analyzers)\b/i.test(configAndCi);
 
   const hasAntiSlop =
     /\b(?:anti-slop|dmmulroy\/anti-slop|VStack\.Analyzers)\b/i.test(configText) ||
@@ -375,8 +375,8 @@ export function extractSignals(
     (hasAnyPath(/(?:^|\/)\.verification\/control-plan\.json$/) && hasAnyPath(/(?:^|\/)\.verification\/laws\/.+\.laws\.json$/));
 
   const hasFuzzTool =
-    /\b(?:cargo-fuzz|libFuzzer|jazzer|atheris|SharpFuzz)\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`) ||
-    /\bfuzzTest\s*\(/.test(codeTestText);
+    /\b(?:cargo-fuzz|libFuzzer|jazzer|atheris|SharpFuzz|go\s+test[^\n]*-fuzz)\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`) ||
+    /\bfuzzTest\s*\(|\bfunc\s+Fuzz[A-Z]\w*\s*\(/.test(codeTestText);
 
   const hasBombadil = /\bbombadil\b/i.test(configAndCi);
 
@@ -386,7 +386,7 @@ export function extractSignals(
 
   const hasPerfOrLoadTool =
     hasHostPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js))$/) ||
-    /\b(?:k6\s+run|BenchmarkDotNet|NBomber|criterion|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|web-vitals|lighthouse|@lhci\/cli|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(
+    /\b(?:k6\s+run|BenchmarkDotNet|NBomber|criterion|cargo\s+bench|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|web-vitals|lighthouse|@lhci\/cli|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(
       `${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`,
     );
 
@@ -437,13 +437,13 @@ export function extractSignals(
     runsIntegrationOrDbTests:
       runsVerifyAll ||
       (hasCiWorkflows &&
-        /\b(?:testcontainers|test:int|test:integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|goose\s+up|run-rung\s+(?:R4|all))\b/i.test(
+        /\b(?:testcontainers|test:int|test:integration|pytest[^\n]*-m\s+["']?integration|dotnet\s+test[^\n]*--filter[^\n]*Integration|cargo\s+(?:test|nextest)[^\n]*--test\s+integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|goose\s+up|run-rung\s+(?:R4|all))\b/i.test(
           effectiveCiText,
         )),
     runsMutationOrFormal:
       runsVerifyAll ||
       (hasCiWorkflows &&
-        (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|gremlins|go-mutesting|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|run-rung\s+(?:R5|all))\b/i.test(
+        (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|gremlins|go-mutesting|go\s+test[^\n]*-fuzz|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|run-rung\s+(?:R5|all))\b/i.test(
           effectiveCiText,
         ) ||
           /\bbend\b[^\n]*--check-only/i.test(effectiveCiText) ||
@@ -456,7 +456,10 @@ export function extractSignals(
         )),
     runsE2eTests:
       runsVerifyAll ||
-      (hasCiWorkflows && /\b(?:playwright\s+test|cypress\s+run|maestro\s+test|test:e2e|run-rung\s+(?:R7|all))\b/i.test(effectiveCiText)),
+      (hasCiWorkflows &&
+        /\b(?:playwright\s+test|playwright-go|cypress\s+run|maestro\s+test|test:e2e|pytest[^\n]*-m\s+["']?e2e|dotnet\s+test[^\n]*--filter[^\n]*E2E|cargo\s+(?:test|nextest)[^\n]*--test\s+e2e|go\s+test[^\n]*\/e2e|run-rung\s+(?:R7|all))\b/i.test(
+          effectiveCiText,
+        )),
     runsProdVerification:
       runsVerifyAll ||
       (hasCiWorkflows &&

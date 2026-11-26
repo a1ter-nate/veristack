@@ -11,8 +11,9 @@ interface ChokePointRule {
 }
 
 const ACTION_USES_LINE = /^\s*-?\s*uses:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+)@([^\s#]+)/;
+const DOCKER_USES_LINE = /^\s*-?\s*uses:\s*docker:\/\/([^\s#]+)/;
 const HEX_40 = /^[0-9a-f]{40}$/i;
-const MUTABLE_REF = /^(?:main|master|head|latest|dev|nightly|v\d+(?:\.\d+)*)$/i;
+const CURL_PIPE_SHELL = /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b/i;
 
 function push(
   findings: Finding[],
@@ -27,13 +28,18 @@ function push(
   findings.push({ id: `IMM:${rule}:${file}:${line}`, rule, category: "ci-hygiene", rung, severity, file, line, message, fix });
 }
 
-function loadChokePoints(repo: DiscoveredRepo): ChokePointRule[] {
+function loadChokePoints(repo: DiscoveredRepo, findings: Finding[]): ChokePointRule[] {
   const cfg = repo.files.find((f) => /(?:^|\/)\.verification\/chokepoints\.json$/i.test(f.rel));
   if (!cfg) return [];
   try {
     const parsed = JSON.parse(cfg.content) as { rules?: ChokePointRule[] };
-    return Array.isArray(parsed.rules) ? parsed.rules : [];
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.rules)) {
+      push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} must contain a JSON object with a 'rules' array.`, "Fix .verification/chokepoints.json schema so choke-point enforcement cannot fail open.");
+      return [];
+    }
+    return parsed.rules;
   } catch {
+    push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} contains invalid JSON — failing closed.`, "Fix JSON syntax in .verification/chokepoints.json.");
     return [];
   }
 }
@@ -51,7 +57,7 @@ function findTokenOffsets(text: string, token: string): number[] {
 }
 
 function auditChokePoints(repo: DiscoveredRepo, findings: Finding[]): void {
-  const rules = loadChokePoints(repo);
+  const rules = loadChokePoints(repo, findings);
   if (rules.length === 0) return;
 
   const compiled = rules
@@ -92,16 +98,32 @@ function auditWorkflowImmuneSupplyChain(file: ScannedFile, findings: Finding[]):
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] ?? "";
+    if (!/^\s*#/.test(raw) && CURL_PIPE_SHELL.test(raw)) {
+      push(
+        findings, file.rel, i + 1, "ci-curl-pipe-shell", "R0", "error",
+        "Workflow pipes remote download directly into a shell interpreter (curl/wget | sh).",
+        "Download a pinned checksum-verified release artifact or use a SHA-pinned action instead of piping into sh.",
+      );
+    }
+    const dm = DOCKER_USES_LINE.exec(raw);
+    if (dm?.[1] && !/@sha256:[0-9a-f]{64}$/i.test(dm[1])) {
+      push(
+        findings, file.rel, i + 1, "ci-unpinned-third-party-action", "R0", "warn",
+        `Docker action 'docker://${dm[1]}' is not pinned to an immutable @sha256 digest.`,
+        "Pin docker:// actions with '@sha256:<64-hex-digest>' instead of mutable tags like :latest.",
+      );
+      continue;
+    }
     const m = ACTION_USES_LINE.exec(raw);
     if (!m) continue;
     const action = m[1] ?? "";
     const ref = m[2] ?? "";
     if (HEX_40.test(ref)) continue;
     const isFirstParty = /^(?:actions|github)\//i.test(action);
-    if (!isFirstParty && MUTABLE_REF.test(ref)) {
+    if (!isFirstParty) {
       push(
         findings, file.rel, i + 1, "ci-unpinned-third-party-action", "R0", "warn",
-        `Third-party GitHub Action '${action}@${ref}' uses a mutable tag/branch instead of a 40-char commit SHA.`,
+        `Third-party GitHub Action '${action}@${ref}' is not pinned to a full 40-char commit SHA.`,
         `Pin '${action}@<40-char-commit-sha> # ${ref}' to prevent supply-chain tag hijacking.`,
       );
     }

@@ -311,7 +311,8 @@ function checkNonExhaustiveSwitches(file: ScannedFile, masked: string): Finding[
 }
 
 export function lintImplicitStateMachinesInFile(file: ScannedFile): Finding[] {
-  if (file.isTest || GENERATED_PATH.test(file.rel)) return [];
+  const generatedHeader = /(?:@generated|auto-generated|do\s+not\s+edit|generated\s+by\b)/i;
+  if (file.isTest || (GENERATED_PATH.test(file.rel) && generatedHeader.test(file.content.slice(0, 600)))) return [];
   if (file.language === "csharp") return lintCsharpStateMachines(file);
   if (file.language === "rust") return lintRustStateMachines(file);
   if (file.language === "python") return lintPythonStateMachines(file);

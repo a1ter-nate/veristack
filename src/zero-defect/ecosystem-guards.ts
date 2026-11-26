@@ -131,7 +131,7 @@ function scanFileEcosystemGuards(file: ScannedFile, hasTsRepo: boolean, findings
   }
 
   if (file.rel.endsWith(".vue") && hasTsRepo) {
-    const vueRaw = file.rawContent ?? raw;
+    const vueRaw = (file.rawContent ?? raw).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
     for (const m of vueRaw.matchAll(VUE_SCRIPT_NO_TS)) {
       push(
         findings,

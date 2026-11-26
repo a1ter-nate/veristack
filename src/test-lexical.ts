@@ -184,7 +184,7 @@ export function hasNonFrameworkImport(raw: string, language?: string): boolean {
       const ns = match[1] ?? "";
       if (!CSHARP_FRAMEWORK_USING.test(ns)) return true;
     }
-    if (CSHARP_PARENT_NS_TEST.test(raw)) {
+    if (CSHARP_PARENT_NS_TEST.test(raw) || /^\s*namespace\s+[A-Za-z_][A-Za-z0-9_.]*\s*[;{]/m.test(raw)) {
       const masked = maskCode(raw, "csharp");
       for (const match of masked.matchAll(/\bnew\s+([A-Z][A-Za-z0-9_]*)\s*[<(]/g)) {
         const typeName = match[1] ?? "";

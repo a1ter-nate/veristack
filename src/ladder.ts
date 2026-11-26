@@ -17,8 +17,7 @@ export interface ScanOptions {
   receiptHmacKey?: string;
 }
 
-const PROTECTED_EXCLUSION_ROOT =
-  /^(?:src|lib|app|apps|packages|services|crates|libs|pkg|internal|cmd|tests|test|__tests__|spec|bin)(?:\/|$)/i;
+const SAFE_ALLOW_EXCLUDED_PREFIX = /^(?:examples|fixtures|testdata|__fixtures__|snapshots)\//i;
 
 function matchAllowPattern(pattern: string, target: string): boolean {
   const normPat = pattern.trim().replace(/^\/+/, "");
@@ -43,7 +42,7 @@ function filterUnallowlistedExclusions(
   return exclusions.filter((ex) => {
     if (ex.reason === "truncated") return true;
     const norm = ex.path.replace(/\\/g, "/").replace(/^\/+/, "");
-    if (PROTECTED_EXCLUSION_ROOT.test(norm)) return true;
+    if (!SAFE_ALLOW_EXCLUDED_PREFIX.test(norm)) return true;
     return !allowExcluded.some((pat) => matchAllowPattern(pat, norm));
   });
 }
@@ -126,7 +125,7 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
   const receipts = receiptBundle.receipts;
   const requireReceipts = Boolean(options.strict) || Boolean(repo.manifest);
   const rungs = buildRungStatuses(repo, testResult.inventory, { receipts, requireReceipts });
-  const workspaces = buildWorkspaceLadders(repo, testResult.inventory);
+  const workspaces = buildWorkspaceLadders(repo, testResult.inventory, findings);
   const missingLinters = recommendMissingLinters(repo);
 
   const allowExcluded = repo.manifest?.allowExcluded ?? [];
