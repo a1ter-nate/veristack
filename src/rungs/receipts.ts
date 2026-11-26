@@ -3,9 +3,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { DiscoveredRepo } from "../discover.ts";
-import type { PlantedFaultReport, RungId, RungManifest, RungReceipt } from "../types.ts";
+import type { Finding, PlantedFaultReport, RungId, RungManifest, RungReceipt } from "../types.ts";
 import { loadRungManifest } from "./manifest.ts";
 import { runPlantedFaultCanary } from "./mutation-probe.ts";
+import { parseStructuredReports } from "./reports.ts";
 
 const RECEIPTS_REL_DIR = ".verification/receipts";
 
@@ -21,21 +22,55 @@ function digestPayload(receipt: Omit<RungReceipt, "digest">): string {
     metrics: receipt.metrics ?? null,
     canary: receipt.canary ?? null,
   });
+  const key = process.env.VSTACK_RECEIPT_KEY;
+  if (key && key.length > 0) {
+    return `hmac:${crypto.createHmac("sha256", key).update(canonical).digest("hex")}`;
+  }
   return crypto.createHash("sha256").update(canonical).digest("hex");
+}
+
+function listHashablePaths(repo: DiscoveredRepo): string[] {
+  const paths = new Set<string>();
+  const gitList = spawnSync("git", ["-C", repo.root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (gitList.status === 0) {
+    for (const rel of gitList.stdout.split("\0")) {
+      if (!rel || rel.startsWith(`${RECEIPTS_REL_DIR}/`)) continue;
+      paths.add(rel);
+    }
+  }
+  for (const rel of repo.allRelPaths) {
+    if (!rel.startsWith(`${RECEIPTS_REL_DIR}/`)) paths.add(rel);
+  }
+  for (const extra of [".vstackignore", ".vstack.json", ".verification/vstack.json", "bun.lock", "pnpm-lock.yaml", "package-lock.json"]) {
+    if (fs.existsSync(path.join(repo.root, extra))) paths.add(extra);
+  }
+  return [...paths].sort();
 }
 
 export function computeRepoTreeHash(repo: DiscoveredRepo): string {
   const hasher = crypto.createHash("sha256");
-  const sorted = [...repo.files]
-    .filter((f) => !f.rel.startsWith(`${RECEIPTS_REL_DIR}/`))
-    .sort((a, b) => a.rel.localeCompare(b.rel));
-  for (const file of sorted) {
-    hasher.update(file.rel);
-    hasher.update("\0");
-    hasher.update(file.content);
-    hasher.update("\0");
+  for (const rel of listHashablePaths(repo)) {
+    const abs = path.join(repo.root, rel);
+    try {
+      const stat = fs.lstatSync(abs);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      hasher.update(rel);
+      hasher.update("\0");
+      hasher.update(fs.readFileSync(abs));
+      hasher.update("\0");
+    } catch {
+      continue;
+    }
   }
   return hasher.digest("hex");
+}
+
+export function hasGitTrackedReceipts(repoRoot: string): boolean {
+  const res = spawnSync("git", ["-C", repoRoot, "ls-files", RECEIPTS_REL_DIR], { encoding: "utf8" });
+  return res.status === 0 && res.stdout.trim().length > 0;
 }
 
 function readGitHeadSha(repoRoot: string): string {
@@ -44,18 +79,36 @@ function readGitHeadSha(repoRoot: string): string {
   return "no-git";
 }
 
-function parseCommandMetrics(output: string): RungReceipt["metrics"] {
+function parseCommandMetrics(repoRoot: string, output: string): RungReceipt["metrics"] {
+  const structured = parseStructuredReports(repoRoot);
   const metrics: NonNullable<RungReceipt["metrics"]> = {};
-  const bunPass = /\b(\d+)\s+pass\b/i.exec(output);
-  const bunFail = /\b(\d+)\s+fail\b/i.exec(output);
-  if (bunPass?.[1]) metrics.testsPassed = Number(bunPass[1]);
-  if (bunFail?.[1]) metrics.testsFailed = Number(bunFail[1]);
+  if (structured.testsPassed !== undefined) metrics.testsPassed = structured.testsPassed;
+  if (structured.testsFailed !== undefined) metrics.testsFailed = structured.testsFailed;
+  if (structured.mutationScore !== undefined) metrics.mutationScore = structured.mutationScore;
 
-  const pytestPass = /(\d+)\s+passed\b/i.exec(output);
-  if (pytestPass?.[1] && metrics.testsPassed === undefined) metrics.testsPassed = Number(pytestPass[1]);
+  if (metrics.testsPassed === undefined) {
+    const bunPass = /\b(\d+)\s+pass\b/i.exec(output);
+    const bunFail = /\b(\d+)\s+fail\b/i.exec(output);
+    const nodePass = /\bpass\s+(\d+)\b/i.exec(output);
+    const pytestPass = /(\d+)\s+passed\b/i.exec(output);
+    const cargoPass = /test result:\s*ok\.\s*(\d+)\s+passed/i.exec(output);
+    const dotnetPass = /Passed:\s*(\d+)/i.exec(output);
+    const goPass = (output.match(/---\s+PASS:/g) ?? []).length;
 
-  const mutationMatch = /mutation\s+score[:\s]+(\d+(?:\.\d+)?)%/i.exec(output);
-  if (mutationMatch?.[1]) metrics.mutationScore = Number(mutationMatch[1]);
+    if (bunPass?.[1]) metrics.testsPassed = Number(bunPass[1]);
+    else if (nodePass?.[1]) metrics.testsPassed = Number(nodePass[1]);
+    else if (pytestPass?.[1]) metrics.testsPassed = Number(pytestPass[1]);
+    else if (cargoPass?.[1]) metrics.testsPassed = Number(cargoPass[1]);
+    else if (dotnetPass?.[1]) metrics.testsPassed = Number(dotnetPass[1]);
+    else if (goPass > 0) metrics.testsPassed = goPass;
+
+    if (bunFail?.[1]) metrics.testsFailed = Number(bunFail[1]);
+  }
+
+  if (metrics.mutationScore === undefined) {
+    const mutationMatch = /mutation\s+score[:\s]+(\d+(?:\.\d+)?)%/i.exec(output);
+    if (mutationMatch?.[1]) metrics.mutationScore = Number(mutationMatch[1]);
+  }
 
   if (/check-perf-budget:\s*PASS|Big-O\s*\[PASS\]/i.test(output)) metrics.perfPassed = true;
   return Object.keys(metrics).length > 0 ? metrics : undefined;
@@ -70,7 +123,7 @@ export function runRungAndWriteReceipt(
   if (!entry) {
     throw new Error(`Rung ${rung} is not declared in .verification/rungs.json.`);
   }
-  const treeHash = computeRepoTreeHash(repo);
+  const treeHashBefore = computeRepoTreeHash(repo);
   const commitSha = readGitHeadSha(repo.root);
   const started = performance.now();
   const proc = spawnSync(entry.command, [], {
@@ -82,10 +135,12 @@ export function runRungAndWriteReceipt(
   const durationMs = Math.round(performance.now() - started);
   const exitCode = proc.status ?? 1;
   const combined = `${proc.stdout ?? ""}\n${proc.stderr ?? ""}`;
-  const metrics = parseCommandMetrics(combined);
+  const metrics = parseCommandMetrics(repo.root, combined);
+  const treeHashAfter = computeRepoTreeHash(repo);
+  const mutatedTree = treeHashBefore !== treeHashAfter;
 
   let canary: PlantedFaultReport | undefined;
-  if (exitCode === 0 && entry.canary?.enabled) {
+  if (exitCode === 0 && !mutatedTree && entry.canary?.enabled) {
     canary = runPlantedFaultCanary({
       repoRoot: repo.root,
       testCmd: entry.canary.testCommand ?? entry.command,
@@ -95,13 +150,16 @@ export function runRungAndWriteReceipt(
     });
   }
 
-  const finalExit = canary && !canary.passed ? 1 : exitCode;
+  const testCountMissing =
+    (rung === "R2" || rung === "R3") && (!metrics || (metrics.testsPassed ?? 0) <= 0 || (metrics.testsFailed ?? 0) > 0);
+  const finalExit = mutatedTree || testCountMissing || (canary && !canary.passed) ? 1 : exitCode;
+
   const baseReceipt: Omit<RungReceipt, "digest"> = {
     schemaVersion: 1,
     rung,
     command: entry.command,
     commitSha,
-    treeHash,
+    treeHash: treeHashAfter,
     exitCode: finalExit,
     durationMs,
     ...(process.env.GITHUB_RUN_ID ? { ciRunId: process.env.GITHUB_RUN_ID } : {}),
@@ -124,32 +182,70 @@ export function runRungAndWriteReceipt(
 export function loadValidReceipts(
   repo: DiscoveredRepo,
   manifest?: RungManifest,
-): Map<RungId, RungReceipt> {
+): { receipts: Map<RungId, RungReceipt>; findings: Finding[] } {
   const valid = new Map<RungId, RungReceipt>();
+  const findings: Finding[] = [];
+
+  if (hasGitTrackedReceipts(repo.root)) {
+    findings.push({
+      id: "RCPT:tracked-in-git:.verification/receipts",
+      rule: "receipt-committed-to-git",
+      category: "cheat",
+      rung: "R0",
+      severity: "error",
+      file: ".verification/receipts",
+      line: 1,
+      message: "Receipts in .verification/receipts/ are tracked by git — receipts must be generated dynamically at CI runtime, never committed.",
+      fix: "Add .verification/receipts/ to .gitignore and run 'git rm -r --cached .verification/receipts'.",
+    });
+    return { receipts: valid, findings };
+  }
+
   const dir = path.join(repo.root, RECEIPTS_REL_DIR);
-  if (!fs.existsSync(dir)) return valid;
+  if (!fs.existsSync(dir)) return { receipts: valid, findings };
 
   const expectedTreeHash = computeRepoTreeHash(repo);
+  const expectedHead = readGitHeadSha(repo.root);
+  const activeCiRunId = process.env.GITHUB_RUN_ID;
 
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith(".json")) continue;
     try {
       const raw = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as RungReceipt;
       if (raw.schemaVersion !== 1 || !raw.rung || typeof raw.digest !== "string") continue;
+      if (name !== `${raw.rung}.json`) continue;
+      const declared = manifest?.rungs[raw.rung];
+      if (!declared) continue;
+      if (raw.command !== declared.command) continue;
       const { digest, ...rest } = raw;
       if (digestPayload(rest) !== digest) continue;
       if (raw.exitCode !== 0) continue;
       if (raw.treeHash !== expectedTreeHash) continue;
-      const declared = manifest?.rungs[raw.rung];
-      if (declared && raw.command !== declared.command) continue;
-      if (declared?.canary?.enabled && (!raw.canary || !raw.canary.passed)) continue;
+      if (expectedHead !== "no-git" && raw.commitSha !== expectedHead) continue;
+      if (activeCiRunId && raw.ciRunId !== activeCiRunId) continue;
+      if ((raw.rung === "R2" || raw.rung === "R3") && ((raw.metrics?.testsPassed ?? 0) <= 0 || (raw.metrics?.testsFailed ?? 0) > 0)) {
+        continue;
+      }
+      if (declared.canary?.enabled) {
+        const minFloor = Math.max(0.75, declared.canary.minKillRate ?? 0.8);
+        const minMutants = Math.min(4, declared.canary.maxMutants ?? 4);
+        if (
+          !raw.canary ||
+          !raw.canary.passed ||
+          raw.canary.killRate < minFloor ||
+          raw.canary.totalMutants < minMutants ||
+          raw.canary.invalidKills > 0
+        ) {
+          continue;
+        }
+      }
       if (raw.canary && !raw.canary.passed) continue;
       valid.set(raw.rung, raw);
     } catch {
       continue;
     }
   }
-  return valid;
+  return { receipts: valid, findings };
 }
 
 export function runAllDeclaredRungs(

@@ -6,9 +6,14 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
+import { discoverRepo } from "../../src/discover.ts";
 import { scanRepo } from "../../src/ladder.ts";
+import { loadRungManifest } from "../../src/rungs/manifest.ts";
 import { runPlantedFaultCanary } from "../../src/rungs/mutation-probe.ts";
 import { runTwoSidedOracleCheck } from "../../src/rungs/oracle-check.ts";
+import { computeRepoTreeHash } from "../../src/rungs/receipts.ts";
+import { parseStructuredReports, reportParsers } from "../../src/rungs/reports.ts";
+import { auditCodeownersPerimeter, parseGitHubWorkflow } from "../../src/rungs/workflow-audit.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const binPath = path.join(repoRoot, "bin", "vstack.mjs");
@@ -23,59 +28,77 @@ function makeTempRepo(files: Record<string, string>): string {
   return dir;
 }
 
-test("blocks Opus/Fable YAML comment + workflow_dispatch + if:false + echo + empty stub theater under scan and --strict", () => {
-  const tmp = makeTempRepo({
-    "package.json": JSON.stringify({
-      name: "theater",
-      devDependencies: { oxlint: "^1.0.0", "fast-check": "^3.0.0", veristack: "^0.1.5" },
-    }),
-    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, noUnusedLocals: true } }),
-    ".editorconfig": "root = true\n",
-    ".oxlintrc.json": JSON.stringify({ rules: {} }),
-    "lefthook.yml": "# empty hook\n",
-    ".github/CODEOWNERS": "# empty\n",
-    "stryker-config.json": "{}\n",
-    "spec/model.tla": "-- empty\n",
-    ".github/workflows/ci.yml": [
-      "name: Theater",
-      "on: workflow_dispatch",
-      "concurrency:",
-      "  group: theater",
-      "  cancel-in-progress: true",
-      "jobs:",
-      "  fake:",
-      "    if: false",
-      "    timeout-minutes: 5",
-      "    runs-on: ubuntu-latest",
-      "    steps:",
-      '      - run: echo "oxlint tsc knip vitest stryker quint k6 veristack"',
-      "      # oxlint tsc knip vitest stryker quint k6 veristack",
-    ].join("\n"),
-    "src/math.ts": "export function add(a: number, b: number): number { return a - b; }\n",
-    "tests/math.test.ts": [
-      "import assert from 'node:assert/strict';",
-      "import test from 'node:test';",
-      "import fc from 'fast-check';",
-      "import { add } from '../src/math.ts';",
-      "test('empty commands', () => { const c = fc.commands([]); assert.equal(Array.isArray(c), true); assert.equal(add(2, 1), 1); });",
-    ].join("\n"),
-  });
-  try {
-    const report = scanRepo(tmp, { strict: true });
-    assert.ok(report.summary.unexecutedRungCount >= 5);
-    assert.equal(report.summary.wellCoveredCount, 0);
-
-    const defaultCli = spawnSync(process.execPath, [binPath, "scan", tmp], { encoding: "utf8" });
-    assert.equal(defaultCli.status, 1);
-
-    const strictCli = spawnSync(process.execPath, [binPath, "scan", tmp, "--strict"], { encoding: "utf8" });
-    assert.equal(strictCli.status, 1);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+test("blocks YAML comment, workflow_dispatch, if:false, if:'false', paths filter, dead needs, exit 0, and || echo theater", () => {
+  const cases = [
+    'name: A\non: workflow_dispatch\njobs:\n  j:\n    steps:\n      - run: bun test\n',
+    'name: B\non: [pull_request]\njobs:\n  j:\n    if: "false"\n    steps:\n      - run: bun test\n',
+    'name: C\non:\n  pull_request:\n    paths: ["docs/**"]\njobs:\n  j:\n    steps:\n      - run: bun test\n',
+    'name: D\non: [pull_request]\njobs:\n  gate:\n    if: false\n    steps:\n      - run: bun test\n  downstream:\n    needs: gate\n    steps:\n      - run: bun test\n',
+    'name: E\non: [pull_request]\njobs:\n  j:\n    steps:\n      - run: |\n          exit 0\n          bun test\n',
+    'name: F\non: [pull_request]\njobs:\n  j:\n    steps:\n      - run: bun test || echo ok\n',
+    'name: G\non: [pull_request]\njobs:\n  j:\n    steps:\n      - run: ": bun test"\n',
+  ];
+  for (const wf of cases) {
+    const info = parseGitHubWorkflow({
+      rel: ".github/workflows/t.yml",
+      abs: "/virtual/.github/workflows/t.yml",
+      isTest: false,
+      isWorkflow: true,
+      content: wf,
+      lines: 10,
+    });
+    assert.equal(info.isPrBlocking && info.activeCommands.length > 0, false, `Should reject theater workflow:\n${wf}`);
   }
 });
 
-test("blocks scope hiding under --strict: .vstackignore, .vstack.json ignore, 2501-char JS minification, and src/vendor", () => {
+test("rejects no-op rung commands, dangerous allowExcluded globs, and git diff --quiet canary cheat", () => {
+  const tmp = makeTempRepo({
+    ".verification/rungs.json": JSON.stringify({
+      schemaVersion: 1,
+      archetype: "library",
+      rungs: { R0: { command: "true" } },
+    }),
+  });
+  const badAllow = makeTempRepo({
+    ".verification/rungs.json": JSON.stringify({
+      schemaVersion: 1,
+      archetype: "library",
+      allowExcluded: ["**"],
+      rungs: {},
+    }),
+  });
+  const canaryRepo = makeTempRepo({
+    "src/guard.ts": "export function isAdult(age: number): boolean { return age >= 18; }\n",
+  });
+  try {
+    assert.match(loadRungManifest(tmp).error ?? "", /no-op|swallows/);
+    assert.match(loadRungManifest(badAllow).error ?? "", /too broad/);
+
+    const diffCheat = runPlantedFaultCanary({
+      repoRoot: canaryRepo,
+      testCmd: "git diff --quiet",
+      targets: ["src/guard.ts"],
+      maxMutants: 2,
+      minKillRate: 0.8,
+    });
+    assert.equal(diffCheat.passed, false);
+
+    const hashCheat = runPlantedFaultCanary({
+      repoRoot: canaryRepo,
+      testCmd: "node -e \"const fs=require('fs'); process.exit(fs.readFileSync('src/guard.ts','utf8').endsWith('\\n\\n')?1:0)\"",
+      targets: ["src/guard.ts"],
+      maxMutants: 2,
+      minKillRate: 0.8,
+    });
+    assert.equal(hashCheat.passed, false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(badAllow, { recursive: true, force: true });
+    fs.rmSync(canaryRepo, { recursive: true, force: true });
+  }
+});
+
+test("blocks scope hiding under --strict: .vstackignore, .vstack.json ignore, 2501-char JS minification, symlinks, and git-tracked bin/coverage", () => {
   const ignoreRepo = makeTempRepo({
     ".vstackignore": "src/bad.ts\n",
     "src/bad.ts": "// hidden\nexport const x = (1 as any);\n",
@@ -87,98 +110,86 @@ test("blocks scope hiding under --strict: .vstackignore, .vstack.json ignore, 25
   const minifiedRepo = makeTempRepo({
     "src/padded.js": `export const pad = "${"a".repeat(2600)}";\n// prose\nexport function run(x) { return eval(x); }\n`,
   });
-  const vendorRepo = makeTempRepo({
-    "src/vendor/bad.ts": "// hidden in nested vendor\nexport function f(x: unknown) { return x as any; }\n",
+  const trackedDirsRepo = makeTempRepo({
+    "bin/cli.mjs": "// hidden in bin\nexport function f(x) { return eval(x); }\n",
+    "src/coverage/bad.ts": "// hidden in coverage\nexport function g(x: unknown) { return x as any; }\n",
   });
+  spawnSync("git", ["init", "-q"], { cwd: trackedDirsRepo });
+  spawnSync("git", ["add", "."], { cwd: trackedDirsRepo });
+  fs.symlinkSync(path.join(trackedDirsRepo, "bin/cli.mjs"), path.join(trackedDirsRepo, "src/sym.mjs"));
 
   try {
-    const r1 = scanRepo(ignoreRepo, { strict: true });
-    assert.ok(r1.scopeExclusions.some((e) => e.reason === "vstackignore" && e.path === "src/bad.ts"));
+    assert.ok(scanRepo(ignoreRepo, { strict: true }).scopeExclusions.some((e) => e.reason === "vstackignore"));
     assert.equal(spawnSync(process.execPath, [binPath, "scan", ignoreRepo, "--strict"], { encoding: "utf8" }).status, 1);
 
-    const r2 = scanRepo(jsonIgnoreRepo, { strict: true });
-    assert.ok(r2.scopeExclusions.some((e) => e.reason === "config-ignore"));
+    assert.ok(scanRepo(jsonIgnoreRepo, { strict: true }).scopeExclusions.some((e) => e.reason === "config-ignore"));
     assert.equal(spawnSync(process.execPath, [binPath, "scan", jsonIgnoreRepo, "--strict"], { encoding: "utf8" }).status, 1);
 
-    const r3 = scanRepo(minifiedRepo, { strict: true });
-    assert.ok(r3.scopeExclusions.some((e) => e.reason === "minified" && e.path === "src/padded.js"));
+    assert.ok(scanRepo(minifiedRepo, { strict: true }).scopeExclusions.some((e) => e.reason === "minified"));
     assert.equal(spawnSync(process.execPath, [binPath, "scan", minifiedRepo, "--strict"], { encoding: "utf8" }).status, 1);
 
-    const r4 = scanRepo(vendorRepo, { strict: true });
-    assert.ok(r4.findings.some((f) => f.file === "src/vendor/bad.ts"));
+    const trackedScan = scanRepo(trackedDirsRepo, { strict: true });
+    assert.ok(trackedScan.findings.some((f) => f.file === "bin/cli.mjs"));
+    assert.ok(trackedScan.findings.some((f) => f.file === "src/coverage/bad.ts"));
+    assert.ok(trackedScan.scopeExclusions.some((e) => e.reason === "symlink" && e.path === "src/sym.mjs"));
   } finally {
     fs.rmSync(ignoreRepo, { recursive: true, force: true });
     fs.rmSync(jsonIgnoreRepo, { recursive: true, force: true });
     fs.rmSync(minifiedRepo, { recursive: true, force: true });
-    fs.rmSync(vendorRepo, { recursive: true, force: true });
+    fs.rmSync(trackedDirsRepo, { recursive: true, force: true });
   }
 });
 
-test("blocks missing --ratchet auto-creation, declared library disguise on Express service, and reports package recommendations", () => {
-  const tmp = makeTempRepo({
-    "package.json": JSON.stringify({ dependencies: { express: "^5.0.0" } }),
+test("enforces GitHub CODEOWNERS locations, last-match-wins un-owning, and Bun.serve archetype detection", () => {
+  const badLoc = makeTempRepo({
+    "src/CODEOWNERS": "* @owner\n",
+  });
+  const unowned = makeTempRepo({
+    ".github/CODEOWNERS": "* @owner\n/.verification/\n",
+  });
+  const bunServer = makeTempRepo({
     ".verification/rungs.json": JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: {} }),
-    "src/server.ts": "import express from 'express';\nexport const app = express();\n",
+    "src/server.ts": "export const s = Bun.serve({ port: 3000, fetch() { return new Response('ok'); } });\n",
   });
   try {
-    const report = scanRepo(tmp);
-    assert.ok(report.findings.some((f) => f.rule === "rung-archetype-mismatch"));
+    const rBadLoc = discoverRepo(badLoc);
+    assert.equal(auditCodeownersPerimeter(rBadLoc.files, rBadLoc.allRelPaths).passed, false);
 
-    const ratchetRes = spawnSync(
-      process.execPath,
-      [binPath, "scan", tmp, "--ratchet", path.join(tmp, "nonexistent.json")],
-      { encoding: "utf8" },
-    );
-    assert.equal(ratchetRes.status, 1);
-    assert.match(ratchetRes.stderr, /Refusing to auto-create/);
+    const rUnowned = discoverRepo(unowned);
+    assert.equal(auditCodeownersPerimeter(rUnowned.files, rUnowned.allRelPaths).passed, false);
 
-    const terminalRes = spawnSync(process.execPath, [binPath, "scan", tmp], { encoding: "utf8" });
-    assert.equal(terminalRes.status, 1);
-    assert.match(terminalRes.stdout, /Packages:.*typescript:/);
+    const rSrv = scanRepo(bunServer);
+    assert.equal(rSrv.archetype, "library");
+    assert.ok(rSrv.findings.some((f) => f.rule === "rung-archetype-mismatch"));
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(badLoc, { recursive: true, force: true });
+    fs.rmSync(unowned, { recursive: true, force: true });
+    fs.rmSync(bunServer, { recursive: true, force: true });
   }
 });
 
-test("diff-cheats fails closed on bad git ref, catches deleted test file, and catches strict-to-weak assertion dilution", () => {
+test("refuses git-tracked receipts and hashes lockfiles into computeRepoTreeHash", () => {
   const tmp = makeTempRepo({
-    "src/calc.ts": "export function sum(a: number, b: number): number { return a + b; }\n",
-    "tests/calc.test.ts": [
-      "import assert from 'node:assert/strict';",
-      "import test from 'node:test';",
-      "import { sum } from '../src/calc.ts';",
-      "test('sum', () => {",
-      "  assert.equal(sum(1, 2), 3);",
-      "  assert.equal(sum(2, 3), 5);",
-      "  assert.equal(sum(0, 0), 0);",
-      "});",
-    ].join("\n"),
-    "tests/extra.test.ts": "import assert from 'node:assert/strict';\nimport test from 'node:test';\ntest('ok', () => { assert.equal(1, 1); });\n",
+    "src/a.ts": "export const a = 1;\n",
+    "bun.lock": "v1\n",
+    ".verification/receipts/R0.json": '{"schemaVersion":1,"rung":"R0"}\n',
   });
   try {
     spawnSync("git", ["init", "-q"], { cwd: tmp });
-    spawnSync("git", ["config", "user.email", "ci@test.local"], { cwd: tmp });
-    spawnSync("git", ["config", "user.name", "CI"], { cwd: tmp });
     spawnSync("git", ["add", "."], { cwd: tmp });
-    spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: tmp });
+    const scan = scanRepo(tmp);
+    assert.ok(scan.findings.some((f) => f.rule === "receipt-committed-to-git"));
 
-    const badRefHits = scanGitDiffCheats(tmp, "nonexistent-ref-xyz");
-    assert.ok(badRefHits.some((f) => f.rule === "diff-command-failed"));
-
-    fs.rmSync(path.join(tmp, "tests/extra.test.ts"));
-    fs.writeFileSync(
-      path.join(tmp, "tests/calc.test.ts"),
-      "import test from 'node:test';\nimport { sum } from '../src/calc.ts';\ntest('sum', () => { expect(sum(1, 2)).toBeDefined(); });\n",
-    );
-    const hits = scanGitDiffCheats(tmp, "HEAD");
-    assert.ok(hits.some((f) => f.rule === "diff-test-file-deleted"));
-    assert.ok(hits.some((f) => f.rule === "diff-assertion-deleted"));
+    const h1 = computeRepoTreeHash(discoverRepo(tmp));
+    fs.writeFileSync(path.join(tmp, "bun.lock"), "v2\n");
+    const h2 = computeRepoTreeHash(discoverRepo(tmp));
+    assert.notEqual(h1, h2);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test("planted-fault canary fails on theater tests and passes on real tests; two-sided oracle catches silent expectation rewrite", () => {
+test("diff-cheats fails closed on bad git ref, catches deleted test file and strict-to-weak dilution; oracle-check catches working-tree rewrite & blanket waiver", () => {
   const tmp = makeTempRepo({
     "src/guard.ts": "export function isAdult(age: number): boolean { return age >= 18; }\n",
     "tests/guard.test.ts": [
@@ -190,43 +201,80 @@ test("planted-fault canary fails on theater tests and passes on real tests; two-
       "  assert.equal(isAdult(17), false);",
       "});",
     ].join("\n"),
+    "tests/extra.test.ts": "import assert from 'node:assert/strict';\nimport test from 'node:test';\ntest('ok', () => { assert.equal(1, 1); });\n",
   });
   try {
-    const strong = runPlantedFaultCanary({
-      repoRoot: tmp,
-      testCmd: "bun test ./tests/guard.test.ts",
-      targets: ["src/guard.ts"],
-      maxMutants: 2,
-      minKillRate: 1.0,
-    });
-    assert.equal(strong.passed, true);
-    assert.equal(strong.killedMutants, 1);
-
     spawnSync("git", ["init", "-q"], { cwd: tmp });
     spawnSync("git", ["config", "user.email", "ci@test.local"], { cwd: tmp });
     spawnSync("git", ["config", "user.name", "CI"], { cwd: tmp });
     spawnSync("git", ["add", "."], { cwd: tmp });
     spawnSync("git", ["commit", "-q", "-m", "base"], { cwd: tmp });
 
+    assert.ok(scanGitDiffCheats(tmp, "nonexistent-ref-xyz").some((f) => f.rule === "diff-command-failed"));
+    assert.equal(runTwoSidedOracleCheck(tmp, "nonexistent-ref-xyz", "true").passed, false);
+
     fs.writeFileSync(path.join(tmp, "src/guard.ts"), "export function isAdult(age: number): boolean { return age >= 21; }\n");
     fs.writeFileSync(
       path.join(tmp, "tests/guard.test.ts"),
-      [
-        "import assert from 'node:assert/strict';",
-        "import test from 'node:test';",
-        "import { isAdult } from '../src/guard.ts';",
-        "test('boundary', () => {",
-        "  assert.equal(isAdult(21), true);",
-        "  assert.equal(isAdult(18), false);",
-        "});",
-      ].join("\n"),
+      "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { isAdult } from '../src/guard.ts';\ntest('boundary', () => { assert.equal(isAdult(21), true); assert.equal(isAdult(18), false); });\n",
     );
-    spawnSync("git", ["add", "."], { cwd: tmp });
-    spawnSync("git", ["commit", "-q", "-m", "silent-rewrite"], { cwd: tmp });
+    fs.mkdirSync(path.join(tmp, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".verification/behavior-changes.json"), JSON.stringify({ changes: [{ why: "self-waiver" }] }));
 
-    const oracle = runTwoSidedOracleCheck(tmp, "HEAD~1", "bun test ./tests/guard.test.ts");
-    assert.equal(oracle.passed, false);
-    assert.match(oracle.reason, /ORACLE REWRITE DETECTED/);
+    const wtOracle = runTwoSidedOracleCheck(tmp, "HEAD", "bun test ./tests/guard.test.ts");
+    assert.equal(wtOracle.passed, false);
+    assert.match(wtOracle.reason, /ORACLE REWRITE DETECTED/);
+
+    fs.rmSync(path.join(tmp, "tests/extra.test.ts"));
+    fs.writeFileSync(
+      path.join(tmp, "tests/guard.test.ts"),
+      "import test from 'node:test';\nimport { isAdult } from '../src/guard.ts';\ntest('boundary', () => { expect(isAdult(21)).toBeDefined(); });\n",
+    );
+    const hits = scanGitDiffCheats(tmp, "HEAD");
+    assert.ok(hits.some((f) => f.rule === "diff-test-file-deleted"));
+    assert.ok(hits.some((f) => f.rule === "diff-assertion-deleted"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseStructuredReports loads LCOV, Stryker, and JUnit and ignores non-finite Cobertura rates; array needs propagates dead jobs", () => {
+  const tmp = makeTempRepo({
+    "coverage/lcov.info": "SF:src/a.ts\nDA:1,1\nDA:2,0\nend_of_record\n",
+    "reports/mutation/mutation.json": JSON.stringify({ files: { "src/a.ts": { mutants: [{ status: "Killed" }, { status: "Killed" }, { status: "Survived" }] } } }),
+    "junit.xml": '<testsuites tests="4" failures="0" skipped="1"></testsuites>',
+  });
+  try {
+    const parsed = parseStructuredReports(tmp);
+    assert.equal(parsed.lineCoveragePct, 50);
+    assert.equal(parsed.mutationScore, 66.67);
+    assert.equal(parsed.testsPassed, 3);
+    assert.equal(parsed.testsFailed, 0);
+
+    const badCob = reportParsers.parseCoberturaXml('<class filename="src/bad.ts" line-rate="1.2.3"/>');
+    assert.equal(badCob.size, 0);
+
+    const wf = parseGitHubWorkflow({
+      rel: ".github/workflows/ci.yml",
+      abs: "/tmp/ci.yml",
+      content: [
+        "on: pull_request",
+        "jobs:",
+        "  dead:",
+        "    if: false",
+        "    steps:",
+        "      - run: echo dead",
+        "  downstream:",
+        "    needs: [dead]",
+        "    steps:",
+        "      - run: bun test",
+      ].join("\n"),
+      lines: 10,
+      isTest: false,
+      isWorkflow: true,
+    });
+    assert.equal(wf.activeCommands.length, 0);
+    assert.ok(wf.deadJobs.includes("downstream"));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

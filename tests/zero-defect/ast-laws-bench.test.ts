@@ -3,11 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { discoverRepo } from "../../src/discover.ts";
 import { runPrecisionBench } from "../../src/zero-defect/bench.ts";
 import { auditLaws } from "../../src/zero-defect/laws.ts";
 
-const repoRoot = path.resolve(import.meta.dir, "../..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 function withTempRepo(files: Record<string, string>, fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-v2-"));

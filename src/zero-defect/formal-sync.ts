@@ -51,28 +51,45 @@ function parseEntries(rawList: unknown, kind: "formal" | "contract"): FormalChec
   return entries;
 }
 
-function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: FormalCheckEntry[] } | null {
+function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: FormalCheckEntry[]; error?: string } | null {
   const planFile = repo.files.find(
     (f) => f.rel === ".verification/control-plan.json" || f.rel === "control-plan.json",
   );
   if (!planFile) return null;
   try {
     const parsed: unknown = JSON.parse(planFile.content);
-    if (!isRecord(parsed)) return null;
+    if (!isRecord(parsed)) return { planRel: planFile.rel, entries: [], error: `${planFile.rel} must be a JSON object.` };
     const entries = [
       ...parseEntries(parsed.formalChecks, "formal"),
       ...parseEntries(parsed.contractChecks, "contract"),
     ];
     if (entries.length === 0) return null;
     return { planRel: planFile.rel, entries };
-  } catch {
-    return null;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { planRel: planFile.rel, entries: [], error: `Malformed JSON in ${planFile.rel}: ${msg}` };
   }
 }
 
 export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
   const parsed = parseFormalChecks(repo);
-  if (!parsed || parsed.entries.length === 0) return [];
+  if (!parsed) return [];
+  if (parsed.error) {
+    return [
+      {
+        id: `FS:malformed:${parsed.planRel}`,
+        rule: "formal-plan-malformed",
+        category: "oracle-lock",
+        rung: "R5",
+        severity: "error",
+        file: parsed.planRel,
+        line: 1,
+        message: parsed.error,
+        fix: `Fix JSON syntax in ${parsed.planRel}; formal sync fails closed on unreadable control plans.`,
+      },
+    ];
+  }
+  if (parsed.entries.length === 0) return [];
 
   const findings: Finding[] = [];
   const allPathSet = new Set(repo.allRelPaths);
@@ -108,6 +125,22 @@ export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
         line: 1,
         message: `Formal check '${entry.id}' has invalid syncCommit '${entry.syncCommit}'.`,
         fix: "Record the exact 7-40 char git commit SHA where the formal model was last verified against covered code.",
+      });
+      continue;
+    }
+
+    const missingCovered = entry.coveredPaths.filter((p) => !allPathSet.has(p));
+    if (missingCovered.length > 0) {
+      findings.push({
+        id: `FS:missing-covered:${entry.id}`,
+        rule: "formal-covered-path-missing",
+        category: "oracle-lock",
+        rung: isContract ? "R3" : "R5",
+        severity: "error",
+        file: parsed.planRel,
+        line: 1,
+        message: `${label} '${entry.id}' references missing covered path(s): ${missingCovered.join(", ")}.`,
+        fix: "Restore the covered paths or update coveredPaths in the control plan and re-verify.",
       });
       continue;
     }

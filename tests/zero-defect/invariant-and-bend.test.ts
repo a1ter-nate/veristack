@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { auditDiffInvariantLoss, auditTsAstPredicateDrop, buildSyntheticRevertEvents } from "../../src/ast/invariant-loss.ts";
 import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
 import { discoverRepo } from "../../src/discover.ts";
@@ -12,7 +13,7 @@ import { runPrecisionBench } from "../../src/zero-defect/bench.ts";
 import { compareInvariantSnapshots, inferDynamicInvariants } from "../../src/zero-defect/daikon-invariants.ts";
 import { auditLaws } from "../../src/zero-defect/laws.ts";
 
-const repoRoot = path.resolve(import.meta.dir, "..", "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 test("7-language precision bench passes with 100% recall and zero clean or adversarial FPs", () => {
   const report = runPrecisionBench(repoRoot);

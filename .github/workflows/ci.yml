@@ -41,6 +41,10 @@ jobs:
         run: node scripts/check-max-lines.mjs
       - name: Enforce R6 performance and Big-O scaling budget
         run: bun run perf:check
+      - name: Typecheck & lint host TypeScript
+        run: |
+          bun run typecheck
+          bun run lint:oxlint
       - name: Build and run Veristack against itself (--strict with HEAD receipts & planted-fault canary)
         run: |
           bun run build
@@ -59,6 +63,7 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           node bin/vstack.mjs diff-cheats . --base "origin/$BASE_REF" --fail
+          node bin/vstack.mjs oracle-check . --base "origin/$BASE_REF" --test-cmd "bun test ./tests/ ./examples/typescript/clean/"
 
   verify-ts:
     runs-on: ubuntu-latest

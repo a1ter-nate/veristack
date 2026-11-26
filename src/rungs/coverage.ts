@@ -56,8 +56,10 @@ export function buildRungStatuses(
 
   const isExecuted = (rung: RungId, ciFlag: boolean): { executed: boolean; receipt: RungReceipt | undefined } => {
     const rec = receipts.get(rung);
-    if (rec) return { executed: true, receipt: rec };
-    if (requireReceipts) return { executed: false, receipt: undefined };
+    if (requireReceipts) {
+      return { executed: Boolean(rec) && ci.hasCiWorkflows && ciFlag, receipt: rec };
+    }
+    if (rec) return { executed: ci.hasCiWorkflows && ciFlag, receipt: rec };
     return { executed: ciFlag, receipt: undefined };
   };
 
@@ -131,7 +133,7 @@ export function buildRungStatuses(
   const r2Exec = isExecuted("R2", ci.runsUnitTests && r2Files.length > 0);
   const idealR2Files = Math.max(1, Math.ceil(Math.max(1, prodFiles) * 0.2));
   const canaryReport = r2Exec.receipt?.canary;
-  const r2AdequacyOk = canaryReport ? canaryReport.passed : r2Files.length >= idealR2Files;
+  const r2AdequacyOk = r2Files.length >= idealR2Files && (!canaryReport || canaryReport.passed);
   const r2HasTables = r2Files.some((f) => f.hasTable);
   const r2HasPbt = s.hasPbt || r2Files.some((f) => f.hasPbt);
   const r2Evidence: string[] = [];
@@ -259,7 +261,7 @@ export function buildRungStatuses(
 
   const r5NeedVisual = isFront || repo.archetype === "fullstack";
   const r5Exec = isExecuted("R5", ci.runsMutationOrFormal && (s.hasMutationTool || s.hasFormalTool || s.hasVisualTool));
-  const r5HasMutation = s.hasMutationTool || Boolean(r5Exec.receipt?.canary?.passed) || Boolean(r2Exec.receipt?.canary?.passed);
+  const r5HasMutation = s.hasMutationTool || Boolean(r5Exec.receipt?.canary?.passed);
   const r5Evidence: string[] = [];
   const r5Gaps: string[] = [];
   if (r5HasMutation) r5Evidence.push(r5Exec.receipt?.canary?.passed || r2Exec.receipt?.canary?.passed ? "planted-fault mutation" : "mutation tool");

@@ -121,7 +121,9 @@ function auditLinterImmuneConfigs(file: ScannedFile, findings: Finding[]): void 
   const base = file.rel.split("/").pop()?.toLowerCase() ?? "";
 
   if (base === "directory.build.props" && !file.rel.startsWith("templates/")) {
-    const hasAnalyzers = /<EnableNETAnalyzers>\s*true\s*<\/EnableNETAnalyzers>/i.test(file.content);
+    const hasAnalyzers =
+      /<EnableNETAnalyzers>\s*true\s*<\/EnableNETAnalyzers>/i.test(file.content) ||
+      /<AnalysisLevel>\s*latest/i.test(file.content);
     const hasTreatWarn = /<TreatWarningsAsErrors>\s*true\s*<\/TreatWarningsAsErrors>/i.test(file.content);
     if (!hasAnalyzers || !hasTreatWarn) {
       push(

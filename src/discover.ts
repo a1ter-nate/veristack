@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { inferArchetypeFromFiles, isHostRepoFile, loadRungManifest } from "./rungs/manifest.ts";
@@ -36,7 +37,7 @@ export interface DiscoveredRepo {
   ci: CiExecutionSignals;
 }
 
-const ALWAYS_SKIP_DIRS = new Set([
+const UNTRACKED_CACHE_SKIP_DIRS = new Set([
   ".git",
   "node_modules",
   ".next",
@@ -61,9 +62,12 @@ const ALWAYS_SKIP_DIRS = new Set([
   "StrykerOutput",
   "TestResults",
   "coverage",
+  "dist",
+  "build",
+  "target",
+  "obj",
+  "vendor",
 ]);
-
-const ROOT_ONLY_SKIP_DIRS = new Set(["dist", "build", "target", "bin", "obj", "vendor"]);
 
 const MAX_FILE_BYTES = 512_000;
 const MAX_FILES = 12_000;
@@ -90,10 +94,10 @@ export function isTestFilePath(rel: string): boolean {
   const lower = norm.toLowerCase();
   const base = path.posix.basename(lower);
   if (/\.(?:test|spec|e2e|cy|int|integration|contract)\.[cm]?[jt]sx?$/.test(base)) return true;
-  if (/(?:^|[-_])tests?\.py$|^test[-_].*\.py$/.test(base)) return true;
+  if (/(?:^|[-_])tests?\.py$|^test[-_].*\.py$|^conftest\.py$/.test(base)) return true;
   if (/_test\.go$|(?:^|[-_])tests?\.rs$|^test[-_].*\.rs$/.test(base)) return true;
   if (/tests?\.cs$|specs?\.cs$/.test(base)) return true;
-  if (/(?:^|\/)[^/]+\.tests\//.test(lower) && lower.endsWith(".cs")) return true;
+  if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests)\//.test(lower) && lower.endsWith(".cs")) return true;
   if (/^(?:tests?|__tests__|specs?|e2e)\//.test(lower) || /\/(?:tests?|__tests__|specs?|e2e)\//.test(lower)) {
     if (/(?:^|\.)config\.[cm]?[jt]sx?$/.test(base)) return false;
     if (/\/(?:contracts|fixtures|helpers|support|mocks|stubs)\//.test(lower)) return false;
@@ -133,7 +137,7 @@ function shouldReadText(rel: string): boolean {
   if (base === "dockerfile" || base.startsWith("dockerfile.")) return true;
   return (
     base === "package.json" ||
-    base === "tsconfig.json" ||
+    /^tsconfig(?:\.[^/]+)?\.json$/.test(base) ||
     base === "pyproject.toml" ||
     base === "cargo.toml" ||
     base === "go.mod" ||
@@ -237,18 +241,36 @@ function isMinifiedJs(rel: string, content: string, lines: number): boolean {
   return false;
 }
 
-function isBuildOutputSkipDir(dirRel: string, entryName: string): boolean {
-  if (ALWAYS_SKIP_DIRS.has(entryName)) return true;
-  if (!ROOT_ONLY_SKIP_DIRS.has(entryName)) return false;
-  if (dirRel === entryName) return true;
-  if (/^(?:apps|packages|services|crates|libs|templates|lint)\/[^/]+(?:\/[^/]+)?\/(?:dist|build|target|bin|obj|vendor)$/.test(dirRel)) {
+function loadGitTrackedDirs(root: string): Set<string> {
+  const trackedDirs = new Set<string>();
+  const res = spawnSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  if (res.status !== 0) return trackedDirs;
+  for (const rel of res.stdout.split("\0")) {
+    if (!rel) continue;
+    let cur = path.posix.dirname(rel);
+    while (cur && cur !== ".") {
+      trackedDirs.add(cur);
+      cur = path.posix.dirname(cur);
+    }
+  }
+  return trackedDirs;
+}
+
+function shouldSkipDirectory(rel: string, name: string, trackedDirs: ReadonlySet<string>): boolean {
+  if (name === ".git" || name === "node_modules") return true;
+  if (rel === ".verification/receipts") return true;
+  if (name === "bin" && /(?:^|\/)(?:obj|bin)$/.test(rel) && !trackedDirs.has(rel)) {
+    if (rel === "bin") return false;
     return true;
   }
-  return false;
+  if (!UNTRACKED_CACHE_SKIP_DIRS.has(name)) return false;
+  if (trackedDirs.has(rel)) return false;
+  return true;
 }
 
 export function discoverRepo(repoPath: string): DiscoveredRepo {
   const root = path.resolve(repoPath);
+  const trackedDirs = loadGitTrackedDirs(root);
   const ignoreRules = loadIgnoreRules(root);
   const matchIgnore = (rel: string): IgnoreRule | undefined => ignoreRules.find((r) => r.regex.test(rel));
   const files: ScannedFile[] = [];
@@ -274,12 +296,16 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
     const prioritySubdirs: string[] = [];
 
     for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
       const abs = path.join(dir, entry.name);
       const rel = path.relative(root, abs).split(path.sep).join("/");
+      if (entry.isSymbolicLink()) {
+        if (!rel.startsWith("node_modules/")) {
+          scopeExclusions.push({ path: rel, reason: "symlink", detail: "symlinked path not followed" });
+        }
+        continue;
+      }
       if (entry.isDirectory()) {
-        if (rel === ".verification/receipts") continue;
-        if (isBuildOutputSkipDir(rel, entry.name)) continue;
+        if (shouldSkipDirectory(rel, entry.name, trackedDirs)) continue;
         const ignored = matchIgnore(rel);
         if (ignored) {
           scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` });

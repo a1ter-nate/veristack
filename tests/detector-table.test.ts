@@ -37,6 +37,21 @@ function fakeRepo(file: string, content: string, isTest: boolean, isWorkflow: bo
     allRelPaths: [file],
     languages: ["typescript"],
     archetype: "fullstack",
+    observedArchetype: "fullstack",
+    scopeExclusions: [],
+    ci: {
+      hasCiWorkflows: false,
+      workflowFiles: [],
+      runsFormatterOrLint: false,
+      runsTypeOrStructureCheck: false,
+      runsUnitTests: false,
+      runsBoundaryOrMbtTests: false,
+      runsIntegrationOrDbTests: false,
+      runsMutationOrFormal: false,
+      runsPerfOrBench: false,
+      runsE2eTests: false,
+      runsProdVerification: false,
+    },
     files: [
       {
         rel: file,

@@ -46,6 +46,7 @@ function usage(): string {
     "  vstack run-rung <R0..R8|all> [dir] [--json]",
     "  vstack canary [dir] --test-cmd <cmd> [--targets <files>] [--base <ref>] [--max-mutants <n>] [--min-kill-rate <0..1>] [--json] [--fail]",
     "  vstack perimeter [dir] [--check-github] [--json] [--fail]",
+    "  vstack crap [dir] --coverage <lcov|cobertura> [--max-crap <n>] [--json] [--fail]",
     "  vstack oracle-check [dir] --base <ref> --test-cmd <cmd> [--json]",
     "  vstack no-comments [dir] [--json] [--fail]",
     "  vstack state-machines [dir] [--json] [--fail]",
@@ -104,6 +105,8 @@ function firstPositional(args: readonly string[]): string {
     "--targets",
     "--max-mutants",
     "--min-kill-rate",
+    "--coverage",
+    "--max-crap",
   ]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
@@ -159,7 +162,10 @@ async function run(): Promise<number> {
   }
 
   if (cmd === "oracle-check") {
-    const baseRef = parseFlagValue(rest, "--base") ?? "HEAD";
+    const baseRef = parseFlagValue(rest, "--base");
+    if (!baseRef) {
+      throw new Error("vstack oracle-check requires an explicit --base <ref> (e.g. origin/main or HEAD~1).");
+    }
     const testCmd = parseFlagValue(rest, "--test-cmd");
     if (!testCmd) {
       throw new Error("vstack oracle-check requires --test-cmd <command>.");

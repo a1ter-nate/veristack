@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { scanGitDiffCheats } from "../src/ci-auditor.ts";
 import type { ScannedFile } from "../src/discover.ts";
 import { scanRepo } from "../src/ladder.ts";
@@ -193,7 +194,7 @@ test("diff-cheats catches newly added Rust #[ignore], blanket #[allow], and carg
 });
 
 test("System 1 classifier extracts Rust SUT imports and classifies templates/rust-reference as BEHAVIOR", () => {
-  const rustRef = path.resolve(import.meta.dir, "..", "templates", "rust-reference");
+  const rustRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "templates", "rust-reference");
   const report = buildSystem1Packet(rustRef, { maxCandidates: 10 });
   assert.ok(report.candidates.length >= 2);
   const tableCand = report.candidates.find((c) => c.file.endsWith("transition_table.rs"));

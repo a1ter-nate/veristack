@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import YAML from "yaml";
 import type { ScannedFile } from "../discover.ts";
 
 export interface ActiveWorkflowInfo {
@@ -16,10 +17,31 @@ export interface CodeownersPerimeterResult {
   passed: boolean;
 }
 
-const NON_BLOCKING_ONLY_TRIGGERS = new Set(["workflow_dispatch", "schedule", "repository_dispatch", "workflow_call"]);
-const PR_BLOCKING_TRIGGERS = new Set(["pull_request", "pull_request_target", "merge_group", "push"]);
+const VALID_CODEOWNERS_PATHS = new Set([".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]);
+const VALID_OWNER_TOKEN = /^(?:@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9_.-]+)?|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})$/;
 
-function stripYamlComment(line: string): string {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isUnconditionalIf(cond: unknown): boolean {
+  if (cond === undefined || cond === null) return true;
+  if (typeof cond === "boolean") return cond === true;
+  if (typeof cond !== "string") return false;
+  const norm = cond.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
+  return norm === "true" || norm === "success()" || norm === "always()";
+}
+
+function isContinueOnError(val: unknown): boolean {
+  if (val === true) return true;
+  if (typeof val === "string") {
+    const norm = val.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
+    return norm === "true";
+  }
+  return false;
+}
+
+function stripShellComment(line: string): string {
   let inSingle = false;
   let inDouble = false;
   for (let i = 0; i < line.length; i++) {
@@ -33,172 +55,129 @@ function stripYamlComment(line: string): string {
   return line;
 }
 
-function isFalseCondition(expr: string): boolean {
-  const norm = expr.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim().toLowerCase();
-  return norm === "false" || norm === "0" || norm === "!true" || /\b&&\s*false\b/.test(norm);
-}
-
-function sanitizeShellCommandLine(rawLine: string): string {
-  const trimmed = stripYamlComment(rawLine).trim();
-  if (!trimmed) return "";
-  if (/^(?:echo|printf|true|:)\b/.test(trimmed)) return "";
-  if (/\|\|\s*(?:true|:)\s*$/.test(trimmed)) return "";
-  return trimmed;
-}
-
-function parseTriggers(lines: readonly string[]): string[] {
-  const triggers: string[] = [];
-  let inOnBlock = false;
-  let onIndent = -1;
-
-  for (const raw of lines) {
-    const clean = stripYamlComment(raw);
-    if (!clean.trim()) continue;
-    const indent = clean.length - clean.trimStart().length;
-    const trimmed = clean.trim();
-
-    if (indent === 0 && /^on\s*:/.test(trimmed)) {
-      const rest = trimmed.replace(/^on\s*:/, "").trim();
-      if (rest) {
-        const inline = rest.replace(/^\[|\]$/g, "").split(",").map((s) => s.trim().replace(/^['"]|['"]$/g, ""));
-        for (const t of inline) if (t) triggers.push(t);
-        inOnBlock = false;
-      } else {
-        inOnBlock = true;
-        onIndent = indent;
-      }
+export function sanitizeShellBlock(runScript: string): string[] {
+  const active: string[] = [];
+  let setPlusE = false;
+  for (const raw of runScript.split(/\r?\n/)) {
+    const trimmed = stripShellComment(raw).trim();
+    if (!trimmed) continue;
+    if (/^set\s+\+e\b/.test(trimmed)) {
+      setPlusE = true;
       continue;
     }
+    if (/^set\s+-e\b/.test(trimmed)) {
+      setPlusE = false;
+      continue;
+    }
+    if (/^exit\s+0\b/.test(trimmed)) break;
+    if (setPlusE) continue;
+    if (/^(?:echo|printf|true)(?:\s|$)/.test(trimmed)) continue;
+    if (/^:(?:\s|$)/.test(trimmed)) continue;
+    if (/^false\s*&&/.test(trimmed)) continue;
+    if (/\|\|\s*(?:true|echo|printf|:|exit\s+0)\b/.test(trimmed)) continue;
+    if (/\s--help(?:\s|$)/.test(trimmed)) continue;
+    active.push(trimmed);
+  }
+  return active;
+}
 
-    if (inOnBlock) {
-      if (indent <= onIndent) {
-        inOnBlock = false;
-        continue;
-      }
-      const keyMatch = /^(?:-\s*)?([a-zA-Z0-9_-]+)\s*:?/.exec(trimmed);
-      if (keyMatch?.[1] && (indent === 2 || trimmed.startsWith("-"))) {
-        triggers.push(keyMatch[1]);
+function isBlockingTriggerConfig(name: string, cfg: unknown): boolean {
+  if (name === "merge_group") return true;
+  if (name !== "pull_request" && name !== "push") return false;
+  if (!isRecord(cfg)) return true;
+  if (Array.isArray(cfg.paths) && cfg.paths.length > 0) return false;
+  if (Array.isArray(cfg["paths-ignore"]) && cfg["paths-ignore"].includes("**")) return false;
+  if (Array.isArray(cfg["branches-ignore"]) && cfg["branches-ignore"].includes("**")) return false;
+  if (name === "push" && Array.isArray(cfg.branches) && cfg.branches.length > 0) {
+    const defaultBranches = new Set(["main", "master", "trunk", "**", "*"]);
+    if (!cfg.branches.some((b) => typeof b === "string" && defaultBranches.has(b))) return false;
+  }
+  if (name === "pull_request" && Array.isArray(cfg.types) && cfg.types.length > 0) {
+    const blockingTypes = new Set(["opened", "synchronize", "reopened"]);
+    if (!cfg.types.some((t) => typeof t === "string" && blockingTypes.has(t))) return false;
+  }
+  return true;
+}
+
+function extractTriggers(onField: unknown): { triggers: string[]; isPrBlocking: boolean } {
+  const triggers: string[] = [];
+  let isPrBlocking = false;
+  if (typeof onField === "string") {
+    triggers.push(onField);
+    isPrBlocking = isBlockingTriggerConfig(onField, undefined);
+  } else if (Array.isArray(onField)) {
+    for (const item of onField) {
+      if (typeof item === "string") {
+        triggers.push(item);
+        if (isBlockingTriggerConfig(item, undefined)) isPrBlocking = true;
       }
     }
+  } else if (isRecord(onField)) {
+    for (const [key, val] of Object.entries(onField)) {
+      triggers.push(key);
+      if (isBlockingTriggerConfig(key, val)) isPrBlocking = true;
+    }
   }
-  return [...new Set(triggers)];
+  return { triggers: [...new Set(triggers)], isPrBlocking };
 }
 
 export function parseGitHubWorkflow(file: ScannedFile): ActiveWorkflowInfo {
-  const lines = file.content.split(/\r?\n/);
-  const triggers = parseTriggers(lines);
-  const isPrBlocking =
-    triggers.some((t) => PR_BLOCKING_TRIGGERS.has(t)) &&
-    !triggers.every((t) => NON_BLOCKING_ONLY_TRIGGERS.has(t));
+  let doc: unknown;
+  try {
+    doc = YAML.parse(file.content);
+  } catch {
+    return { file: file.rel, isPrBlocking: false, triggers: [], activeCommands: [], deadJobs: ["<invalid-yaml>"] };
+  }
+  if (!isRecord(doc)) {
+    return { file: file.rel, isPrBlocking: false, triggers: [], activeCommands: [], deadJobs: [] };
+  }
 
-  const activeCommands: string[] = [];
-  const deadJobs: string[] = [];
+  const onField = doc.on ?? doc.true;
+  const { triggers, isPrBlocking } = extractTriggers(onField);
+  const rawJobs = isRecord(doc.jobs) ? doc.jobs : {};
 
-  let inJobs = false;
-  let jobIndent = -1;
-  let currentJob = "";
-  let currentJobDead = false;
-  let stepIndent = -1;
-  let currentStepDead = false;
-  let inRunBlock = false;
-  let runIndent = -1;
-
-  for (const raw of lines) {
-    const clean = stripYamlComment(raw);
-    const trimmed = clean.trim();
-    const indent = clean.length - clean.trimStart().length;
-
-    if (inRunBlock) {
-      if (!trimmed) continue;
-      if (indent > runIndent) {
-        if (!currentJobDead && !currentStepDead) {
-          const cmd = sanitizeShellCommandLine(raw);
-          if (cmd) activeCommands.push(cmd);
-        }
-        continue;
-      }
-      inRunBlock = false;
+  const deadJobSet = new Set<string>();
+  for (const [jobId, jobVal] of Object.entries(rawJobs)) {
+    if (!isRecord(jobVal)) continue;
+    if (!isUnconditionalIf(jobVal.if) || isContinueOnError(jobVal["continue-on-error"])) {
+      deadJobSet.add(jobId);
     }
+  }
 
-    if (!trimmed) continue;
-
-    if (indent === 0) {
-      inJobs = /^jobs\s*:/.test(trimmed);
-      jobIndent = -1;
-      currentJob = "";
-      currentJobDead = false;
-      continue;
-    }
-
-    if (!inJobs) continue;
-
-    if (jobIndent < 0 || indent === jobIndent) {
-      const m = /^([a-zA-Z0-9_-]+)\s*:/.exec(trimmed);
-      if (m?.[1]) {
-        jobIndent = indent;
-        currentJob = m[1];
-        currentJobDead = false;
-        stepIndent = -1;
-        currentStepDead = false;
-        continue;
-      }
-    }
-
-    if (indent > jobIndent && stepIndent < 0) {
-      if (/^if\s*:/.test(trimmed)) {
-        const expr = trimmed.replace(/^if\s*:/, "");
-        if (isFalseCondition(expr)) {
-          currentJobDead = true;
-          deadJobs.push(currentJob);
-        }
-      } else if (/^continue-on-error\s*:\s*true\b/i.test(trimmed)) {
-        currentJobDead = true;
-        deadJobs.push(currentJob);
-      } else if (/^steps\s*:/.test(trimmed)) {
-        stepIndent = indent;
-      }
-      continue;
-    }
-
-    if (stepIndent >= 0 && indent > stepIndent) {
-      if (trimmed.startsWith("-")) {
-        currentStepDead = false;
-        const afterDash = trimmed.slice(1).trim();
-        if (/^if\s*:/.test(afterDash) && isFalseCondition(afterDash.replace(/^if\s*:/, ""))) {
-          currentStepDead = true;
-        } else if (/^continue-on-error\s*:\s*true\b/i.test(afterDash)) {
-          currentStepDead = true;
-        } else if (/^run\s*:/.test(afterDash)) {
-          const val = afterDash.replace(/^run\s*:/, "").trim();
-          if (val === "|" || val === ">" || val === "|-" || val === ">-") {
-            inRunBlock = true;
-            runIndent = indent;
-          } else if (!currentJobDead && !currentStepDead) {
-            const cmd = sanitizeShellCommandLine(val);
-            if (cmd) activeCommands.push(cmd);
-          }
-        }
-        continue;
-      }
-
-      if (/^if\s*:/.test(trimmed) && isFalseCondition(trimmed.replace(/^if\s*:/, ""))) {
-        currentStepDead = true;
-      } else if (/^continue-on-error\s*:\s*true\b/i.test(trimmed)) {
-        currentStepDead = true;
-      } else if (/^run\s*:/.test(trimmed)) {
-        const val = trimmed.replace(/^run\s*:/, "").trim();
-        if (val === "|" || val === ">" || val === "|-" || val === ">-") {
-          inRunBlock = true;
-          runIndent = indent;
-        } else if (!currentJobDead && !currentStepDead) {
-          const cmd = sanitizeShellCommandLine(val);
-          if (cmd) activeCommands.push(cmd);
-        }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [jobId, jobVal] of Object.entries(rawJobs)) {
+      if (deadJobSet.has(jobId) || !isRecord(jobVal)) continue;
+      const needs = jobVal.needs;
+      const depList = typeof needs === "string" ? [needs] : Array.isArray(needs) ? needs.filter((n): n is string => typeof n === "string") : [];
+      if (depList.some((dep) => deadJobSet.has(dep))) {
+        deadJobSet.add(jobId);
+        changed = true;
       }
     }
   }
 
-  return { file: file.rel, isPrBlocking, triggers, activeCommands, deadJobs };
+  const activeCommands: string[] = [];
+  for (const [jobId, jobVal] of Object.entries(rawJobs)) {
+    if (deadJobSet.has(jobId) || !isRecord(jobVal)) continue;
+    const steps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
+    for (const step of steps) {
+      if (!isRecord(step)) continue;
+      if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
+      if (typeof step.run === "string") {
+        activeCommands.push(...sanitizeShellBlock(step.run));
+      }
+    }
+  }
+
+  return {
+    file: file.rel,
+    isPrBlocking,
+    triggers,
+    activeCommands,
+    deadJobs: [...deadJobSet].sort(),
+  };
 }
 
 function globMatchesPath(pattern: string, target: string): boolean {
@@ -220,34 +199,63 @@ export function auditCodeownersPerimeter(
   files: readonly ScannedFile[],
   allRelPaths: readonly string[],
 ): CodeownersPerimeterResult {
-  const coFile = files.find((f) => /(?:^|\/)codeowners$/i.test(f.rel));
+  const coFile = files.find((f) => VALID_CODEOWNERS_PATHS.has(f.rel));
   if (!coFile) {
-    return { hasFile: false, uncoveredSurfaces: ["CODEOWNERS"], passed: false };
+    return { hasFile: false, uncoveredSurfaces: [".github/CODEOWNERS"], passed: false };
   }
 
-  const patterns: string[] = [];
+  const rules: Array<{ pattern: string; owners: string[] }> = [];
   for (const raw of coFile.content.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     const parts = line.split(/\s+/);
-    const pat = parts[0] ?? "";
-    const owners = parts.slice(1).filter((p) => p.startsWith("@") || p.includes("@"));
-    if (pat && owners.length > 0) patterns.push(pat);
+    const pattern = parts[0] ?? "";
+    if (!pattern) continue;
+    const owners = parts.slice(1).filter((p) => VALID_OWNER_TOKEN.test(p));
+    rules.push({ pattern, owners });
   }
 
-  if (patterns.length === 0) {
-    return { hasFile: true, file: coFile.rel, uncoveredSurfaces: ["CODEOWNERS has zero valid owner rules"], passed: false };
+  if (!rules.some((r) => r.owners.length > 0)) {
+    return { hasFile: true, file: coFile.rel, uncoveredSurfaces: ["CODEOWNERS has zero valid owners"], passed: false };
   }
 
   const allSet = new Set(allRelPaths);
-  const surfaces = [".github/workflows/ci.yml", ".verification/rungs.json", coFile.rel];
-  if (allSet.has(".vstackignore")) surfaces.push(".vstackignore");
-  if (allSet.has(".vstack.json")) surfaces.push(".vstack.json");
-  if (allSet.has("lefthook.yml")) surfaces.push("lefthook.yml");
-  if (allSet.has(".verification/control-plan.json")) surfaces.push(".verification/control-plan.json");
-  if (allSet.has(".verification/escapes.json")) surfaces.push(".verification/escapes.json");
+  const surfaces: string[] = [
+    ".github/workflows/ci.yml",
+    ".verification/rungs.json",
+    ".verification/behavior-changes.json",
+    coFile.rel,
+  ];
+  for (const wf of allRelPaths) {
+    if (wf.startsWith(".github/workflows/") && (wf.endsWith(".yml") || wf.endsWith(".yaml"))) {
+      surfaces.push(wf);
+    }
+  }
+  const optionalSurfaces = [
+    ".vstackignore",
+    ".vstack.json",
+    "lefthook.yml",
+    "package.json",
+    ".verification/control-plan.json",
+    ".verification/escapes.json",
+    ".verification/invariants.json",
+    ".verification/chokepoints.json",
+  ];
+  for (const opt of optionalSurfaces) {
+    if (allSet.has(opt)) surfaces.push(opt);
+  }
 
-  const uncovered = surfaces.filter((surf) => !patterns.some((pat) => globMatchesPath(pat, surf)));
+  const uniqueSurfaces = [...new Set(surfaces)];
+  const uncovered = uniqueSurfaces.filter((surf) => {
+    let lastOwners: string[] = [];
+    for (const rule of rules) {
+      if (globMatchesPath(rule.pattern, surf)) {
+        lastOwners = rule.owners;
+      }
+    }
+    return lastOwners.length === 0;
+  });
+
   return {
     hasFile: true,
     file: coFile.rel,
@@ -260,44 +268,80 @@ export function checkGitHubBranchProtection(repoRoot: string): {
   checked: boolean;
   passed: boolean;
   requiredChecks: string[];
+  codeOwnerReviewsRequired: boolean;
+  adminsEnforced: boolean;
   detail: string;
 } {
   const remote = spawnSync("git", ["-C", repoRoot, "remote", "get-url", "origin"], { encoding: "utf8" });
-  const match = /github\.com[:/]([^/]+\/[^/.]+)(?:\.git)?$/i.exec((remote.stdout ?? "").trim());
+  const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i.exec((remote.stdout ?? "").trim());
   if (!match?.[1]) {
-    return { checked: false, passed: false, requiredChecks: [], detail: "No GitHub origin remote detected." };
-  }
-  const slug = match[1];
-  const api = spawnSync("gh", ["api", `repos/${slug}/branches/main/protection`], {
-    encoding: "utf8",
-    timeout: 10_000,
-  });
-  if (api.status !== 0) {
     return {
       checked: false,
       passed: false,
       requiredChecks: [],
-      detail: `Unable to read branch protection for ${slug}/main via gh api.`,
+      codeOwnerReviewsRequired: false,
+      adminsEnforced: false,
+      detail: "No GitHub origin remote detected.",
     };
   }
+  const slug = match[1];
+  const repoInfo = spawnSync("gh", ["api", `repos/${slug}`, "--jq", ".default_branch"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  const defaultBranch = repoInfo.status === 0 && repoInfo.stdout.trim() ? repoInfo.stdout.trim() : "main";
+
+  const api = spawnSync("gh", ["api", `repos/${slug}/branches/${defaultBranch}/protection`], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  if (api.status !== 0) {
+    const stderr = (api.stderr ?? api.stdout ?? "").trim();
+    const isUnprotected = /404|Branch not protected/i.test(stderr);
+    return {
+      checked: isUnprotected,
+      passed: false,
+      requiredChecks: [],
+      codeOwnerReviewsRequired: false,
+      adminsEnforced: false,
+      detail: isUnprotected
+        ? `Branch '${defaultBranch}' on ${slug} is NOT protected (HTTP 404).`
+        : `Unable to read branch protection for ${slug}/${defaultBranch}: ${stderr.slice(0, 140)}`,
+    };
+  }
+
   try {
     const parsed = JSON.parse(api.stdout) as {
       required_status_checks?: { contexts?: string[]; checks?: Array<{ context?: string }> };
+      required_pull_request_reviews?: { require_code_owner_reviews?: boolean };
+      enforce_admins?: { enabled?: boolean };
     };
     const checks = [
       ...(parsed.required_status_checks?.contexts ?? []),
       ...(parsed.required_status_checks?.checks?.map((c) => c.context ?? "").filter(Boolean) ?? []),
     ];
-    const hasVeristack = checks.some((c) => /veristack|vstack|strict/i.test(c));
+    const hasVeristack = checks.some((c) => /veristack|vstack|self-verify-vstack/i.test(c));
+    const codeOwnerReviewsRequired = Boolean(parsed.required_pull_request_reviews?.require_code_owner_reviews);
+    const adminsEnforced = Boolean(parsed.enforce_admins?.enabled);
+    const passed = checks.length > 0 && hasVeristack && codeOwnerReviewsRequired && adminsEnforced;
     return {
       checked: true,
-      passed: checks.length > 0 && hasVeristack,
+      passed,
       requiredChecks: [...new Set(checks)],
-      detail: hasVeristack
-        ? `Required status checks enforce Veristack (${checks.join(", ")}).`
-        : `Branch protection has ${checks.length} required check(s), none matching Veristack.`,
+      codeOwnerReviewsRequired,
+      adminsEnforced,
+      detail: passed
+        ? `Branch '${defaultBranch}' enforces Veristack check, CODEOWNERS reviews, and admins.`
+        : `Incomplete protection on '${defaultBranch}': veristackCheck=${hasVeristack}, codeOwnerReviews=${codeOwnerReviewsRequired}, enforceAdmins=${adminsEnforced}.`,
     };
   } catch {
-    return { checked: false, passed: false, requiredChecks: [], detail: "Failed to parse branch protection JSON." };
+    return {
+      checked: false,
+      passed: false,
+      requiredChecks: [],
+      codeOwnerReviewsRequired: false,
+      adminsEnforced: false,
+      detail: "Failed to parse branch protection JSON.",
+    };
   }
 }

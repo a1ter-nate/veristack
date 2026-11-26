@@ -12,6 +12,7 @@ import {
 import type { RungId } from "../types.ts";
 import { runPlantedFaultCanary } from "./mutation-probe.ts";
 import { runAllDeclaredRungs } from "./receipts.ts";
+import { evaluateCrapForCoverageFile } from "./reports.ts";
 import { auditCodeownersPerimeter, checkGitHubBranchProtection } from "./workflow-audit.ts";
 
 const VALID_RUNG_ARGS = new Set(["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "all"]);
@@ -128,7 +129,7 @@ export function handleScanCli(rest: readonly string[], target: string, asJson: b
 
   if (ratchetEval) {
     if (!ratchetEval.passed) return 1;
-    if (!allowMissingRungs && (!ratchetEval.hasRungBaseline) && (s.holeCount > 0 || s.unexecutedRungCount > 0)) {
+    if (!allowMissingRungs && (s.holeCount > 0 || s.unexecutedRungCount > 0)) {
       return 1;
     }
   } else if (!allowMissingRungs && (s.holeCount > 0 || s.unexecutedRungCount > 0)) {
@@ -211,6 +212,26 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
       if (gh) console.log(`  GitHub branch protection: ${gh.passed ? "PASS" : "FAIL"} — ${gh.detail}`);
     }
     return rest.includes("--fail") && !passed ? 1 : 0;
+  }
+
+  if (cmd === "crap") {
+    const covPath = parseFlagValue(rest, "--coverage");
+    if (!covPath) {
+      throw new Error("vstack crap requires --coverage <lcov.info|cobertura.xml>.");
+    }
+    const maxRaw = parseFlagValue(rest, "--max-crap");
+    const report = evaluateCrapForCoverageFile(target, covPath, maxRaw ? Number(maxRaw) : 30);
+    if (asJson) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(
+        `crap [${report.passed ? "PASS" : "FAIL"}]: evaluated=${report.evaluatedFiles} worst=${report.worstCrap} maxAllowed=${report.maxAllowed} offenders=${report.offenders.length}`,
+      );
+      for (const o of report.offenders.slice(0, 20)) {
+        console.log(`  - ${o.file}: CRAP=${o.crapScore} (CC=${o.cyclomaticComplexity}, cov=${o.coveragePct}%)`);
+      }
+    }
+    return rest.includes("--fail") && !report.passed ? 1 : 0;
   }
 
   return null;

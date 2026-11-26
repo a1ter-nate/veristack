@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { scanGitDiffCheats } from "../src/ci-auditor.ts";
 import type { ScannedFile } from "../src/discover.ts";
 import { scanRepo } from "../src/ladder.ts";
@@ -196,7 +197,7 @@ test("diff-cheats catches newly added Python @pytest.mark.skip, bare # noqa, and
 });
 
 test("System 1 classifier extracts Python SUT imports on templates/python-reference", () => {
-  const pyRef = path.resolve(import.meta.dir, "..", "templates", "python-reference");
+  const pyRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "templates", "python-reference");
   const report = buildSystem1Packet(pyRef, { maxCandidates: 10 });
   assert.ok(report.candidates.length >= 3);
   const tableCand = report.candidates.find((c) => c.file.endsWith("test_transition_table.py"));

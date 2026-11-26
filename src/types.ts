@@ -74,6 +74,8 @@ export type ScopeExclusionReason =
   | "config-ignore"
   | "oversized"
   | "minified"
+  | "symlink"
+  | "skipped-tracked-dir"
   | "truncated";
 
 export interface ScopeExclusion {

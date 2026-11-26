@@ -94,10 +94,13 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
   rawFindings.push(...testResult.findings);
   rawFindings.push(...auditCiWorkflows(repo));
 
+  const receiptBundle = loadValidReceipts(repo, repo.manifest);
+  rawFindings.push(...receiptBundle.findings);
+
   const applied = applyRepoConfig(rawFindings, config, options.disableRules);
   const findings = applied.findings;
 
-  const receipts = loadValidReceipts(repo, repo.manifest);
+  const receipts = receiptBundle.receipts;
   const requireReceipts = Boolean(options.strict) || Boolean(repo.manifest);
   const rungs = buildRungStatuses(repo, testResult.inventory, { receipts, requireReceipts });
   const workspaces = buildWorkspaceLadders(repo, testResult.inventory);

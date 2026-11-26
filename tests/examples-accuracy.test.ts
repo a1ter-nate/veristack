@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { scanRepo } from "../src/ladder.ts";
 
 interface ExampleManifest {
@@ -11,7 +12,7 @@ interface ExampleManifest {
   clean: string[];
 }
 
-const repoRoot = path.resolve(import.meta.dir, "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const examplesRoot = path.join(repoRoot, "examples");
 const cliPath = path.join(repoRoot, "src", "cli.ts");
 const languages = ["typescript", "csharp", "rust", "python"] as const;

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { scanGitDiffCheats } from "../src/ci-auditor.ts";
 import type { ScannedFile } from "../src/discover.ts";
 import { scanRepo } from "../src/ladder.ts";
@@ -204,7 +205,7 @@ test("C# test-analyzer catches nondeterminism, env mutation, stopwatch timing, s
 });
 
 test("System 1 classifier extracts C# SUT imports and classifies templates/csharp-reference as BEHAVIOR", () => {
-  const csharpRef = path.resolve(import.meta.dir, "..", "templates", "csharp-reference");
+  const csharpRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "templates", "csharp-reference");
   const report = buildSystem1Packet(csharpRef, { maxCandidates: 10 });
   assert.ok(report.candidates.length >= 3);
   const transitionCand = report.candidates.find((c) => c.file.endsWith("TransitionTableTests.cs"));

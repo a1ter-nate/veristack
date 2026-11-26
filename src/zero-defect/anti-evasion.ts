@@ -8,7 +8,7 @@ export interface DiffLineEvent {
   code: string;
 }
 
-const STRICT_CONFIG_PATH = /(?:^|\/)(?:tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|\.vstackignore|\.eslintignore|(?:\.verification\/)?\.?vstack\.json|\.verification\/invariants\.json)$/i;
+const STRICT_CONFIG_PATH = /(?:^|\/)(?:tsconfig(?:\.[^/]+)?\.json|\.?oxlintrc\.jsonc?|oxlint\.config\.ts|biome\.jsonc?|\.?ruff\.toml|pyproject\.toml|mypy\.ini|pyrightconfig\.json|\.?clippy\.toml|\.?golangci\.ya?ml|Directory\.Build\.props|Cargo\.toml|go\.mod|\.vstackignore|\.eslintignore|(?:\.verification\/)?\.?vstack\.json|\.verification\/(?:invariants|rungs|behavior-changes|control-plan|escapes)\.json)$/i;
 const TEST_FILE_PATH = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.go$|_tests?\.rs$|(?:^|\/)test_[^/]+\.py$|tests?\.cs$)/i;
 const ASSERT_CALL = /\b(?:assert|expect|Assert\.|assert_eq!|assert_ne!|assert!|require\.|should\.)/;
 const STRICT_ASSERT = /\.(?:toEqual|toStrictEqual|toBe|toMatchObject|toContainEqual)\s*\(|\bassert\.(?:equal|strictEqual|deepEqual|deepStrictEqual)\s*\(|\bassert_eq!\s*\(/;

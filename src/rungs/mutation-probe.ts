@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parseSync } from "oxc-parser";
 import type { PlantedFaultReport, PlantedFaultSurvivor } from "../types.ts";
 
 interface MutantCandidate {
   file: string;
-  absPath: string;
   line: number;
   start: number;
   end: number;
@@ -31,8 +31,10 @@ const LOGICAL_MUTATIONS: Record<string, string> = {
   "||": "&&",
 };
 
+const FORBIDDEN_CANARY_CMD = /\b(?:git\s+(?:diff|status)|sha256sum|md5sum|shasum)\b|\|\|\s*(?:true|echo|exit\s+0)\b/;
+
 const COMPILE_OR_RUNTIME_CRASH =
-  /\b(?:SyntaxError|ReferenceError|TypeError:\s*Cannot\s+find|Cannot\s+find\s+module|TS\d{4}:|error\[E\d{4}\]|IndentationError|ImportError)\b/;
+  /\b(?:SyntaxError:\s*Unexpected|Cannot\s+find\s+module|TS\d{4}:|CS\d{4}:|error\[E\d{4}\]|cannot\s+find\s+package|undefined:\s+\w+|IndentationError|ImportError)\b/;
 
 function lineAt(source: string, offset: number): number {
   let line = 1;
@@ -42,20 +44,47 @@ function lineAt(source: string, offset: number): number {
   return line;
 }
 
-function collectAstMutants(rel: string, absPath: string, source: string, maxPerFile: number): MutantCandidate[] {
-  const out: MutantCandidate[] = [];
-  if (!/\.[cm]?[jt]sx?$/.test(rel)) return out;
+function maskStringsAndCommentsForFallback(source: string): string {
+  const cfgIdx = source.search(/#\[cfg\(test\)\]/);
+  const active = cfgIdx >= 0 ? source.slice(0, cfgIdx) : source;
+  return active
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/(^|\s)#[^\n]*/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/"(?:\\.|[^"\\])*"/g, (m) => `"${" ".repeat(Math.max(0, m.length - 2))}"`)
+    .replace(/'(?:\\.|[^'\\])*'/g, (m) => `'${" ".repeat(Math.max(0, m.length - 2))}'`);
+}
+
+function seededShuffle<T>(items: readonly T[], seed: number): T[] {
+  const copy = [...items];
+  let state = seed >>> 0;
+  for (let i = copy.length - 1; i > 0; i--) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const j = state % (i + 1);
+    const tmp = copy[i];
+    const other = copy[j];
+    if (tmp !== undefined && other !== undefined) {
+      copy[i] = other;
+      copy[j] = tmp;
+    }
+  }
+  return copy;
+}
+
+function collectAstMutants(rel: string, source: string, maxPerFile: number): MutantCandidate[] {
+  const all: MutantCandidate[] = [];
+  if (!/\.[cm]?[jt]sx?$/.test(rel)) return all;
   let parsed: ReturnType<typeof parseSync>;
   try {
     parsed = parseSync(rel, source);
   } catch {
-    return out;
+    return all;
   }
 
   const stack: unknown[] = [parsed.program];
   const seenLines = new Set<number>();
 
-  while (stack.length > 0 && out.length < maxPerFile) {
+  while (stack.length > 0) {
     const node = stack.pop();
     if (!node || typeof node !== "object") continue;
     const rec = node as Record<string, unknown>;
@@ -79,9 +108,8 @@ function collectAstMutants(rel: string, absPath: string, source: string, maxPerF
           const line = lineAt(source, opStart);
           if (!seenLines.has(line)) {
             seenLines.add(line);
-            out.push({
+            all.push({
               file: rel,
-              absPath,
               line,
               start: opStart,
               end: opEnd,
@@ -102,26 +130,29 @@ function collectAstMutants(rel: string, absPath: string, source: string, maxPerF
       }
     }
   }
-  return out;
+  return seededShuffle(all, 20261125 + rel.length).slice(0, maxPerFile);
 }
 
-function collectFallbackMutants(rel: string, absPath: string, source: string, maxPerFile: number): MutantCandidate[] {
-  const out: MutantCandidate[] = [];
-  const re = /(===|!==|>=|<=|==|!=|&&|\|\|)/g;
+function collectFallbackMutants(rel: string, source: string, maxPerFile: number): MutantCandidate[] {
+  const all: MutantCandidate[] = [];
+  const masked = maskStringsAndCommentsForFallback(source);
+  const isPython = rel.endsWith(".py");
+  const re = isPython
+    ? /(===|!==|>=|<=|==|!=|(?<![<=-])>(?![>=])|(?<![<=-])<(?![<=])|\band\b|\bor\b)/g
+    : /(===|!==|>=|<=|==|!=|(?<![<=-])>(?![>=])|(?<![<=-])<(?![<=])|&&|\|\|)/g;
   const seenLines = new Set<number>();
-  for (const m of source.matchAll(re)) {
-    if (out.length >= maxPerFile) break;
+  for (const m of masked.matchAll(re)) {
     const op = m[1] ?? "";
     const idx = m.index ?? -1;
     if (idx < 0) continue;
-    const replacement = BINARY_MUTATIONS[op] ?? LOGICAL_MUTATIONS[op];
+    const replacement =
+      op === "and" ? "or" : op === "or" ? "and" : (BINARY_MUTATIONS[op] ?? LOGICAL_MUTATIONS[op]);
     if (!replacement) continue;
     const line = lineAt(source, idx);
     if (seenLines.has(line)) continue;
     seenLines.add(line);
-    out.push({
+    all.push({
       file: rel,
-      absPath,
       line,
       start: idx,
       end: idx + op.length,
@@ -130,7 +161,7 @@ function collectFallbackMutants(rel: string, absPath: string, source: string, ma
       mutated: replacement,
     });
   }
-  return out;
+  return seededShuffle(all, 20261125 + rel.length).slice(0, maxPerFile);
 }
 
 export interface CanaryOptions {
@@ -143,28 +174,73 @@ export interface CanaryOptions {
 }
 
 function resolveTargetFiles(options: CanaryOptions): string[] {
-  if (options.targets && options.targets.length > 0) {
-    return options.targets.filter((rel) => fs.existsSync(path.join(options.repoRoot, rel)));
-  }
-  if (options.baseRef) {
-    const diff = spawnSync("git", ["-C", options.repoRoot, "diff", "--name-only", options.baseRef, "--"], {
-      encoding: "utf8",
-    });
-    if (diff.status === 0) {
-      const changed = (diff.stdout ?? "")
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter((s) => s && !/(?:test|spec)/i.test(s) && /\.(?:[cm]?[jt]sx?|py|rs|go|cs)$/.test(s))
-        .filter((s) => fs.existsSync(path.join(options.repoRoot, s)));
-      if (changed.length > 0) return changed;
+  const absRoot = path.resolve(options.repoRoot);
+  const targets = new Set<string>();
+  if (options.targets) {
+    for (const rel of options.targets) {
+      if (fs.existsSync(path.join(absRoot, rel))) targets.add(rel);
     }
   }
-  return [];
+  const ref = options.baseRef ?? (targets.size === 0 ? "HEAD" : undefined);
+  if (ref) {
+    const diff = spawnSync("git", ["-C", absRoot, "diff", "--name-only", ref, "--"], { encoding: "utf8" });
+    if (diff.status === 0) {
+      for (const raw of (diff.stdout ?? "").split(/\r?\n/)) {
+        const rel = raw.trim();
+        if (
+          rel &&
+          !/(?:test|spec)/i.test(rel) &&
+          /\.(?:[cm]?[jt]sx?|py|rs|go|cs)$/.test(rel) &&
+          fs.existsSync(path.join(absRoot, rel))
+        ) {
+          targets.add(rel);
+        }
+      }
+    }
+  }
+  return [...targets];
+}
+
+function copyRepoForIsolatedCanary(repoRoot: string): string {
+  const absRoot = path.resolve(repoRoot);
+  const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-canary-"));
+  const skipTop = new Set([".git", "node_modules", ".venv", "venv", "target"]);
+  for (const entry of fs.readdirSync(absRoot, { withFileTypes: true })) {
+    const src = path.join(absRoot, entry.name);
+    const dst = path.join(sandboxDir, entry.name);
+    if (entry.name === ".git") continue;
+    if (skipTop.has(entry.name)) {
+      if (entry.name === "node_modules" || entry.name === ".venv" || entry.name === "venv") {
+        try {
+          fs.symlinkSync(src, dst);
+        } catch {
+          continue;
+        }
+      }
+      continue;
+    }
+    fs.cpSync(src, dst, { recursive: true, dereference: false });
+  }
+  return sandboxDir;
 }
 
 export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultReport {
-  const maxMutants = options.maxMutants ?? 6;
+  const maxMutants = Math.max(1, options.maxMutants ?? 6);
   const minKillRate = options.minKillRate ?? 0.8;
+
+  if (FORBIDDEN_CANARY_CMD.test(options.testCmd)) {
+    return {
+      totalMutants: 0,
+      killedMutants: 0,
+      survivedMutants: 0,
+      invalidKills: 1,
+      killRate: 0,
+      minKillRate,
+      passed: false,
+      survivors: [],
+    };
+  }
+
   const targets = resolveTargetFiles(options);
   const candidates: MutantCandidate[] = [];
   const perFileCap = Math.max(1, Math.ceil(maxMutants / Math.max(1, targets.length)));
@@ -174,8 +250,8 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
     const absPath = path.join(options.repoRoot, rel);
     const source = fs.readFileSync(absPath, "utf8");
     const found = /\.[cm]?[jt]sx?$/.test(rel)
-      ? collectAstMutants(rel, absPath, source, perFileCap)
-      : collectFallbackMutants(rel, absPath, source, perFileCap);
+      ? collectAstMutants(rel, source, perFileCap)
+      : collectFallbackMutants(rel, source, perFileCap);
     for (const c of found) {
       if (candidates.length < maxMutants) candidates.push(c);
     }
@@ -194,77 +270,118 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
     };
   }
 
-  const baselineRun = spawnSync(options.testCmd, [], {
-    cwd: options.repoRoot,
-    shell: true,
-    encoding: "utf8",
-    timeout: 90_000,
-  });
-  if (baselineRun.status !== 0) {
-    return {
-      totalMutants: candidates.length,
-      killedMutants: 0,
-      survivedMutants: candidates.length,
-      invalidKills: candidates.length,
-      killRate: 0,
-      minKillRate,
-      passed: false,
-      survivors: [],
-    };
-  }
+  const sandboxDir = copyRepoForIsolatedCanary(options.repoRoot);
+  try {
+    const baselineStart = performance.now();
+    const baselineRun = spawnSync(options.testCmd, [], {
+      cwd: sandboxDir,
+      shell: true,
+      encoding: "utf8",
+      timeout: 90_000,
+    });
+    const baselineMs = Math.max(500, Math.round(performance.now() - baselineStart));
+    const mutantTimeoutMs = Math.round(Math.max(10_000, Math.min(45_000, baselineMs * 8)));
+    if (baselineRun.status !== 0) {
+      return {
+        totalMutants: candidates.length,
+        killedMutants: 0,
+        survivedMutants: candidates.length,
+        invalidKills: candidates.length,
+        killRate: 0,
+        minKillRate,
+        passed: false,
+        survivors: [],
+      };
+    }
 
-  let killed = 0;
-  let invalidKills = 0;
-  const survivors: PlantedFaultSurvivor[] = [];
-
-  for (const mutant of candidates) {
-    const originalBytes = fs.readFileSync(mutant.absPath, "utf8");
-    const replacementOp = mutant.operator.split(" -> ")[1] ?? mutant.mutated;
-    const mutatedSource = `${originalBytes.slice(0, mutant.start)}${replacementOp}${originalBytes.slice(mutant.end)}`;
-
-    try {
-      fs.writeFileSync(mutant.absPath, mutatedSource, "utf8");
-      const res = spawnSync(options.testCmd, [], {
-        cwd: options.repoRoot,
+    const firstTarget = candidates[0];
+    if (firstTarget) {
+      const noOpPath = path.join(sandboxDir, firstTarget.file);
+      const orig = fs.readFileSync(noOpPath, "utf8");
+      fs.writeFileSync(noOpPath, `${orig}\n`, "utf8");
+      const noOpRun = spawnSync(options.testCmd, [], {
+        cwd: sandboxDir,
         shell: true,
         encoding: "utf8",
         timeout: 45_000,
       });
-      const combined = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
-      if (res.signal === "SIGTERM" || res.error) {
-        invalidKills += 1;
-      } else if (res.status !== 0) {
-        if (COMPILE_OR_RUNTIME_CRASH.test(combined)) {
-          invalidKills += 1;
-        } else {
-          killed += 1;
-        }
-      } else {
-        survivors.push({
-          file: mutant.file,
-          line: mutant.line,
-          operator: mutant.operator,
-          original: mutant.original,
-          mutated: mutant.mutated,
-        });
+      fs.writeFileSync(noOpPath, orig, "utf8");
+      if (noOpRun.status !== 0) {
+        return {
+          totalMutants: candidates.length,
+          killedMutants: 0,
+          survivedMutants: candidates.length,
+          invalidKills: candidates.length,
+          killRate: 0,
+          minKillRate,
+          passed: false,
+          survivors: [],
+        };
       }
-    } finally {
-      fs.writeFileSync(mutant.absPath, originalBytes, "utf8");
     }
+
+    let killed = 0;
+    let invalidKills = 0;
+    const survivors: PlantedFaultSurvivor[] = [];
+
+    for (const mutant of candidates) {
+      const mutantPath = path.join(sandboxDir, mutant.file);
+      const originalBytes = fs.readFileSync(mutantPath, "utf8");
+      const replacementOp = mutant.operator.split(" -> ")[1] ?? mutant.mutated;
+      const mutatedSource = `${originalBytes.slice(0, mutant.start)}${replacementOp}${originalBytes.slice(mutant.end)}`;
+      if (/\.[cm]?[jt]sx?$/.test(mutant.file) && parseSync(mutant.file, mutatedSource).errors.length > 0) {
+        invalidKills += 1;
+        continue;
+      }
+
+      try {
+        fs.writeFileSync(mutantPath, mutatedSource, "utf8");
+        const res = spawnSync(options.testCmd, [], {
+          cwd: sandboxDir,
+          shell: true,
+          encoding: "utf8",
+          timeout: mutantTimeoutMs,
+        });
+        const combined = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
+        const timedOut = res.signal === "SIGTERM" || (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+        if (timedOut) {
+          killed += 1;
+        } else if (res.error) {
+          invalidKills += 1;
+        } else if (res.status !== 0) {
+          if (COMPILE_OR_RUNTIME_CRASH.test(combined)) {
+            invalidKills += 1;
+          } else {
+            killed += 1;
+          }
+        } else {
+          survivors.push({
+            file: mutant.file,
+            line: mutant.line,
+            operator: mutant.operator,
+            original: mutant.original,
+            mutated: mutant.mutated,
+          });
+        }
+      } finally {
+        fs.writeFileSync(mutantPath, originalBytes, "utf8");
+      }
+    }
+
+    const killRate = Number((killed / candidates.length).toFixed(4));
+    const passed = killed > 0 && invalidKills === 0 && killRate >= minKillRate;
+
+    return {
+      totalMutants: candidates.length,
+      killedMutants: killed,
+      survivedMutants: survivors.length,
+      invalidKills,
+      killRate,
+      minKillRate,
+      passed,
+      survivors,
+    };
+  } finally {
+    fs.rmSync(sandboxDir, { recursive: true, force: true });
   }
-
-  const effectiveTotal = Math.max(1, candidates.length - invalidKills);
-  const killRate = Number((killed / effectiveTotal).toFixed(4));
-  const passed = killed > 0 && killRate >= minKillRate;
-
-  return {
-    totalMutants: candidates.length,
-    killedMutants: killed,
-    survivedMutants: survivors.length,
-    invalidKills,
-    killRate,
-    minKillRate,
-    passed,
-    survivors,
-  };
 }

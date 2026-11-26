@@ -70,9 +70,13 @@ function tokenizeBoolExpr(expr: string): BoolToken[] {
 
 function evalBoolTokens(tokens: readonly BoolToken[], env: Readonly<Record<string, boolean>>): boolean {
   let pos = 0;
+  const isOp = (val: "AND" | "OR" | "NOT"): boolean => {
+    const cur = tokens[pos];
+    return cur?.kind === "op" && cur.value === val;
+  };
   const parseOr = (): boolean => {
     let left = parseAnd();
-    while (tokens[pos]?.kind === "op" && tokens[pos]?.value === "OR") {
+    while (isOp("OR")) {
       pos += 1;
       const right = parseAnd();
       left = left || right;
@@ -81,7 +85,7 @@ function evalBoolTokens(tokens: readonly BoolToken[], env: Readonly<Record<strin
   };
   const parseAnd = (): boolean => {
     let left = parseNot();
-    while (tokens[pos]?.kind === "op" && tokens[pos]?.value === "AND") {
+    while (isOp("AND")) {
       pos += 1;
       const right = parseNot();
       left = left && right;
@@ -89,7 +93,7 @@ function evalBoolTokens(tokens: readonly BoolToken[], env: Readonly<Record<strin
     return left;
   };
   const parseNot = (): boolean => {
-    if (tokens[pos]?.kind === "op" && tokens[pos]?.value === "NOT") {
+    if (isOp("NOT")) {
       pos += 1;
       return !parseNot();
     }

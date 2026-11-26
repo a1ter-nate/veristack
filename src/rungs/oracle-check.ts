@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isTestFilePath } from "../discover.ts";
 
 export interface TwoSidedOracleResult {
   passed: boolean;
@@ -12,15 +13,92 @@ export interface TwoSidedOracleResult {
   reason: string;
 }
 
+const ORACLE_CONFIG_SURFACE =
+  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|pyproject\.toml|pytest\.ini|(?:vitest|jest|playwright)\.config\.[cm]?[jt]s|conftest\.py)$|__snapshots__\/.*\.snap$/i;
+
+function isOracleSurface(rel: string): boolean {
+  return isTestFilePath(rel) || ORACLE_CONFIG_SURFACE.test(rel);
+}
+
+function loadBaseApprovedBehaviorChanges(repoRoot: string, baseRef: string): Set<string> {
+  const approved = new Set<string>();
+  const baseShow = spawnSync("git", ["-C", repoRoot, "show", `${baseRef}:.verification/behavior-changes.json`], {
+    encoding: "utf8",
+  });
+  if (baseShow.status !== 0) return approved;
+  try {
+    const parsed = JSON.parse(baseShow.stdout) as {
+      changes?: Array<{ file?: string; reason?: string; approvedBy?: string }>;
+    };
+    if (!Array.isArray(parsed.changes)) return approved;
+    for (const c of parsed.changes) {
+      if (
+        typeof c.file === "string" &&
+        c.file.trim().length > 0 &&
+        typeof c.reason === "string" &&
+        c.reason.trim().length >= 8 &&
+        typeof c.approvedBy === "string" &&
+        c.approvedBy.startsWith("@")
+      ) {
+        approved.add(c.file.trim());
+      }
+    }
+  } catch {
+    return approved;
+  }
+  return approved;
+}
+
+function copyWorkingTreeToSandbox(repoRoot: string): string {
+  const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oracle-"));
+  const skipTop = new Set([".git", "node_modules", ".venv", "venv", "target", "dist"]);
+  for (const entry of fs.readdirSync(repoRoot, { withFileTypes: true })) {
+    if (entry.name === ".git") continue;
+    const src = path.join(repoRoot, entry.name);
+    const dst = path.join(sandboxDir, entry.name);
+    if (skipTop.has(entry.name)) {
+      if (entry.name === "node_modules" || entry.name === ".venv" || entry.name === "venv") {
+        try {
+          fs.symlinkSync(src, dst);
+        } catch {
+          continue;
+        }
+      }
+      continue;
+    }
+    fs.cpSync(src, dst, { recursive: true, dereference: false });
+  }
+  return sandboxDir;
+}
+
 export function runTwoSidedOracleCheck(
   repoPath: string,
   baseRef: string,
   testCmd: string,
 ): TwoSidedOracleResult {
   if (!baseRef || baseRef.startsWith("-")) {
-    throw new Error(`Invalid git baseRef "${baseRef}".`);
+    return {
+      passed: false,
+      baseRef: baseRef || "<missing>",
+      baseTestsOnHeadCodeExit: -1,
+      headTestsOnHeadCodeExit: -1,
+      declaredBehaviorChange: false,
+      reason: `Invalid or missing --base ref '${baseRef}'.`,
+    };
   }
   const root = path.resolve(repoPath);
+  const revCheck = spawnSync("git", ["-C", root, "rev-parse", "--verify", `${baseRef}^{commit}`], { encoding: "utf8" });
+  if (revCheck.status !== 0) {
+    return {
+      passed: false,
+      baseRef,
+      baseTestsOnHeadCodeExit: -1,
+      headTestsOnHeadCodeExit: -1,
+      declaredBehaviorChange: false,
+      reason: `git rev-parse failed for base ref '${baseRef}' — failing closed.`,
+    };
+  }
+
   const headRun = spawnSync(testCmd, [], { cwd: root, shell: true, encoding: "utf8", timeout: 120_000 });
   const headExit = headRun.status ?? 1;
   if (headExit !== 0) {
@@ -34,93 +112,82 @@ export function runTwoSidedOracleCheck(
     };
   }
 
-  const diffFiles = spawnSync("git", ["diff", "--name-only", baseRef, "--"], { cwd: root, encoding: "utf8" });
-  const testPattern = /(?:^|\/)(?:tests?|__tests__|spec)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.(?:py|rs|go)$|Tests?\.cs$/i;
-  const changedTestFiles = (diffFiles.stdout ?? "")
+  const diffFiles = spawnSync("git", ["-C", root, "diff", "--no-renames", "--name-only", baseRef, "--"], {
+    encoding: "utf8",
+  });
+  if (diffFiles.status !== 0) {
+    return {
+      passed: false,
+      baseRef,
+      baseTestsOnHeadCodeExit: -1,
+      headTestsOnHeadCodeExit: headExit,
+      declaredBehaviorChange: false,
+      reason: `git diff against '${baseRef}' failed — failing closed.`,
+    };
+  }
+
+  const changedOracleFiles = (diffFiles.stdout ?? "")
     .split(/\r?\n/)
     .map((s) => s.trim())
-    .filter((s) => s && testPattern.test(s));
+    .filter((s) => s && isOracleSurface(s));
 
-  if (changedTestFiles.length === 0) {
+  if (changedOracleFiles.length === 0) {
     return {
       passed: true,
       baseRef,
       baseTestsOnHeadCodeExit: 0,
       headTestsOnHeadCodeExit: 0,
       declaredBehaviorChange: false,
-      reason: "No existing test files modified; head suite passes.",
+      reason: "No existing test files or test runner configs modified; head suite passes.",
     };
   }
 
-  const behaviorChangesPath = path.join(root, ".verification", "behavior-changes.json");
-  let declaredBehaviorChange = false;
-  if (fs.existsSync(behaviorChangesPath)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(behaviorChangesPath, "utf8")) as { changes?: unknown[] };
-      declaredBehaviorChange = Array.isArray(parsed.changes) && parsed.changes.length > 0;
-    } catch {
-      declaredBehaviorChange = false;
-    }
-  }
+  const approvedFiles = loadBaseApprovedBehaviorChanges(root, baseRef);
+  const allApproved = changedOracleFiles.every((f) => approvedFiles.has(f));
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oracle-"));
-  const worktreeDir = path.join(tmpDir, "head-with-base-tests");
+  const sandboxDir = copyWorkingTreeToSandbox(root);
   try {
-    const addWt = spawnSync("git", ["worktree", "add", "--detach", worktreeDir, "HEAD"], {
-      cwd: root,
-      encoding: "utf8",
-    });
-    if (addWt.status !== 0) {
-      return {
-        passed: false,
-        baseRef,
-        baseTestsOnHeadCodeExit: -1,
-        headTestsOnHeadCodeExit: headExit,
-        declaredBehaviorChange,
-        reason: `Failed to create oracle worktree: ${(addWt.stderr ?? "").trim()}`,
-      };
-    }
-
-    let restoredAnyBaseTest = false;
-    for (const rel of changedTestFiles) {
+    let restoredAnyBaseOracle = false;
+    for (const rel of changedOracleFiles) {
       const baseContent = spawnSync("git", ["-C", root, "show", `${baseRef}:${rel}`], { encoding: "utf8" });
+      const dest = path.resolve(sandboxDir, rel);
       if (baseContent.status === 0) {
-        const dest = path.resolve(worktreeDir, rel);
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.writeFileSync(dest, baseContent.stdout, "utf8");
-        restoredAnyBaseTest = true;
+        restoredAnyBaseOracle = true;
+      } else if (fs.existsSync(dest)) {
+        fs.rmSync(dest, { force: true });
       }
     }
 
-    if (!restoredAnyBaseTest) {
+    if (!restoredAnyBaseOracle) {
       return {
         passed: true,
         baseRef,
         baseTestsOnHeadCodeExit: 0,
         headTestsOnHeadCodeExit: 0,
-        declaredBehaviorChange,
+        declaredBehaviorChange: false,
         reason: "Only newly added test files in diff; base oracle preserved.",
       };
     }
 
-    const baseOnHead = spawnSync(testCmd, [], { cwd: worktreeDir, shell: true, encoding: "utf8", timeout: 120_000 });
+    const baseOnHead = spawnSync(testCmd, [], { cwd: sandboxDir, shell: true, encoding: "utf8", timeout: 120_000 });
     const baseExit = baseOnHead.status ?? 1;
-    const passed = baseExit === 0 || declaredBehaviorChange;
+    const passed = baseExit === 0 || allApproved;
     return {
       passed,
       baseRef,
       baseTestsOnHeadCodeExit: baseExit,
       headTestsOnHeadCodeExit: headExit,
-      declaredBehaviorChange,
+      declaredBehaviorChange: allApproved,
       reason:
         baseExit === 0
-          ? "Two-sided oracle PASS: base test suite still passes against head code."
-          : declaredBehaviorChange
-            ? "Two-sided oracle PASS: base tests failed against head code, explicitly approved in .verification/behavior-changes.json."
-            : `ORACLE REWRITE DETECTED: base tests from ${baseRef} fail against head code (exit ${baseExit}) without an owner-approved .verification/behavior-changes.json entry.`,
+          ? "Two-sided oracle PASS: base tests and runner config still pass against working-tree code."
+          : allApproved
+            ? "Two-sided oracle PASS: base-ref .verification/behavior-changes.json explicitly approves modified oracle files."
+            : `ORACLE REWRITE DETECTED: base tests/configs from ${baseRef} fail against working-tree code (exit ${baseExit}) without base-approved .verification/behavior-changes.json entries for [${changedOracleFiles.join(", ")}].`,
     };
   } finally {
-    spawnSync("git", ["worktree", "remove", "--force", worktreeDir], { cwd: root, encoding: "utf8" });
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(sandboxDir, { recursive: true, force: true });
   }
 }

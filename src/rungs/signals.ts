@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ScannedFile } from "../discover.ts";
 import type { CiExecutionSignals, Language, ToolSignals } from "../types.ts";
 import { isHostRepoFile } from "./manifest.ts";
-import { auditCodeownersPerimeter, parseGitHubWorkflow } from "./workflow-audit.ts";
+import { auditCodeownersPerimeter, parseGitHubWorkflow, sanitizeShellBlock } from "./workflow-audit.ts";
 
 const MANIFEST_BASENAMES = new Set([
   "package.json",
@@ -63,13 +63,6 @@ function parsePackageScripts(files: readonly ScannedFile[]): Map<string, string>
   return scripts;
 }
 
-function sanitizePackageScript(cmd: string): string {
-  const trimmed = cmd.trim();
-  if (/^(?:echo|printf|true|:)\b/.test(trimmed)) return "";
-  if (/\|\|\s*(?:true|:)\s*$/.test(trimmed)) return "";
-  return trimmed;
-}
-
 function collectReferencedScriptNames(text: string): string[] {
   const names: string[] = [];
   const runRe = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([a-zA-Z0-9:_-]+)/g;
@@ -102,13 +95,10 @@ function buildActivePrCiText(files: readonly ScannedFile[]): {
       activeWorkflowFiles.push(wf.rel);
       chunks.push(...info.activeCommands);
     } else {
-      const nonCommentLines = wf.content
-        .split(/\r?\n/)
-        .map((l) => l.replace(/^\s*#.*$/, "").trim())
-        .filter((l) => l && !/^(?:echo|printf|true|:)\b/.test(l));
-      if (nonCommentLines.length > 0) {
+      const lines = sanitizeShellBlock(wf.content);
+      if (lines.length > 0) {
         activeWorkflowFiles.push(wf.rel);
-        chunks.push(...nonCommentLines);
+        chunks.push(...lines);
       }
     }
   }
@@ -128,10 +118,11 @@ function buildActivePrCiText(files: readonly ScannedFile[]): {
       visitedScripts.add(name);
       const rawBody = pkgScripts.get(name);
       if (!rawBody) continue;
-      const body = sanitizePackageScript(rawBody);
-      if (body) {
-        chunks.push(body);
-        nextChunks.push(body);
+      const bodyLines = sanitizeShellBlock(rawBody);
+      if (bodyLines.length > 0) {
+        const joined = bodyLines.join("\n");
+        chunks.push(joined);
+        nextChunks.push(joined);
       }
     }
     if (nextChunks.length === 0) break;
@@ -193,11 +184,25 @@ function hasStrictTypesForLanguages(
   const needsTs = languages.includes("typescript");
   const needsCs = languages.includes("csharp");
   const needsPy = languages.includes("python");
+  const needsRust = languages.includes("rust");
+  const needsGo = languages.includes("go");
   if (needsTs && !/"strict"\s*:\s*true/.test(configText)) return false;
   if (needsCs && !/<Nullable>enable<\/Nullable>/i.test(manifestAndConfig)) return false;
-  if (needsPy && !/\b(?:mypy|pyright)\b/i.test(`${configText}\n${effectiveCiText}`)) return false;
-  if (needsTs || needsCs || needsPy) return true;
-  return languages.includes("rust") || languages.includes("go");
+  if (
+    needsPy &&
+    !/\bstrict\s*=\s*true\b|"typeCheckingMode"\s*:\s*"strict"|\bmypy\b[^\n]*--strict|\bpyright\b/i.test(
+      `${configText}\n${effectiveCiText}`,
+    )
+  ) {
+    return false;
+  }
+  if (needsRust && !/\b(?:unsafe_code|clippy|warnings\s*=\s*"deny")\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`)) {
+    return false;
+  }
+  if (needsGo && !/\b(?:go\s+vet|golangci-lint)\b/i.test(`${configText}\n${effectiveCiText}`)) {
+    return false;
+  }
+  return needsTs || needsCs || needsPy || needsRust || needsGo;
 }
 
 export function extractSignals(
@@ -255,17 +260,13 @@ export function extractSignals(
 
   const hasAntiSlop =
     /\b(?:anti-slop|dmmulroy\/anti-slop|VStack\.Analyzers)\b/i.test(configText) ||
-    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines)\b/i.test(effectiveCiText) ||
-    hasHostPath(/(?:^|\/)lint\/index\.mjs$/);
+    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines)\b/i.test(effectiveCiText);
 
   const hasLandmines =
     /@interfere\/landmines|landmines-testing|\blandmines\//i.test(configText) ||
-    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+scan\b/i.test(effectiveCiText) ||
-    hasHostPath(/(?:^|\/)lint\/index\.mjs$/);
+    /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+scan\b/i.test(effectiveCiText);
 
-  const hasGoInternal =
-    /\boxlint-plugin-go-internal\b/i.test(configText) || hasHostPath(/(?:^|\/)lint\/index\.mjs$/);
-
+  const hasGoInternal = /\boxlint-plugin-go-internal\b/i.test(configText);
   const hasDeslopPlease = hasHostPath(/\.deslop-please\.allow/) || /\bdeslop-please\b/i.test(configAndCi);
   const hasDesloppify = /\bdesloppify\b/i.test(configAndCi);
 
@@ -294,16 +295,15 @@ export function extractSignals(
   const hasReviewMd = hasHostPath(/(?:^|\/)review\.md$/);
   const hasAgentsMd = hasHostPath(/(?:^|\/)(?:agents|claude)\.md$/);
 
-  const hasRealPbtCall =
-    /\b(?:fc\.property\s*\(|fc\.asyncProperty\s*\(|proptest!\s*\{|@given\s*\(|\[Property\b|runSeededProperty\s*\()/m.test(
+  const hasPbt =
+    /(?:\bfc\.property\s*\(|\bfc\.asyncProperty\s*\(|\bproptest!\s*\{|@given\s*\(|\[Property\b|\brapid\.Check\s*\(|\bquick\.Check\s*\()/m.test(
       codeTestText,
     );
-  const hasPbt = hasRealPbtCall;
 
   const hasNonEmptyFcCommands = /\bfc\.commands\s*\(\s*\[(?!\s*\])/.test(codeTestText);
   const hasMbt =
     hasNonEmptyFcCommands ||
-    /\b(?:RuleBasedStateMachine|FsCheck\.Experimental|proptest_state_machine|ReferenceStateMachine|state_machine_test!|runStatefulModelCheck\s*\()\b/.test(
+    /\b(?:RuleBasedStateMachine|FsCheck\.Experimental|proptest_state_machine|ReferenceStateMachine|state_machine_test!|rapid\.StateMachine)\b/.test(
       codeTestText,
     ) ||
     /\bstateright\b/i.test(testImportLines);
@@ -339,7 +339,7 @@ export function extractSignals(
   const hasMutationTool =
     hasValidStrykerConfig(hostFiles) ||
     hasHostPath(/(?:^|\/)(?:mutants\.toml|stryker\.conf\.[cm]?[jt]s)$/) ||
-    /\b(?:@stryker-mutator|stryker\s+run|mutmut\s+run|cargo\s+mutants|pitest|(?:vstack(?:\.mjs)?|cli\.ts)\s+canary)\b/i.test(
+    /\b(?:@stryker-mutator|stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|go-mutesting|(?:vstack(?:\.mjs)?|cli\.ts)\s+canary)\b/i.test(
       configAndCi,
     );
 
@@ -362,7 +362,7 @@ export function extractSignals(
 
   const hasPerfOrLoadTool =
     hasHostPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js))$/) ||
-    /\b(?:k6\s+run|BenchmarkDotNet|criterion|pytest-benchmark|web-vitals|lighthouse|@lhci\/cli|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(
+    /\b(?:k6\s+run|BenchmarkDotNet|criterion|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|web-vitals|lighthouse|@lhci\/cli|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(
       `${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`,
     );
 
@@ -380,7 +380,7 @@ export function extractSignals(
 
   const runsUnitTests =
     hasCiWorkflows &&
-    /\b(?:bun\s+test|vitest|jest|node\s+--test|mocha|ava|dotnet\s+test|cargo\s+test|pytest|go\s+test|phpunit|rspec)\b/i.test(
+    /\b(?:bun\s+test|vitest|jest|node\s+--test|mocha|ava|dotnet\s+test|cargo\s+(?:test|nextest)|pytest|go\s+test|phpunit|rspec|run-rung\s+(?:R2|all))\b/i.test(
       effectiveCiText,
     );
 
@@ -394,30 +394,30 @@ export function extractSignals(
       ),
     runsTypeOrStructureCheck:
       hasCiWorkflows &&
-      /\b(?:tsc\b|tsgo\b|bun\s+(?:run\s+)?build|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|go\s+(?:vet|build)|knip\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(
+      /\b(?:tsc\b|tsgo\b|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|go\s+(?:vet|build)|knip\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(
         effectiveCiText,
       ),
     runsUnitTests,
     runsBoundaryOrMbtTests:
       hasCiWorkflows &&
-      /\b(?:pact|storybook|test:contract|test:component|test:mbt|property-and-mbt|run-rung\s+(?:R3|all))\b/i.test(
+      /\b(?:pact|storybook|test:contract|test:component|test:mbt|dotnet\s+test[^\n]*--filter|pytest[^\n]*-m\b|cargo\s+(?:test|nextest)[^\n]*--test|go\s+test[^\n]*-race|run-rung\s+(?:R3|all))\b/i.test(
         effectiveCiText,
       ),
     runsIntegrationOrDbTests:
       hasCiWorkflows &&
-      /\b(?:testcontainers|test:int|test:integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|run-rung\s+(?:R4|all))\b/i.test(
+      /\b(?:testcontainers|test:int|test:integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|run-rung\s+(?:R4|all))\b/i.test(
         effectiveCiText,
       ),
     runsMutationOrFormal:
       hasCiWorkflows &&
-      (/\b(?:stryker\s+run|mutmut\s+run|cargo\s+mutants|pitest|quint\s+(?:verify|run)|dafny\s+verify|kani\b|formal-sync|chromatic|percy|argos|bombadil|run-rung\s+(?:R5|all))\b/i.test(
+      (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|run-rung\s+(?:R5|all))\b/i.test(
         effectiveCiText,
       ) ||
         /\bbend\b[^\n]*--check-only/i.test(effectiveCiText) ||
         /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText)),
     runsPerfOrBench:
       hasCiWorkflows &&
-      /\b(?:k6\s+run|BenchmarkDotNet|cargo\s+bench|pytest-benchmark|lighthouse|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(
+      /\b(?:k6\s+run|BenchmarkDotNet|cargo\s+bench|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*-bench|lighthouse|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(
         effectiveCiText,
       ),
     runsE2eTests:

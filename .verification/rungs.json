@@ -6,11 +6,11 @@
   ],
   "rungs": {
     "R0": {
-      "command": "bun run lint:no-comments && bun run lint:state-machines",
+      "command": "bunx oxlint -c .oxlintrc.json src tests && bun run lint:no-comments && bun run lint:state-machines",
       "required": true
     },
     "R1": {
-      "command": "bun run check:max-lines && bun run build",
+      "command": "bunx tsc --noEmit && bun run check:max-lines && bun run build",
       "required": true
     },
     "R2": {
@@ -18,13 +18,15 @@
       "required": true,
       "canary": {
         "enabled": true,
-        "testCommand": "bun test ./tests/no-comments.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/rung-coverage.test.ts",
+        "testCommand": "bun test ./tests/no-comments.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/rungs/council-redteam.test.ts ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts",
         "targets": [
           "src/ratchet.ts",
+          "src/no-comments.ts",
+          "src/rungs/reports.ts",
           "src/rungs/workflow-audit.ts"
         ],
-        "maxMutants": 6,
-        "minKillRate": 0.8
+        "maxMutants": 8,
+        "minKillRate": 0.75
       }
     },
     "R3": {
@@ -32,7 +34,7 @@
       "required": true
     },
     "R5": {
-      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test ./tests/no-comments.test.ts ./tests/rungs/property-and-mbt.test.ts\" --targets src/ratchet.ts --max-mutants 4 --min-kill-rate 0.75 --fail",
+      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test ./tests/rungs/property-and-mbt.test.ts ./tests/rungs/council-redteam.test.ts\" --targets src/rungs/reports.ts,src/ratchet.ts --max-mutants 4 --min-kill-rate 0.75 --fail",
       "required": true
     },
     "R6": {
