@@ -12,7 +12,7 @@ import {
   validateDossier,
 } from "../scripts/calibration/diff-dossier.ts";
 import { harvestRepoEvidence } from "../scripts/calibration/harvest.ts";
-import { scanRepo } from "../src/ladder.ts";
+import { scanRepo } from "@veristack/core";
 
 function makeTempRepo(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-cal-harness-"));

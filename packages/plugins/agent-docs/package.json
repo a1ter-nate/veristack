@@ -1,0 +1,11 @@
+{
+  "name": "@veristack/plugin-agent-docs",
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@veristack/plugin": "workspace:*"
+  }
+}

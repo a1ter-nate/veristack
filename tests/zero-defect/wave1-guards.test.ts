@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
-import { scanRepo } from "../../src/ladder.ts";
+import { scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
+import { scanRepo } from "@veristack/core";
 
 function withTempRepo(files: Record<string, string>, fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-wave1-"));

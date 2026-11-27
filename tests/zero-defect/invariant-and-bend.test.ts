@@ -5,13 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { auditDiffInvariantLoss, auditTsAstPredicateDrop, buildSyntheticRevertEvents } from "../../src/ast/invariant-loss.ts";
-import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
-import { discoverRepo } from "../../src/discover.ts";
-import { scanRepo } from "../../src/ladder.ts";
-import { runPrecisionBench } from "../../src/zero-defect/bench.ts";
-import { compareInvariantSnapshots, inferDynamicInvariants } from "../../src/zero-defect/daikon-invariants.ts";
-import { auditLaws } from "../../src/zero-defect/laws.ts";
+import { auditDiffInvariantLoss, auditTsAstPredicateDrop, buildSyntheticRevertEvents } from "@veristack/plugin-lang-typescript";
+import { scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
+import { discoverRepo } from "@veristack/core";
+import { scanRepo } from "@veristack/core";
+import { runPrecisionBench } from "@veristack/plugin-zero-defect";
+import { compareInvariantSnapshots, inferDynamicInvariants } from "@veristack/plugin-zero-defect";
+import { auditLaws } from "@veristack/plugin-laws-formal";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 

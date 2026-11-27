@@ -3,11 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
-import { discoverRepo } from "../../src/discover.ts";
-import { formatMarkdownReport as formatMarkdown, formatTerminalReport as formatTerminal } from "../../src/format.ts";
-import { scanRepo } from "../../src/ladder.ts";
-import { evaluateRatchet, type RatchetBaseline } from "../../src/ratchet.ts";
-import { countDirectRuntimeDependencies } from "../../src/tigerstyle/index.ts";
+import { discoverRepo } from "@veristack/core";
+import { formatMarkdownReport as formatMarkdown, formatTerminalReport as formatTerminal } from "@veristack/core";
+import { scanRepo } from "@veristack/core";
+import { evaluateRatchet, type RatchetBaseline } from "@veristack/core";
+import { countDirectRuntimeDependencies } from "@veristack/plugin-tigerstyle";
 
 function makeTempRepo(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-tiger-"));

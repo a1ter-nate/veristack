@@ -5,10 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { scanSingleFile } from "../../src/hooks/check-file.ts";
-import { runDoctor } from "../../src/hooks/doctor.ts";
-import { manageHooks } from "../../src/hooks/install.ts";
-import { executeHookEvent } from "../../src/hooks/runtime.ts";
+import "@veristack/core";
+import { scanSingleFile } from "@veristack/plugin-harnesses";
+import { runDoctor } from "@veristack/plugin-harnesses";
+import { manageHooks } from "@veristack/plugin-harnesses";
+import { executeHookEvent } from "@veristack/plugin-control-plane";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const binPath = path.join(repoRoot, "bin", "vstack.mjs");

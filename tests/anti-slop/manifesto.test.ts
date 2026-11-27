@@ -5,12 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { scanRepo } from "../../src/ladder.ts";
+import { scanRepo } from "@veristack/core";
 import {
   buildReviewBrief,
   formatReviewBriefMarkdown,
   formatReviewBriefTerminal,
-} from "../../src/anti-slop/review-brief.ts";
+} from "@veristack/plugin-review-brief";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const binPath = path.join(repoRoot, "bin", "vstack.mjs");

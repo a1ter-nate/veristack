@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { analyzeTsAstGuards, hasPathologicalNesting } from "../../src/ast/ts-ast.ts";
-import { executeHookEvent } from "../../src/hooks/runtime.ts";
-import { scanRepo } from "../../src/ladder.ts";
+import { analyzeTsAstGuards, hasPathologicalNesting } from "@veristack/plugin-lang-typescript";
+import { executeHookEvent } from "@veristack/plugin-control-plane";
+import { scanRepo } from "@veristack/core";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -49,8 +49,11 @@ test("gate-pin matrix: EVERY protected control-plane path and self-import closur
     "src/hooks/runtime.ts",
     "examples/go/manifest.json",
     "src/cli.ts",
-    "src/ast/ts-ast.ts",
-    "src/discover.ts",
+    "packages/core/src/discover.ts",
+    "packages/core/src/plugin/host.ts",
+    "packages/plugin/src/index.ts",
+    "packages/plugins/control-plane/src/runtime.ts",
+    "packages/plugins/lang-typescript/src/ts-ast.ts",
   ];
 
   for (const rel of protectedPaths) {

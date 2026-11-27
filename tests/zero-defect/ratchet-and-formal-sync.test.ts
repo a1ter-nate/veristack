@@ -4,11 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { auditCiWorkflows } from "../../src/ci-auditor.ts";
-import { discoverRepo, isTestFilePath } from "../../src/discover.ts";
-import { buildRatchetBaseline, evaluateRatchet, writeRatchetBaseline } from "../../src/ratchet.ts";
-import type { Finding } from "../../src/types.ts";
-import { auditFormalSync } from "../../src/zero-defect/formal-sync.ts";
+import { auditCiWorkflows } from "@veristack/plugin-ci-auditor";
+import { discoverRepo, isTestFilePath } from "@veristack/core";
+import { buildRatchetBaseline, evaluateRatchet, writeRatchetBaseline } from "@veristack/core";
+import type { Finding } from "@veristack/plugin";
+import { auditFormalSync } from "@veristack/plugin-laws-formal";
 
 function makeFinding(rule: string, severity: Finding["severity"] = "error"): Finding {
   return {

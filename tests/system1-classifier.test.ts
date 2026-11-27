@@ -4,8 +4,8 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildSystem1Packet, corroborateSystem1Batch } from "../src/system1-classifier.ts";
-import { runSystem1Provider } from "../src/system1-providers.ts";
+import { buildSystem1Packet, corroborateSystem1Batch } from "@veristack/plugin-circuits";
+import { runSystem1Provider } from "@veristack/plugin-circuits";
 
 test("System 1 classifier balances components, emits requests, and refuses to let a model override static facts", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-s1-"));

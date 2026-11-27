@@ -11,9 +11,212 @@
       },
       "devDependencies": {
         "@types/node": "^26.6.11",
+        "@veristack/core": "workspace:*",
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-agent-docs": "workspace:*",
+        "@veristack/plugin-anti-slop": "workspace:*",
+        "@veristack/plugin-canary": "workspace:*",
+        "@veristack/plugin-ci-auditor": "workspace:*",
+        "@veristack/plugin-circuits": "workspace:*",
+        "@veristack/plugin-control-plane": "workspace:*",
+        "@veristack/plugin-effect-v4": "workspace:*",
+        "@veristack/plugin-harnesses": "workspace:*",
+        "@veristack/plugin-lang-csharp": "workspace:*",
+        "@veristack/plugin-lang-go": "workspace:*",
+        "@veristack/plugin-lang-python": "workspace:*",
+        "@veristack/plugin-lang-rust": "workspace:*",
+        "@veristack/plugin-lang-typescript": "workspace:*",
+        "@veristack/plugin-laws-formal": "workspace:*",
+        "@veristack/plugin-review-brief": "workspace:*",
+        "@veristack/plugin-state-machines": "workspace:*",
+        "@veristack/plugin-tigerstyle": "workspace:*",
+        "@veristack/plugin-zero-defect": "workspace:*",
         "fast-check": "^4.11.0",
         "oxlint": "^1.95.0",
         "typescript": "^7.0.2",
+      },
+    },
+    "packages/core": {
+      "name": "@veristack/core",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-agent-docs": "workspace:*",
+        "@veristack/plugin-anti-slop": "workspace:*",
+        "@veristack/plugin-canary": "workspace:*",
+        "@veristack/plugin-ci-auditor": "workspace:*",
+        "@veristack/plugin-circuits": "workspace:*",
+        "@veristack/plugin-control-plane": "workspace:*",
+        "@veristack/plugin-effect-v4": "workspace:*",
+        "@veristack/plugin-harnesses": "workspace:*",
+        "@veristack/plugin-lang-csharp": "workspace:*",
+        "@veristack/plugin-lang-go": "workspace:*",
+        "@veristack/plugin-lang-python": "workspace:*",
+        "@veristack/plugin-lang-rust": "workspace:*",
+        "@veristack/plugin-lang-typescript": "workspace:*",
+        "@veristack/plugin-laws-formal": "workspace:*",
+        "@veristack/plugin-review-brief": "workspace:*",
+        "@veristack/plugin-state-machines": "workspace:*",
+        "@veristack/plugin-tigerstyle": "workspace:*",
+        "@veristack/plugin-zero-defect": "workspace:*",
+      },
+    },
+    "packages/plugin": {
+      "name": "@veristack/plugin",
+      "version": "0.1.1",
+    },
+    "packages/plugins/agent-docs": {
+      "name": "@veristack/plugin-agent-docs",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+      },
+    },
+    "packages/plugins/anti-slop": {
+      "name": "@veristack/plugin-anti-slop",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-lang-typescript": "workspace:*",
+        "@veristack/plugin-state-machines": "workspace:*",
+      },
+    },
+    "packages/plugins/canary": {
+      "name": "@veristack/plugin-canary",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-control-plane": "workspace:*",
+      },
+    },
+    "packages/plugins/ci-auditor": {
+      "name": "@veristack/plugin-ci-auditor",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-control-plane": "workspace:*",
+        "@veristack/plugin-lang-typescript": "workspace:*",
+      },
+    },
+    "packages/plugins/circuits": {
+      "name": "@veristack/plugin-circuits",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-anti-slop": "workspace:*",
+        "@veristack/plugin-ci-auditor": "workspace:*",
+        "@veristack/plugin-zero-defect": "workspace:*",
+      },
+    },
+    "packages/plugins/control-plane": {
+      "name": "@veristack/plugin-control-plane",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-lang-typescript": "workspace:*",
+      },
+    },
+    "packages/plugins/effect-v4": {
+      "name": "@veristack/plugin-effect-v4",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-tigerstyle": "workspace:*",
+      },
+    },
+    "packages/plugins/harnesses": {
+      "name": "@veristack/plugin-harnesses",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-agent-docs": "workspace:*",
+        "@veristack/plugin-anti-slop": "workspace:*",
+        "@veristack/plugin-ci-auditor": "workspace:*",
+        "@veristack/plugin-control-plane": "workspace:*",
+        "@veristack/plugin-lang-typescript": "workspace:*",
+        "@veristack/plugin-laws-formal": "workspace:*",
+        "@veristack/plugin-state-machines": "workspace:*",
+        "@veristack/plugin-zero-defect": "workspace:*",
+      },
+    },
+    "packages/plugins/lang-csharp": {
+      "name": "@veristack/plugin-lang-csharp",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+      },
+    },
+    "packages/plugins/lang-go": {
+      "name": "@veristack/plugin-lang-go",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+      },
+    },
+    "packages/plugins/lang-python": {
+      "name": "@veristack/plugin-lang-python",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+      },
+    },
+    "packages/plugins/lang-rust": {
+      "name": "@veristack/plugin-lang-rust",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+      },
+    },
+    "packages/plugins/lang-typescript": {
+      "name": "@veristack/plugin-lang-typescript",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+      },
+    },
+    "packages/plugins/laws-formal": {
+      "name": "@veristack/plugin-laws-formal",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-control-plane": "workspace:*",
+      },
+    },
+    "packages/plugins/review-brief": {
+      "name": "@veristack/plugin-review-brief",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-anti-slop": "workspace:*",
+        "@veristack/plugin-ci-auditor": "workspace:*",
+      },
+    },
+    "packages/plugins/state-machines": {
+      "name": "@veristack/plugin-state-machines",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-lang-csharp": "workspace:*",
+        "@veristack/plugin-lang-python": "workspace:*",
+        "@veristack/plugin-lang-rust": "workspace:*",
+      },
+    },
+    "packages/plugins/tigerstyle": {
+      "name": "@veristack/plugin-tigerstyle",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+      },
+    },
+    "packages/plugins/zero-defect": {
+      "name": "@veristack/plugin-zero-defect",
+      "version": "0.1.1",
+      "dependencies": {
+        "@veristack/plugin": "workspace:*",
+        "@veristack/plugin-canary": "workspace:*",
+        "@veristack/plugin-control-plane": "workspace:*",
+        "@veristack/plugin-lang-typescript": "workspace:*",
+        "@veristack/plugin-laws-formal": "workspace:*",
       },
     },
   },
@@ -137,6 +340,46 @@
     "@typescript/typescript-win32-arm64": ["@typescript/typescript-win32-arm64@7.0.2", "", { "os": "win32", "cpu": "arm64" }, "sha512-Gyl1Vy6OsWesLzmq+EP0Fb7b4Nid5232AvcA2SFcdYreldpNtYFFofPjnt62y9hQy7VTaZp65ICJjuAQRaVcIQ=="],
 
     "@typescript/typescript-win32-x64": ["@typescript/typescript-win32-x64@7.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g=="],
+
+    "@veristack/core": ["@veristack/core@workspace:packages/core"],
+
+    "@veristack/plugin": ["@veristack/plugin@workspace:packages/plugin"],
+
+    "@veristack/plugin-agent-docs": ["@veristack/plugin-agent-docs@workspace:packages/plugins/agent-docs"],
+
+    "@veristack/plugin-anti-slop": ["@veristack/plugin-anti-slop@workspace:packages/plugins/anti-slop"],
+
+    "@veristack/plugin-canary": ["@veristack/plugin-canary@workspace:packages/plugins/canary"],
+
+    "@veristack/plugin-ci-auditor": ["@veristack/plugin-ci-auditor@workspace:packages/plugins/ci-auditor"],
+
+    "@veristack/plugin-circuits": ["@veristack/plugin-circuits@workspace:packages/plugins/circuits"],
+
+    "@veristack/plugin-control-plane": ["@veristack/plugin-control-plane@workspace:packages/plugins/control-plane"],
+
+    "@veristack/plugin-effect-v4": ["@veristack/plugin-effect-v4@workspace:packages/plugins/effect-v4"],
+
+    "@veristack/plugin-harnesses": ["@veristack/plugin-harnesses@workspace:packages/plugins/harnesses"],
+
+    "@veristack/plugin-lang-csharp": ["@veristack/plugin-lang-csharp@workspace:packages/plugins/lang-csharp"],
+
+    "@veristack/plugin-lang-go": ["@veristack/plugin-lang-go@workspace:packages/plugins/lang-go"],
+
+    "@veristack/plugin-lang-python": ["@veristack/plugin-lang-python@workspace:packages/plugins/lang-python"],
+
+    "@veristack/plugin-lang-rust": ["@veristack/plugin-lang-rust@workspace:packages/plugins/lang-rust"],
+
+    "@veristack/plugin-lang-typescript": ["@veristack/plugin-lang-typescript@workspace:packages/plugins/lang-typescript"],
+
+    "@veristack/plugin-laws-formal": ["@veristack/plugin-laws-formal@workspace:packages/plugins/laws-formal"],
+
+    "@veristack/plugin-review-brief": ["@veristack/plugin-review-brief@workspace:packages/plugins/review-brief"],
+
+    "@veristack/plugin-state-machines": ["@veristack/plugin-state-machines@workspace:packages/plugins/state-machines"],
+
+    "@veristack/plugin-tigerstyle": ["@veristack/plugin-tigerstyle@workspace:packages/plugins/tigerstyle"],
+
+    "@veristack/plugin-zero-defect": ["@veristack/plugin-zero-defect@workspace:packages/plugins/zero-defect"],
 
     "fast-check": ["fast-check@4.11.0", "", { "dependencies": { "pure-rand": "^8.0.0" } }, "sha512-V4Uc238rhQOdQlc+Gz7JG6SGBtrWnWL8d/6RyiBeCMcNKMhF6DZ0KkAVHJSyNV5r4lA0PmIpZ6iRpTVoz4qjoA=="],
 

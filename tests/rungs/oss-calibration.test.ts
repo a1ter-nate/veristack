@@ -5,11 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { discoverRepo } from "../../src/discover.ts";
-import { runDoctor } from "../../src/hooks/doctor.ts";
-import { scanRepo } from "../../src/ladder.ts";
-import { parseAndValidateCommandArgv } from "../../src/rungs/command-audit.ts";
-import { parseGitHubWorkflow } from "../../src/rungs/workflow-audit.ts";
+import { discoverRepo } from "@veristack/core";
+import { runDoctor } from "@veristack/plugin-harnesses";
+import { scanRepo } from "@veristack/core";
+import { parseAndValidateCommandArgv } from "@veristack/plugin-control-plane";
+import { parseGitHubWorkflow } from "@veristack/plugin-ci-auditor";
 
 const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "cli.ts");
 

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import veristackLintPlugin from "../../lint/index.mjs";
-import { scanRepo } from "../../src/ladder.ts";
+import { scanRepo } from "@veristack/core";
 
 test("Bend 2 universal laws enforce monotonic terminals, saturating math, zero-cap clamping, codec symmetry, and unwind across TS, C#, Rust, Python, and Go", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-bend-laws-"));

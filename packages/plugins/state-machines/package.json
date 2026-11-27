@@ -1,0 +1,14 @@
+{
+  "name": "@veristack/plugin-state-machines",
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@veristack/plugin": "workspace:*",
+    "@veristack/plugin-lang-csharp": "workspace:*",
+    "@veristack/plugin-lang-rust": "workspace:*",
+    "@veristack/plugin-lang-python": "workspace:*"
+  }
+}

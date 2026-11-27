@@ -1,0 +1,29 @@
+{
+  "name": "@veristack/core",
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@veristack/plugin": "workspace:*",
+    "@veristack/plugin-agent-docs": "workspace:*",
+    "@veristack/plugin-anti-slop": "workspace:*",
+    "@veristack/plugin-canary": "workspace:*",
+    "@veristack/plugin-ci-auditor": "workspace:*",
+    "@veristack/plugin-circuits": "workspace:*",
+    "@veristack/plugin-control-plane": "workspace:*",
+    "@veristack/plugin-effect-v4": "workspace:*",
+    "@veristack/plugin-harnesses": "workspace:*",
+    "@veristack/plugin-lang-csharp": "workspace:*",
+    "@veristack/plugin-lang-go": "workspace:*",
+    "@veristack/plugin-lang-python": "workspace:*",
+    "@veristack/plugin-lang-rust": "workspace:*",
+    "@veristack/plugin-lang-typescript": "workspace:*",
+    "@veristack/plugin-laws-formal": "workspace:*",
+    "@veristack/plugin-review-brief": "workspace:*",
+    "@veristack/plugin-state-machines": "workspace:*",
+    "@veristack/plugin-tigerstyle": "workspace:*",
+    "@veristack/plugin-zero-defect": "workspace:*"
+  }
+}

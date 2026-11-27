@@ -3,10 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { discoverRepo } from "../../src/discover.ts";
-import { scanRepo } from "../../src/ladder.ts";
-import { auditDiffAntiEvasion } from "../../src/zero-defect/anti-evasion.ts";
-import { auditLaws } from "../../src/zero-defect/laws.ts";
+import { discoverRepo } from "@veristack/core";
+import { scanRepo } from "@veristack/core";
+import { auditDiffAntiEvasion } from "@veristack/plugin-control-plane";
+import { auditLaws } from "@veristack/plugin-laws-formal";
 
 function withTempRepo(files: Record<string, string>, fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-blackhole-"));

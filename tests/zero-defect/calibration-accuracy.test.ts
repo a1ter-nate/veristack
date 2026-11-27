@@ -3,11 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { discoverRepo, isTestFilePath } from "../../src/discover.ts";
-import { analyzeProdZeroDefectRules } from "../../src/prod-guards.ts";
-import { analyzeStateMachines } from "../../src/state-machines/index.ts";
-import { analyzeTests } from "../../src/test-analyzer.ts";
-import { analyzePerfHygiene } from "../../src/zero-defect/perf-lints.ts";
+import { discoverRepo, isTestFilePath, scanRepo } from "@veristack/core";
+import { analyzeStateMachines } from "@veristack/plugin-state-machines";
+import { analyzeTests } from "@veristack/plugin-anti-slop";
+import { analyzePerfHygiene } from "@veristack/plugin-zero-defect";
 
 function withTempRepo(files: Record<string, string>, fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-cal-"));
@@ -121,7 +120,7 @@ test("discovery recognizes hyphenated Python tests, skips minified bundles & arc
       const repo = discoverRepo(dir);
       assert.equal(repo.files.some((f) => f.rel === "src/vendor/runtime.js"), false);
       assert.equal(repo.files.some((f) => f.rel.startsWith("docs/research/")), false);
-      const zd = analyzeProdZeroDefectRules(repo);
+      const zd = scanRepo(dir).findings.filter((f) => f.file === "src/poller.py" && f.rule === "unbounded-loop-risk");
       assert.equal(zd.length, 0);
     },
   );

@@ -10,10 +10,10 @@ import {
   type InstructionRuleInput,
   type PrRiskInput,
   type TestTriageInput,
-} from "../src/circuits/catalog.ts";
-import { runCircuit, type System1DecisionEngine } from "../src/circuits/engine.ts";
-import { listDefaultCircuits } from "../src/circuits/index.ts";
-import type { System1ModelAnswer, System1Request } from "../src/types.ts";
+} from "@veristack/plugin-circuits";
+import { runCircuit, type System1DecisionEngine } from "@veristack/plugin-circuits";
+import { listDefaultCircuits } from "@veristack/plugin-circuits";
+import type { System1ModelAnswer, System1Request } from "@veristack/plugin";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "src", "cli.ts");

@@ -3,9 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { auditCiWorkflows } from "../src/ci-auditor.ts";
-import type { DiscoveredRepo } from "../src/discover.ts";
-import { analyzeTests } from "../src/test-analyzer.ts";
+import { auditCiWorkflows } from "@veristack/plugin-ci-auditor";
+import type { DiscoveredRepo } from "@veristack/core";
+import { analyzeTests } from "@veristack/plugin-anti-slop";
 
 interface TestCaseRow {
   name: string;

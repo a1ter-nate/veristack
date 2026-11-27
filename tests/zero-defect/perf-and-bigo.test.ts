@@ -5,11 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
-import { perfArchitectureAdvisorCircuit, type PerfAdvisorInput } from "../../src/circuits/catalog.ts";
-import { runCircuit, type System1DecisionEngine } from "../../src/circuits/engine.ts";
-import { scanRepo } from "../../src/ladder.ts";
-import { fitEmpiricalBigO, measureEmpiricalBigO } from "../../src/zero-defect/big-o.ts";
+import { scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
+import { perfArchitectureAdvisorCircuit, type PerfAdvisorInput } from "@veristack/plugin-circuits";
+import { runCircuit, type System1DecisionEngine } from "@veristack/plugin-circuits";
+import { scanRepo } from "@veristack/core";
+import { fitEmpiricalBigO, measureEmpiricalBigO } from "@veristack/plugin-zero-defect";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cliPath = path.join(repoRoot, "src", "cli.ts");

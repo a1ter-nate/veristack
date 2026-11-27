@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { resolveThreeBandDecision } from "../src/circuits/engine.ts";
-import { scanRepo } from "../src/ladder.ts";
-import type { System1ModelAnswer } from "../src/types.ts";
+import { resolveThreeBandDecision } from "@veristack/plugin-circuits";
+import { scanRepo } from "@veristack/core";
+import type { System1ModelAnswer } from "@veristack/plugin";
 
 test("exhaustive model check proves Circuit 3-band safety invariants across entire decision space", () => {
   const choices = ["BEHAVIOR", "CHANGE_DETECTOR", "TAUTOLOGY"] as const;

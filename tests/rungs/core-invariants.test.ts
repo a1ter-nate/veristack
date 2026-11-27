@@ -4,13 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { discoverRepo } from "../../src/discover.ts";
-import { lintNoComments } from "../../src/no-comments.ts";
-import { discoverWorkspaces } from "../../src/rungs/manifest.ts";
-import { insertSemanticNoOp, runPlantedFaultCanary } from "../../src/rungs/mutation-probe.ts";
-import { runTwoSidedOracleCheck } from "../../src/rungs/oracle-check.ts";
-import { runRungAndWriteReceipt } from "../../src/rungs/receipts.ts";
-import { evaluateBranchProtectionJson } from "../../src/rungs/workflow-audit.ts";
+import { discoverRepo } from "@veristack/core";
+import { lintNoComments } from "@veristack/plugin-anti-slop";
+import { discoverWorkspaces } from "@veristack/core";
+import { insertSemanticNoOp, runPlantedFaultCanary } from "@veristack/plugin-canary";
+import { runTwoSidedOracleCheck } from "@veristack/plugin-canary";
+import { runRungAndWriteReceipt } from "@veristack/plugin-canary";
+import { evaluateBranchProtectionJson } from "@veristack/plugin-ci-auditor";
 
 function withTempDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-core-inv-"));

@@ -1,0 +1,14 @@
+{
+  "name": "@veristack/plugin-circuits",
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@veristack/plugin": "workspace:*",
+    "@veristack/plugin-anti-slop": "workspace:*",
+    "@veristack/plugin-ci-auditor": "workspace:*",
+    "@veristack/plugin-zero-defect": "workspace:*"
+  }
+}

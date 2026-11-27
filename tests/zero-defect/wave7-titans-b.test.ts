@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { scanRepo } from "../../src/ladder.ts";
+import { scanRepo } from "@veristack/core";
 
 function withTempRepo(files: Record<string, string>, fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-wave7-"));

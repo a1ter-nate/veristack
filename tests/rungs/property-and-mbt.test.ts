@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fc from "fast-check";
-import { lintNoComments } from "../../src/no-comments.ts";
-import { buildRatchetBaseline, evaluateRatchet, type RatchetBaseline } from "../../src/ratchet.ts";
-import { computeCrapScore, reportParsers } from "../../src/rungs/reports.ts";
-import { parseGitHubWorkflow } from "../../src/rungs/workflow-audit.ts";
-import type { Finding, RungStatus } from "../../src/types.ts";
+import { lintNoComments } from "@veristack/plugin-anti-slop";
+import { buildRatchetBaseline, evaluateRatchet, type RatchetBaseline } from "@veristack/core";
+import { computeCrapScore, reportParsers } from "@veristack/plugin-canary";
+import { parseGitHubWorkflow } from "@veristack/plugin-ci-auditor";
+import type { Finding, RungStatus } from "@veristack/plugin";
 
 const { parseCoberturaXml, parseJunitOrTrx, parseLcov, parseStrykerJson } = reportParsers;
 

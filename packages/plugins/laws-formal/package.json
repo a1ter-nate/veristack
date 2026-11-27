@@ -1,0 +1,12 @@
+{
+  "name": "@veristack/plugin-laws-formal",
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@veristack/plugin": "workspace:*",
+    "@veristack/plugin-control-plane": "workspace:*"
+  }
+}

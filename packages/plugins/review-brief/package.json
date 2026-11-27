@@ -1,0 +1,13 @@
+{
+  "name": "@veristack/plugin-review-brief",
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@veristack/plugin": "workspace:*",
+    "@veristack/plugin-ci-auditor": "workspace:*",
+    "@veristack/plugin-anti-slop": "workspace:*"
+  }
+}

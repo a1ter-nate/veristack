@@ -1,11 +1,11 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { scanSingleFile } from "../src/hooks/check-file.ts";
-import { lintNoComments } from "../src/no-comments.ts";
-import { fitEmpiricalBigO } from "../src/zero-defect/big-o.ts";
+import { lintNoComments } from "@veristack/plugin-anti-slop";
+import { scanSingleFile } from "@veristack/plugin-harnesses";
+import { fitEmpiricalBigO } from "@veristack/plugin-zero-defect";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const targetFile = path.join(repoRoot, "src", "cli.ts");
+const targetFile = path.join(repoRoot, "packages", "core", "src", "cli.ts");
 
 const checkDurations = [];
 for (let i = 0; i < 5; i++) {

@@ -22,6 +22,11 @@
     "ci-gates",
     "oxc"
   ],
+  "workspaces": [
+    "packages/plugin",
+    "packages/core",
+    "packages/plugins/*"
+  ],
   "bin": {
     "vstack": "bin/vstack.mjs",
     "veristack": "bin/vstack.mjs"
@@ -29,6 +34,7 @@
   "files": [
     "bin/",
     "dist/",
+    "packages/",
     "lint/index.mjs",
     "lint/oxlint-no-comments.mjs",
     "lint/oxlint-explicit-state-machine.mjs",
@@ -37,6 +43,8 @@
     "README.md"
   ],
   "exports": {
+    "./plugin": "./packages/plugin/src/index.ts",
+    "./core": "./packages/core/src/index.ts",
     "./lint": "./lint/index.mjs",
     "./lint/no-comments": "./lint/oxlint-no-comments.mjs",
     "./lint/explicit-state-machine": "./lint/oxlint-explicit-state-machine.mjs"
@@ -49,7 +57,7 @@
     "scan": "bun src/cli.ts scan .",
     "scan:strict": "bun src/cli.ts verify . --strict",
     "typecheck": "bunx tsc --noEmit",
-    "lint:oxlint": "bunx oxlint -c .oxlintrc.json src tests",
+    "lint:oxlint": "bunx oxlint -c .oxlintrc.json packages src tests",
     "check:max-lines": "node scripts/check-max-lines.mjs",
     "perf:check": "bun scripts/check-perf-budget.mjs",
     "lint:no-comments": "bun src/cli.ts no-comments . --fail",
@@ -74,6 +82,26 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.11",
+    "@veristack/core": "workspace:*",
+    "@veristack/plugin": "workspace:*",
+    "@veristack/plugin-agent-docs": "workspace:*",
+    "@veristack/plugin-anti-slop": "workspace:*",
+    "@veristack/plugin-canary": "workspace:*",
+    "@veristack/plugin-ci-auditor": "workspace:*",
+    "@veristack/plugin-circuits": "workspace:*",
+    "@veristack/plugin-control-plane": "workspace:*",
+    "@veristack/plugin-effect-v4": "workspace:*",
+    "@veristack/plugin-harnesses": "workspace:*",
+    "@veristack/plugin-lang-csharp": "workspace:*",
+    "@veristack/plugin-lang-go": "workspace:*",
+    "@veristack/plugin-lang-python": "workspace:*",
+    "@veristack/plugin-lang-rust": "workspace:*",
+    "@veristack/plugin-lang-typescript": "workspace:*",
+    "@veristack/plugin-laws-formal": "workspace:*",
+    "@veristack/plugin-review-brief": "workspace:*",
+    "@veristack/plugin-state-machines": "workspace:*",
+    "@veristack/plugin-tigerstyle": "workspace:*",
+    "@veristack/plugin-zero-defect": "workspace:*",
     "fast-check": "^4.11.0",
     "oxlint": "^1.95.0",
     "typescript": "^7.0.2"

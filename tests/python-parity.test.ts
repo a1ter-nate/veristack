@@ -5,12 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { scanGitDiffCheats } from "../src/ci-auditor.ts";
-import type { ScannedFile } from "../src/discover.ts";
-import { scanRepo } from "../src/ladder.ts";
-import { lintNoComments } from "../src/no-comments.ts";
-import { lintImplicitStateMachinesInFile } from "../src/state-machines/index.ts";
-import { buildSystem1Packet } from "../src/system1-classifier.ts";
+import { scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
+import type { ScannedFile } from "@veristack/core";
+import { scanRepo } from "@veristack/core";
+import { lintNoComments } from "@veristack/plugin-anti-slop";
+import { lintImplicitStateMachinesInFile } from "@veristack/plugin-state-machines";
+import { buildSystem1Packet } from "@veristack/plugin-circuits";
 
 function fakePy(rel: string, content: string): ScannedFile {
   return {

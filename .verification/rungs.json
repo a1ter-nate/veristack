@@ -6,7 +6,7 @@
   ],
   "rungs": {
     "R0": {
-      "command": "bunx oxlint -c .oxlintrc.json src tests && bun run lint:no-comments && bun run lint:state-machines",
+      "command": "bunx oxlint -c .oxlintrc.json packages src tests && bun run lint:no-comments && bun run lint:state-machines",
       "required": true
     },
     "R1": {
@@ -20,28 +20,28 @@
         "enabled": true,
         "testCommand": "bun test --timeout 30000 ./tests/no-comments.test.ts ./tests/rungs/ ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts ./tests/anti-slop/fail-closed-contracts.test.ts ./tests/anti-slop/gate-pin-matrix.test.ts",
         "targets": [
-          "src/ratchet.ts",
-          "src/no-comments.ts",
-          "src/rungs/command-audit.ts",
-          "src/rungs/config-audit.ts",
-          "src/rungs/reports.ts",
-          "src/rungs/workflow-audit.ts",
-          "src/rungs/receipts.ts",
-          "src/rungs/manifest.ts",
-          "src/rungs/mutation-probe.ts",
-          "src/rungs/oracle-check.ts",
-          "src/hooks/runtime.ts"
+          "packages/core/src/ratchet.ts",
+          "packages/plugins/anti-slop/src/no-comments.ts",
+          "packages/plugins/control-plane/src/command-audit.ts",
+          "packages/plugins/control-plane/src/config-audit.ts",
+          "packages/plugins/canary/src/reports.ts",
+          "packages/plugins/ci-auditor/src/workflow-audit.ts",
+          "packages/plugins/canary/src/receipts.ts",
+          "packages/core/src/rungs/manifest.ts",
+          "packages/plugins/canary/src/mutation-probe.ts",
+          "packages/plugins/canary/src/oracle-check.ts",
+          "packages/plugins/control-plane/src/runtime.ts"
         ],
         "maxMutants": 18,
         "minKillRate": 0.75
       }
     },
     "R3": {
-      "command": "bun test --timeout 30000 ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts",
+      "command": "bun test --timeout 30000 ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts ./tests/plugin-architecture/ ./tests/packages/standalone-plugin-toggle.test.ts",
       "required": true
     },
     "R5": {
-      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test --timeout 30000 ./tests/rungs/\" --targets src/rungs/reports.ts,src/ratchet.ts,src/rungs/receipts.ts,src/rungs/manifest.ts --max-mutants 6 --min-kill-rate 0.75 --fail",
+      "command": "bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts canary . --test-cmd \"bun test --timeout 30000 ./tests/rungs/\" --targets packages/plugins/canary/src/reports.ts,packages/core/src/ratchet.ts,packages/plugins/canary/src/receipts.ts,packages/core/src/rungs/manifest.ts --max-mutants 6 --min-kill-rate 0.75 --fail",
       "required": true
     },
     "R6": {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lintNoComments } from "../src/no-comments.ts";
+import { lintNoComments } from "@veristack/plugin-anti-slop";
 
 test("rejects prose line and block comments in TypeScript", () => {
   const src = [

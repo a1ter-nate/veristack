@@ -3,17 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { discoverRepo } from "../../src/discover.ts";
-import { executeHookEvent, loadHookConfig } from "../../src/hooks/runtime.ts";
-import { classifyCanaryOutcome, isRetryableCanarySignal } from "../../src/rungs/canary-runner.ts";
-import { extractToolHead, parseAndValidateCommandArgv } from "../../src/rungs/command-audit.ts";
-import { auditRunnerConfigs, runGitClean } from "../../src/rungs/config-audit.ts";
-import { discoverWorkspaces, inferArchetypeFromFiles } from "../../src/rungs/manifest.ts";
-import { insertSemanticNoOp, runPlantedFaultCanary, runPlantedFaultCanaryAsync } from "../../src/rungs/mutation-probe.ts";
-import { runTwoSidedOracleCheck } from "../../src/rungs/oracle-check.ts";
-import { computeRepoTreeHash, runAllDeclaredRungsAsync, runRungAndWriteReceipt } from "../../src/rungs/receipts.ts";
-import { evaluateCrapForCoverageFile, parseStructuredReports, reportParsers } from "../../src/rungs/reports.ts";
-import { checkGitHubBranchProtection, evaluateBranchProtectionJson, globMatchesPath, parseGitHubWorkflow } from "../../src/rungs/workflow-audit.ts";
+import { discoverRepo } from "@veristack/core";
+import { executeHookEvent, loadHookConfig } from "@veristack/plugin-control-plane";
+import { classifyCanaryOutcome, isRetryableCanarySignal } from "@veristack/plugin-canary";
+import { extractToolHead, parseAndValidateCommandArgv } from "@veristack/plugin-control-plane";
+import { auditRunnerConfigs, runGitClean } from "@veristack/plugin-control-plane";
+import { discoverWorkspaces, inferArchetypeFromFiles } from "@veristack/core";
+import { insertSemanticNoOp, runPlantedFaultCanary, runPlantedFaultCanaryAsync } from "@veristack/plugin-canary";
+import { runTwoSidedOracleCheck } from "@veristack/plugin-canary";
+import { computeRepoTreeHash, runAllDeclaredRungsAsync, runRungAndWriteReceipt } from "@veristack/plugin-canary";
+import { evaluateCrapForCoverageFile, parseStructuredReports, reportParsers } from "@veristack/plugin-canary";
+import { checkGitHubBranchProtection, evaluateBranchProtectionJson, globMatchesPath, parseGitHubWorkflow } from "@veristack/plugin-ci-auditor";
 
 function withTempDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-mpin-"));

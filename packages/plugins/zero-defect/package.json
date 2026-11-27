@@ -1,0 +1,15 @@
+{
+  "name": "@veristack/plugin-zero-defect",
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@veristack/plugin": "workspace:*",
+    "@veristack/plugin-control-plane": "workspace:*",
+    "@veristack/plugin-canary": "workspace:*",
+    "@veristack/plugin-laws-formal": "workspace:*",
+    "@veristack/plugin-lang-typescript": "workspace:*"
+  }
+}

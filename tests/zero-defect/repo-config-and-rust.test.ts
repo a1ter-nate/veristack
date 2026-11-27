@@ -4,15 +4,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { analyzeWave5AiFirstGuards } from "../../src/ast/wave5-ai-first.ts";
-import { analyzeWave6TitansAGuards } from "../../src/ast/wave6-titans-a.ts";
-import { scanGitDiffCheats } from "../../src/ci-auditor.ts";
-import type { ScannedFile } from "../../src/discover.ts";
-import { scanRepo } from "../../src/ladder.ts";
-import { lintImplicitStateMachinesInFile } from "../../src/state-machines/index.ts";
-import { analyzeCveAndPostmortemGuards } from "../../src/zero-defect/cve-and-agent-guards.ts";
-import { analyzeOssGuards } from "../../src/zero-defect/oss-guards.ts";
-import { analyzeRuntimeGuards } from "../../src/zero-defect/runtime-guards.ts";
+import { analyzeWave5AiFirstGuards } from "@veristack/plugin-lang-typescript";
+import { analyzeWave6TitansAGuards } from "@veristack/plugin-lang-typescript";
+import { scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
+import type { ScannedFile } from "@veristack/core";
+import { scanRepo } from "@veristack/core";
+import { lintImplicitStateMachinesInFile } from "@veristack/plugin-state-machines";
+import { analyzeCveAndPostmortemGuards } from "@veristack/plugin-zero-defect";
+import { analyzeOssGuards } from "@veristack/plugin-zero-defect";
+import { analyzeRuntimeGuards } from "@veristack/plugin-zero-defect";
 
 function fakeFile(rel: string, content: string, language?: ScannedFile["language"]): ScannedFile {
   return {

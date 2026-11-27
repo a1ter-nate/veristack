@@ -5,19 +5,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { discoverRepo } from "../../src/discover.ts";
-import { executeHookEvent } from "../../src/hooks/runtime.ts";
-import { lintNoComments } from "../../src/no-comments.ts";
-import { buildRatchetBaseline, evaluateRatchet } from "../../src/ratchet.ts";
-import { parseAndValidateCommandArgv, runArgvChain } from "../../src/rungs/command-audit.ts";
-import { auditDeclaredArchetype, inferArchetypeFromFiles, loadRungManifest } from "../../src/rungs/manifest.ts";
-import { runTwoSidedOracleCheck } from "../../src/rungs/oracle-check.ts";
-import { loadValidReceipts, runRungAndWriteReceipt } from "../../src/rungs/receipts.ts";
-import { evaluateCrapForCoverageFile, parseStructuredReports } from "../../src/rungs/reports.ts";
-import { globMatchesPath, parseGitHubWorkflow } from "../../src/rungs/workflow-audit.ts";
-import type { RungManifest, RungReceipt, RungStatus } from "../../src/types.ts";
-import { auditFormalSync } from "../../src/zero-defect/formal-sync.ts";
-import { auditLaws } from "../../src/zero-defect/laws.ts";
+import { discoverRepo } from "@veristack/core";
+import { executeHookEvent } from "@veristack/plugin-control-plane";
+import { lintNoComments } from "@veristack/plugin-anti-slop";
+import { buildRatchetBaseline, evaluateRatchet } from "@veristack/core";
+import { parseAndValidateCommandArgv, runArgvChain } from "@veristack/plugin-control-plane";
+import { auditDeclaredArchetype, inferArchetypeFromFiles, loadRungManifest } from "@veristack/core";
+import { runTwoSidedOracleCheck } from "@veristack/plugin-canary";
+import { loadValidReceipts, runRungAndWriteReceipt } from "@veristack/plugin-canary";
+import { evaluateCrapForCoverageFile, parseStructuredReports } from "@veristack/plugin-canary";
+import { globMatchesPath, parseGitHubWorkflow } from "@veristack/plugin-ci-auditor";
+import type { RungManifest, RungReceipt, RungStatus } from "@veristack/plugin";
+import { auditFormalSync } from "@veristack/plugin-laws-formal";
+import { auditLaws } from "@veristack/plugin-laws-formal";
 
 function withTempDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-gate-inv-"));
@@ -137,8 +137,8 @@ test("receipts enforce schema, filename match, HMAC digest, treeHash, test count
       "bun",
       [
         "-e",
-        `import { discoverRepo } from "./src/discover.ts";
-         import { loadValidReceipts, runRungAndWriteReceipt } from "./src/rungs/receipts.ts";
+        `import { discoverRepo } from "@veristack/core";
+         import { loadValidReceipts, runRungAndWriteReceipt } from "@veristack/plugin-canary";
          const repo = discoverRepo(${JSON.stringify(dir)});
          const manifest = ${JSON.stringify(manifest)};
          const key = ${JSON.stringify(key)};
