@@ -157,7 +157,7 @@ function runRepoAuditCommand(ctx: CliContext): number | null {
   if (cmd === "no-comments") {
     const findings: Finding[] = [];
     for (const file of discoverRepo(target).files) {
-      if (file.language) findings.push(...lintNoComments(file.rel, file.content, file.language));
+      if (file.language && !file.isStub) findings.push(...lintNoComments(file.rel, file.content, file.language));
     }
     console.log(formatFindingsList("no-comments", findings, asJson));
     return rest.includes("--fail") && findings.length > 0 ? 1 : 0;

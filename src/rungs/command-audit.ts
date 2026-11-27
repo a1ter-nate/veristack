@@ -4,14 +4,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RungId } from "../types.ts";
 import { auditRunnerConfigs, scrubChildEnv } from "./config-audit.ts";
+import { isAllowedDotnetFilter, REPO_BENCH_SCRIPT_RE, REPO_VERIFY_SCRIPT_RE, validateRepoScriptFlags, validateRepoScriptStep } from "./packages.ts";
 
 export { scrubChildEnv };
 
 const SHELL_META_UNQUOTED = /[;|><$`(){}\n\r~]/;
-const FORBIDDEN_VERBS = new Set([
-  "echo", "printf", "true", "false", ":", "sleep", "exit", "exec", "eval", "alias",
-  "source", ".", "diff", "kill", "trap", "env", "sh", "bash", "zsh", "cmd", "powershell",
-]);
+const FORBIDDEN_VERBS = new Set(["echo", "printf", "true", "false", ":", "sleep", "exit", "exec", "eval", "alias", "source", ".", "diff", "kill", "trap", "env", "sh", "bash", "zsh", "cmd", "powershell"]);
 
 const VERISTACK_ROOT_REALPATH = (() => {
   let dir = path.dirname(fileURLToPath(import.meta.url));
@@ -60,7 +58,7 @@ const RUNNER_SCHEMAS: Record<string, RunnerFlagSchema> = {
   "node --test": { boolFlags: s("--experimental-test-coverage"), valueFlags: s("--test-reporter", "--test-reporter-destination", "--test-timeout") },
   "dotnet build": { boolFlags: s("--warnaserror", "--no-restore", "-warnaserror"), valueFlags: s("-c", "--configuration", "-v", "--verbosity") },
   "dotnet format": { boolFlags: s("--verify-no-changes", "--no-restore"), valueFlags: s("-v", "--verbosity") },
-  "dotnet test": { boolFlags: s("--no-build", "--no-restore"), valueFlags: s("-c", "--configuration", "-v", "--verbosity", "--logger", "--results-directory", "--collect") },
+  "dotnet test": { boolFlags: s("--no-build", "--no-restore"), valueFlags: s("-c", "--configuration", "-v", "--verbosity", "--logger", "--results-directory", "--collect", "--filter") },
   "dotnet stryker": { boolFlags: s(), valueFlags: s("-p", "--project", "-r", "--reporter", "-o", "--output") },
   "dotnet run": { boolFlags: s("--no-build"), valueFlags: s("-c", "--configuration", "--project") },
   "cargo fmt": { boolFlags: s("--check", "--all"), valueFlags: s("--manifest-path") },
@@ -89,18 +87,16 @@ const ALLOWED_TOOL_PREFIXES: Record<RungId | "canary", readonly RegExp[]> = {
   R3: [/^(?:vitest|jest|pytest|pact|pact-go|storybook|schemathesis)$/, /^(?:bun\s+test|node\s+--test|dotnet\s+test|cargo\s+(?:test|nextest)|go\s+test)$/],
   R4: [/^(?:vitest|jest|pytest|prisma|alembic|flyway|goose|golang-migrate|drizzle-kit)$/, /^(?:bun\s+test|node\s+--test|dotnet\s+test|cargo\s+(?:test|nextest)|go\s+test)$/],
   R5: [/^(?:stryker|mutmut|pitest|gremlins|go-mutesting|crosshair|bend|quint|dafny|kani|stateright|chromatic|percy|argos|bombadil|vstack|pytest)$/, /^(?:cargo\s+(?:mutants|test|nextest)|dotnet\s+(?:stryker|test)|go\s+test|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts)$/],
-  R6: [/^(?:k6|lighthouse|lhci|locust|mitata|tinybench|divan|nbomber|hyperfine|criterion|vstack|pytest)$/, /^(?:cargo\s+bench|go\s+test|dotnet\s+run|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts|bun\s+scripts\/check-perf-budget\.mjs|node\s+scripts\/check-perf-budget\.mjs)$/],
+  R6: [/^(?:k6|lighthouse|lhci|locust|mitata|tinybench|divan|nbomber|hyperfine|criterion|vstack|pytest)$/, /^(?:cargo\s+bench|go\s+test|dotnet\s+(?:run|test)|node\s+bin\/vstack\.mjs|bun\s+src\/cli\.ts|(?:bun|node)\s+(?:\.\/)?(?:[a-z0-9_.-]+\/)*(?:bench|perf|check-perf-budget)[a-z0-9_.-]*\.[cm]?[jt]sx?)$/],
   R7: [/^(?:playwright|cypress|maestro|detox|webdriverio|wdio|pytest)$/, /^(?:go\s+test|cargo\s+(?:test|nextest)|dotnet\s+test|bun\s+test)$/],
   R8: [/^(?:k6|playwright|curl|synthetic|canary|smoke-prod|healthcheck)$/],
   canary: [/^(?:vitest|jest|mocha|ava|pytest|phpunit|rspec|xunit|nunit|ctest|unittest)$/, /^(?:bun\s+test|node\s+--test|dotnet\s+test|cargo\s+(?:test|nextest)|go\s+test|(?:bun|node)\s+\S+\.(?:test|spec)\.[cm]?[jt]sx?)$/],
 };
 
 const ALLOWED_VSTACK_BY_RUNG: Record<RungId | "canary", ReadonlySet<string>> = {
-  R0: s("no-comments", "state-machines", "perimeter", "doctor", "bench", "diff-cheats"),
-  R1: s("state-machines", "diff-cheats", "no-comments"), R2: s("canary", "oracle-check"),
-  R3: s("formal-sync", "laws", "oracle-check"), R4: s("formal-sync", "oracle-check"),
-  R5: s("canary", "formal-sync", "laws", "crap", "oracle-check"), R6: s("big-o", "spc"),
-  R7: s("oracle-check"), R8: s("spc"), canary: s("canary"),
+  R0: s("no-comments", "state-machines", "perimeter", "doctor", "bench", "diff-cheats"), R1: s("state-machines", "diff-cheats", "no-comments"), R2: s("canary", "oracle-check"),
+  R3: s("formal-sync", "laws", "oracle-check"), R4: s("formal-sync", "oracle-check"), R5: s("canary", "formal-sync", "laws", "crap", "oracle-check"),
+  R6: s("big-o", "spc"), R7: s("oracle-check"), R8: s("spc"), canary: s("canary"),
 };
 const VSTACK_REQUIRES_FAIL = s("canary", "formal-sync", "laws", "bench", "no-comments", "state-machines", "perimeter", "crap", "diff-cheats", "big-o", "spc", "doctor");
 
@@ -117,10 +113,7 @@ function stripShellComment(line: string): string {
 
 function joinLineContinuations(script: string): string[] {
   const joined: string[] = []; let buf = "";
-  for (const raw of script.split(/\r?\n/)) {
-    const t = raw.replace(/\s+$/, "");
-    if (t.endsWith("\\")) buf += `${t.slice(0, -1)} `; else { joined.push(buf + raw); buf = ""; }
-  }
+  for (const raw of script.split(/\r?\n/)) { const t = raw.replace(/\s+$/, ""); if (t.endsWith("\\")) buf += `${t.slice(0, -1)} `; else { joined.push(buf + raw); buf = ""; } }
   if (buf) joined.push(buf); return joined;
 }
 
@@ -288,19 +281,12 @@ export function extractToolHead(tokens: readonly string[], repoRoot?: string): {
 }
 
 function validateDoubleDashArgs(mode: "clippy" | "cargo-test", tail: readonly string[]): string | null {
-  if (mode === "clippy") {
-    for (let i = 0; i < tail.length; i++) {
-      const t = tail[i] ?? "";
-      if (t === "-D" || t === "--deny" || t === "-W" || t === "--warn") {
-        const lint = tail[i + 1]; if (!lint || lint.startsWith("-")) return `cargo clippy '${t}' requires a lint name`;
-        i += 1; continue;
-      }
-      return `disallowed cargo clippy pass-through arg '${t}' (only -D/--deny and -W/--warn allowed)`;
-    }
-    return null;
-  }
   for (let i = 0; i < tail.length; i++) {
     const t = tail[i] ?? "";
+    if (mode === "clippy") {
+      if (t === "-D" || t === "--deny" || t === "-W" || t === "--warn") { const lint = tail[i + 1]; if (!lint || lint.startsWith("-")) return `cargo clippy '${t}' requires a lint name`; i += 1; continue; }
+      return `disallowed cargo clippy pass-through arg '${t}' (only -D/--deny and -W/--warn allowed)`;
+    }
     if (t === "--nocapture" || t === "--show-output" || t.startsWith("--test-threads=")) continue;
     if (t === "--test-threads") { i += 1; continue; }
     return `disallowed cargo test pass-through arg '${t}'`;
@@ -335,6 +321,7 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
       return toolArgs.some((a) => a.startsWith("-")) ? `flags forbidden on direct test script '${head}'` : null;
     }
     if (/^(?:bun|node)\s+scripts\/check-(?:max-lines|perf-budget)\.mjs$/.test(head)) return toolArgs.some((a) => a.startsWith("-")) ? `flags forbidden on '${head}'` : null;
+    if (REPO_BENCH_SCRIPT_RE.test(head) || REPO_VERIFY_SCRIPT_RE.test(head)) return validateRepoScriptFlags(head, toolArgs, repoRoot, isPathInsideRepo);
     for (const a of toolArgs) if (a.startsWith("-")) return `unrecognized flag '${a}' on '${head}'`;
     return null;
   }
@@ -373,6 +360,7 @@ function validateArgsWithPositiveSchema(head: string, toolArgs: readonly string[
     }
     const numErr = validateNumericFlagBound(head, schemaKey, flagName, val);
     if (numErr) return numErr;
+    if (head === "dotnet test" && flagName === "--filter" && !isAllowedDotnetFilter(rung, val)) return `disallowed flag '--filter=${val}' for 'dotnet test' in ${rung}`;
     if (inlineVal === undefined) i += 1;
   }
   return repoRoot && extraAuditDirs.length > 0 ? auditRunnerConfigs(repoRoot, extraAuditDirs) : null;
@@ -390,7 +378,7 @@ function expandPackageScripts(command: string, repoRoot?: string): { steps: stri
     const queued: Array<{ kind: "expand"; cmd: string; visiting: Set<string>; cwdDir?: string; hookName?: string } | { kind: "leaf"; seg: string[]; relCwd: string }> = [];
     for (const seg of split.parts) {
       const low0 = (seg[0] ?? "").toLowerCase(); const low1 = (seg[1] ?? "").toLowerCase();
-      let scriptName: string | undefined; let extraArgs: string[] = [];
+      let scriptName: string | undefined; let extraArgs: string[] = []; let isBunRun = false;
       let targetDir = item.cwdDir;
       let targetScripts = item.cwdDir === repoRoot ? rootScripts : readPackageScripts(item.cwdDir);
       if (low0 === "bun" && seg[1] === "--cwd" && seg[2] && seg[3]) {
@@ -399,17 +387,21 @@ function expandPackageScripts(command: string, repoRoot?: string): { steps: stri
         const subCfgErr = auditRunnerConfigs(repoRoot ?? subDir, [subDir]);
         if (subCfgErr) return { steps: [], cwds: [], error: subCfgErr };
         const subScripts = readPackageScripts(subDir); const subCmd = seg[3].toLowerCase();
-        if (subCmd === "run" && seg[4]) { scriptName = seg[4]; extraArgs = seg.slice(5); targetDir = subDir; targetScripts = subScripts; }
+        if (subCmd === "run" && seg[4]) { scriptName = seg[4]; extraArgs = seg.slice(5); targetDir = subDir; targetScripts = subScripts; isBunRun = true; }
         else if (subCmd === "test" && subScripts.test) { scriptName = "test"; extraArgs = seg.slice(4); targetDir = subDir; targetScripts = subScripts; }
-      } else if ((low0 === "bun" || low0 === "npm" || low0 === "pnpm" || low0 === "yarn") && low1 === "run" && seg[2]) { scriptName = seg[2]; extraArgs = seg.slice(3); }
+      } else if ((low0 === "bun" || low0 === "npm" || low0 === "pnpm" || low0 === "yarn") && low1 === "run" && seg[2]) { scriptName = seg[2]; extraArgs = seg.slice(3); isBunRun = low0 === "bun"; }
       else if ((low0 === "npm" || low0 === "pnpm" || low0 === "yarn") && low1 === "test") { scriptName = "test"; extraArgs = seg.slice(2); }
       else if ((low0 === "pnpm" || low0 === "yarn") && seg[1] && targetScripts[seg[1]]) { scriptName = seg[1]; extraArgs = seg.slice(2); }
       if (!scriptName) {
         const relCwd = repoRoot && targetDir && targetDir !== repoRoot ? path.relative(repoRoot, targetDir).split(path.sep).join("/") : "";
         queued.push({ kind: "leaf", seg, relCwd }); continue;
       }
-      if (extraArgs.length > 0) return { steps: [], cwds: [], error: `trailing args on script '${scriptName}' are forbidden` };
       const body = targetScripts[scriptName];
+      if (!body && isBunRun && /\.[cm]?[jt]sx?$/i.test(scriptName)) {
+        const relCwd = repoRoot && targetDir && targetDir !== repoRoot ? path.relative(repoRoot, targetDir).split(path.sep).join("/") : "";
+        queued.push({ kind: "leaf", seg: ["bun", scriptName, ...extraArgs], relCwd }); continue;
+      }
+      if (extraArgs.length > 0) return { steps: [], cwds: [], error: `trailing args on script '${scriptName}' are forbidden` };
       if (!body) return { steps: [], cwds: [], error: `unknown package.json script '${scriptName}'` };
       const visitKey = `${targetDir ?? ""}:${scriptName}`;
       if (item.visiting.has(visitKey)) return { steps: [], cwds: [], error: `cyclic package.json script '${scriptName}'` };
@@ -432,14 +424,22 @@ function expandPackageScripts(command: string, repoRoot?: string): { steps: stri
 function validateExpandedCommandSteps(command: string, steps: readonly string[][], ctx: CommandAuditCtx): string | null {
   const { rung, repoRoot } = ctx;
   const allowed = ALLOWED_TOOL_PREFIXES[rung];
+  const parsedSteps = steps.map((seg) => extractToolHead(seg, repoRoot));
+  const chainedWithBigO = parsedSteps.some((p) => (p.head === "vstack" || p.head === "node bin/vstack.mjs" || p.head === "bun src/cli.ts") && (p.toolArgs[0] ?? "").toLowerCase() === "big-o" && p.toolArgs.includes("--fail"));
   let hasR1Typecheck = false;
-  for (const seg of steps) {
-    const { head, toolArgs, error } = extractToolHead(seg, repoRoot);
+  for (const { head, toolArgs, error } of parsedSteps) {
     if (error) return `Rung ${rung}: ${error}`;
-    if (!allowed.some((re) => re.test(head))) return `Rung ${rung}: executable '${head}' is not an allowed ${rung} verification tool.`;
+    const isRepoVerify = rung !== "canary" && REPO_VERIFY_SCRIPT_RE.test(head);
+    const isRepoBench = rung === "R6" && REPO_BENCH_SCRIPT_RE.test(head);
+    if (!isRepoVerify && !allowed.some((re) => re.test(head))) return `Rung ${rung}: executable '${head}' is not an allowed ${rung} verification tool.`;
     if ((head === "node bin/vstack.mjs" || head === "bun src/cli.ts") && repoRoot && !isOwnVeristackBin(repoRoot, head === "node bin/vstack.mjs" ? "bin/vstack.mjs" : "src/cli.ts")) return `Rung ${rung}: local '${head}' is only allowed inside the veristack repository (binary realpath mismatch).`;
     const ownScriptMatch = /^(?:bun|node)\s+(scripts\/check-(?:max-lines|perf-budget)\.mjs)$/.exec(head);
     if (ownScriptMatch?.[1] && repoRoot && !isOwnVeristackBin(repoRoot, ownScriptMatch[1])) return `Rung ${rung}: '${head}' is only allowed inside the veristack repository (use 'vstack big-o', 'k6', 'hyperfine', etc.).`;
+    if (isRepoVerify || (isRepoBench && !ownScriptMatch)) {
+      const check = validateRepoScriptStep({ rung, head, repoRoot, chainedWithBigO, isInside: isPathInsideRepo });
+      if (check.error) return `Rung ${rung}: ${check.error}`;
+      if (check.satisfiesR1Typecheck) hasR1Typecheck = true;
+    }
     const argErr = validateArgsWithPositiveSchema(head, toolArgs, ctx);
     if (argErr) return `Rung ${rung}: ${argErr}`;
     if (head === "vstack" || head === "node bin/vstack.mjs" || head === "bun src/cli.ts") {
@@ -449,6 +449,7 @@ function validateExpandedCommandSteps(command: string, steps: readonly string[][
     }
     if (head === "pytest" && rung === "R6" && !toolArgs.includes("--benchmark-only") && !toolArgs.includes("--benchmark-enable")) return "Rung R6: pytest must run with --benchmark-only or --benchmark-enable.";
     if (head === "pytest" && rung !== "R6" && (toolArgs.includes("--benchmark-only") || toolArgs.includes("--benchmark-enable"))) return `Rung ${rung}: pytest --benchmark-only/--benchmark-enable is only allowed in R6.`;
+    if (head === "dotnet test" && rung === "R6" && !toolArgs.some((a) => a === "--filter" || a.startsWith("--filter="))) return "Rung R6: dotnet test requires --filter matching Benchmark/Perf.";
     if (head === "dotnet test" && rung === "canary" && toolArgs.includes("--no-build")) return "Rung canary: dotnet test --no-build skips recompiling mutated/restored source.";
     if (rung === "R1" && /^(?:tsc|tsgo|mypy|pyright|basedpyright|cargo\s+(?:check|clippy)|dotnet\s+build|go\s+(?:vet|build))$/.test(head)) hasR1Typecheck = true;
   }

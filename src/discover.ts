@@ -49,7 +49,7 @@ const UNTRACKED_CACHE_SKIP_DIRS = new Set([
 
 const MAX_FILE_BYTES = 512_000;
 const MAX_FILES = 12_000;
-const PRIORITY_DIRS = new Set([".github", ".verification", ".circleci", ".husky"]);
+const PRIORITY_DIRS = new Set([".github", ".verification", ".circleci", ".husky", ".githooks", "ci", ".azure-pipelines", ".azuredevops"]);
 
 const SOURCE_TREE_ROOT = /^(?:src|packages|services|apps|crates|libs|pkg|internal|cmd)\//i;
 
@@ -203,9 +203,14 @@ export function isTestFilePath(rel: string): boolean {
 
 function isWorkflowPath(rel: string): boolean {
   const lower = rel.replace(/\\/g, "/").toLowerCase();
+  const isYaml = lower.endsWith(".yml") || lower.endsWith(".yaml");
   return (
-    (lower.startsWith(".github/workflows/") && (lower.endsWith(".yml") || lower.endsWith(".yaml"))) ||
+    (lower.startsWith(".github/workflows/") && isYaml) ||
     lower === "azure-pipelines.yml" ||
+    lower === "azure-pipelines.yaml" ||
+    lower === ".azure-pipelines.yml" ||
+    lower === ".azure-pipelines.yaml" ||
+    ((lower.startsWith("ci/") || lower.startsWith(".azure-pipelines/") || lower.startsWith(".azuredevops/")) && isYaml) ||
     lower === ".gitlab-ci.yml" ||
     lower === ".circleci/config.yml" ||
     lower === "bitbucket-pipelines.yml"
@@ -306,18 +311,20 @@ function loadGitTrackedDirs(root: string): Set<string> {
   return trackedDirs;
 }
 
-const WORKSPACE_BUILD_DIR = /^(?:apps|packages|services|crates|libs)\/[^/]+\/(?:dist|build|coverage|target|obj|\.next|\.nuxt|\.output|\.svelte-kit|\.vite|\.turbo|\.cache|\.stryker-tmp|TestResults|StrykerOutput|__pycache__|\.venv|venv)$/i;
+const ALWAYS_SKIP_DIRS = new Set([".git", "node_modules", ".repospec", ".runtime"]);
+const WORKSPACE_BUILD_DIR = /^(?:apps|packages|services|crates|libs)\/[^/]+\/(?:dist|build|coverage|target|obj|bin|\.next|\.nuxt|\.output|\.svelte-kit|\.vite|\.turbo|\.cache|\.stryker-tmp|TestResults|StrykerOutput|__pycache__|\.venv|venv)$/i;
 const HELPER_SCRIPT_ROOT = /^\.(?:github|agents|claude|cursor|codex|husky)\//i;
 
-function shouldSkipDirectory(rel: string, name: string, trackedDirs: ReadonlySet<string>): boolean {
-  if (name === ".git" || name === "node_modules") return true;
-  if (rel === ".verification/receipts") return true;
+function shouldSkipDirectory(rel: string, name: string, trackedDirs: ReadonlySet<string>, absDir?: string): boolean {
+  if (ALWAYS_SKIP_DIRS.has(name)) return true;
+  if (rel === ".verification/receipts" || rel === "vendor") return true;
+  if (name === "obj" && !trackedDirs.has(rel)) return true;
+  if (name === "bin" && !trackedDirs.has(rel)) {
+    if (rel !== "bin") return true;
+    if (absDir && (fs.existsSync(path.join(absDir, "Debug")) || fs.existsSync(path.join(absDir, "Release")))) return true;
+  }
   if (WORKSPACE_BUILD_DIR.test(rel) && !trackedDirs.has(rel)) return true;
   if (SOURCE_TREE_ROOT.test(rel)) return false;
-  if (name === "bin" && /(?:^|\/)(?:obj|bin)$/.test(rel) && !trackedDirs.has(rel)) {
-    if (rel === "bin") return false;
-    return true;
-  }
   if (!UNTRACKED_CACHE_SKIP_DIRS.has(name)) return false;
   if (trackedDirs.has(rel)) return false;
   return true;
@@ -389,7 +396,7 @@ function processDirEntry(
       state.scopeExclusions.push({ path: rel, reason: "skipped-tracked-dir", detail: "git-tracked node_modules directory" });
       return;
     }
-    if (shouldSkipDirectory(rel, entry.name, state.trackedDirs)) return;
+    if (shouldSkipDirectory(rel, entry.name, state.trackedDirs, abs)) return;
     const ignored = state.ignoreRules.find((r) => r.regex.test(rel));
     if (ignored) { state.scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` }); return; }
     if (PRIORITY_DIRS.has(entry.name)) queues.prioritySubdirs.push(abs);

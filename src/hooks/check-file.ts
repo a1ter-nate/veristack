@@ -248,8 +248,12 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
   const isSql = /\.sql$/i.test(rel);
   const isShell = /\.(?:sh|bash)$/i.test(rel);
   const isWorkflow =
-    (rel.toLowerCase().startsWith(".github/workflows/") && /\.ya?ml$/i.test(rel)) ||
-    /^(?:\.gitlab-ci\.yml|azure-pipelines\.yml|\.circleci\/config\.yml|bitbucket-pipelines\.yml)$/i.test(rel);
+    ((rel.toLowerCase().startsWith(".github/workflows/") ||
+      rel.toLowerCase().startsWith("ci/") ||
+      rel.toLowerCase().startsWith(".azure-pipelines/") ||
+      rel.toLowerCase().startsWith(".azuredevops/")) &&
+      /\.ya?ml$/i.test(rel)) ||
+    /^(?:\.gitlab-ci\.yml|\.?azure-pipelines\.ya?ml|\.circleci\/config\.yml|bitbucket-pipelines\.yml)$/i.test(rel);
   const sfc = extractSfcScript(rel, content);
   const effectiveLang = language ?? sfc?.language;
   const effectiveContent = sfc ? sfc.content : content;

@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { discoverRepo } from "../../src/discover.ts";
+import { runDoctor } from "../../src/hooks/doctor.ts";
 import { scanRepo } from "../../src/ladder.ts";
+import { parseAndValidateCommandArgv } from "../../src/rungs/command-audit.ts";
 import { parseGitHubWorkflow } from "../../src/rungs/workflow-audit.ts";
+
+const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "cli.ts");
 
 function makeTempRepo(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oss-cal-"));
@@ -368,6 +374,95 @@ test("blind-panel Bucket-A calibrations: reusable workflows, extensionless scrip
     assert.equal(repo.ci.runsIntegrationOrDbTests, true);
     assert.equal(repo.ci.runsMutationOrFormal, true);
     assert.equal(repo.ci.runsPerfOrBench, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Azure Pipelines detection, pre-commit targeted scan, bun run <file.ts> + R6 bench/dotnet filters, and default build/generated ignores", () => {
+  const longSdk = Array.from({ length: 85 }, (_, i) => `  const k${i} = ${i};`).join("\n");
+  const dir = makeTempRepo({
+    "package.json": JSON.stringify({ name: "hybrid-app", version: "1.0.0" }),
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, noUnusedLocals: true } }),
+    ".githooks/pre-commit": "#!/usr/bin/env bash\nvstack scan . --fail-on-cheats --fail-on-errors\n",
+    ".vstackignore": ".repospec/\nobj/\n",
+    ".verification/rungs.json": JSON.stringify({
+      schemaVersion: 1,
+      archetype: "library",
+      rungs: {
+        R0: { command: "bun run scripts/verify-r0.ts", required: true },
+        R1: { command: "bun run scripts/verify-r1.ts", required: true },
+        R6: { command: "bun scripts/bench-r6.ts && dotnet test --filter Category=Benchmark", required: true },
+      },
+    }),
+    "ci/azure-pipelines.yml": [
+      "pr:",
+      "  branches:",
+      "    include: [main]",
+      "stages:",
+      "  - stage: Verify",
+      "    jobs:",
+      "      - job: Check",
+      "        steps:",
+      "          - template: steps.yml",
+      "          - task: DotNetCoreCLI@2",
+      "            inputs:",
+      "              command: test",
+      "              arguments: --filter Category=Benchmark",
+    ].join("\n"),
+    "ci/steps.yml": [
+      "steps:",
+      "  - script: bun run scripts/verify-r0.ts",
+      "  - bash: bun run scripts/verify-r1.ts",
+      "  - script: bun scripts/bench-r6.ts",
+    ].join("\n"),
+    "ci/manual-only.yml": "trigger: none\npr: none\nsteps:\n  - script: cargo test\n",
+    "scripts/verify-r0.ts": 'export const cmd = "oxlint src";\n',
+    "scripts/verify-r1.ts": 'export const cmd = "tsc --noEmit && dotnet build";\n',
+    "scripts/verify-fake.ts": 'export const ok = 1;\n',
+    "scripts/bench-r6.ts": 'export function runBench(): number { return performance.now(); }\n',
+    "src/App/App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><Nullable>enable</Nullable></PropertyGroup></Project>\n",
+    "src/App/Service.cs": "namespace App;\npublic sealed class Service { public int Add(int a, int b) => a + b; }\n",
+    "src/App/obj/Debug/net10.0/App.AssemblyInfo.cs": "// generated prose comment\n[assembly: System.Reflection.AssemblyTitle(\"App\")]\n",
+    "src/App/bin/Debug/net10.0/Temp.cs": "// generated bin comment\nclass B {}\n",
+    "bin/Debug/net10.0/RootBin.cs": "// generated root bin comment\nclass R {}\n",
+    ".repospec/repospec.sdk.ts": `// generated sdk\nexport function sdk(): number {\n${longSdk}\n  return k0;\n}\n`,
+    ".runtime/scratch.ts": "// scratch prose\nexport const s = 1 as any;\n",
+    "vendor/third-party.ts": "// vendored prose\nexport const v = 1 as any;\n",
+  });
+  try {
+    const repo = discoverRepo(dir);
+    assert.equal(repo.ci.hasCiWorkflows, true);
+    assert.equal(repo.ci.workflowFiles.includes("ci/azure-pipelines.yml"), true);
+    assert.equal(repo.ci.workflowFiles.includes("ci/manual-only.yml"), false);
+    assert.equal(repo.ci.runsFormatterOrLint, true);
+    assert.equal(repo.ci.runsTypeOrStructureCheck, true);
+    assert.equal(repo.ci.runsUnitTests, true);
+    assert.equal(repo.ci.runsPerfOrBench, true);
+    assert.equal(repo.signals.hasPreCommitHook, true);
+
+    assert.equal(repo.files.some((f) => f.rel.includes("/obj/") || f.rel.includes("/bin/") || f.rel.startsWith("bin/Debug/") || f.rel.startsWith(".repospec/") || f.rel.startsWith(".runtime/") || f.rel.startsWith("vendor/")), false);
+    assert.equal(runDoctor(dir).healthy, true);
+
+    assert.equal(parseAndValidateCommandArgv("R0", "bun run scripts/verify-r0.ts", dir).error, undefined);
+    assert.equal(parseAndValidateCommandArgv("R1", "bun run scripts/verify-r1.ts", dir).error, undefined);
+    assert.equal(parseAndValidateCommandArgv("R6", "bun scripts/bench-r6.ts", dir).error, undefined);
+    assert.equal(parseAndValidateCommandArgv("R6", "bun run scripts/bench-r6.ts --samples 5", dir).error, undefined);
+    assert.equal(parseAndValidateCommandArgv("R6", "dotnet test --filter Category=Benchmark", dir).error, undefined);
+    assert.ok(parseAndValidateCommandArgv("R0", "bun run scripts/verify-fake.ts", dir).error?.includes("lacks real R0"));
+    assert.ok(parseAndValidateCommandArgv("R2", "dotnet test --filter Category=Fast", dir).error?.includes("disallowed flag"));
+    assert.ok(parseAndValidateCommandArgv("R6", "dotnet test", dir).error?.includes("requires --filter"));
+
+    const preCommitClean = spawnSync(process.execPath, [cliPath, "scan", dir, "--fail-on-cheats", "--fail-on-errors"], { encoding: "utf8" });
+    assert.equal(preCommitClean.status, 0, preCommitClean.stdout + preCommitClean.stderr);
+    const noComments = spawnSync(process.execPath, [cliPath, "no-comments", dir, "--fail"], { encoding: "utf8" });
+    assert.equal(noComments.status, 0, noComments.stdout + noComments.stderr);
+    const strictStillFails = spawnSync(process.execPath, [cliPath, "scan", dir, "--strict"], { encoding: "utf8" });
+    assert.equal(strictStillFails.status, 1);
+
+    fs.writeFileSync(path.join(dir, "src", "bad.ts"), "// prose\nexport const bad = (1 as any);\n");
+    const preCommitDirty = spawnSync(process.execPath, [cliPath, "scan", dir, "--fail-on-cheats", "--fail-on-errors"], { encoding: "utf8" });
+    assert.equal(preCommitDirty.status, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

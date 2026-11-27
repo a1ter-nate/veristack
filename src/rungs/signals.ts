@@ -1,4 +1,5 @@
 import path from "node:path";
+import YAML from "yaml";
 import type { ScannedFile } from "../discover.ts";
 import type { CiExecutionSignals, Language, ToolSignals } from "../types.ts";
 import { sanitizeShellBlock } from "./command-audit.ts";
@@ -82,7 +83,7 @@ function collectReferencedScriptNames(text: string): Array<{ name: string; recur
 }
 
 const SHELL_REF_RE =
-  /(?:^|[\s&|;(])(?:(?:ba)?sh\s+|pwsh\s+|dotnet\s+run\s+)?(?:\.\/)?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:sh|bash|ps1|cake)|cake\.cs|scripts\/[A-Za-z0-9_.-]+)(?:\s+([A-Za-z0-9_.-]+))?\b/g;
+  /(?:^|[\s&|;(])(?:(?:ba)?sh\s+|pwsh\s+|dotnet\s+run\s+|(?:bun|node)\s+(?:run\s+)?)?(?:\.\/)?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:sh|bash|ps1|cake)|cake\.cs|(?:scripts|tools)\/(?:verify|bench|perf)[A-Za-z0-9_.-]*\.[cm]?[jt]sx?|scripts\/[A-Za-z0-9_.-]+)(?:\s+([A-Za-z0-9_.-]+))?\b/g;
 
 function expandFrontierItem(
   item: { cwd: string; text: string },
@@ -98,7 +99,7 @@ function expandFrontierItem(
     ctx.visitedShells.add(visitKey);
     const branchIdx = arg1 ? shFile.content.indexOf(`"$1" = "${arg1}"`) : -1;
     const slice = branchIdx >= 0 ? shFile.content.slice(branchIdx).split(/\n\s*(?:elif\s+|else\b|fi\b)/)[0]?.split("\n").slice(1).join("\n") ?? "" : shFile.content;
-    const shLines = shFile.rel.endsWith(".cs") ? slice.split(/\r?\n/) : sanitizeShellBlock(slice);
+    const shLines = /\.(?:cs|[cm]?[jt]sx?)$/.test(shFile.rel) ? slice.split(/\r?\n/) : sanitizeShellBlock(slice);
     if (shLines.length > 0) { const joined = shLines.join("\n"); ctx.chunks.push(joined); ctx.nextFrontier.push({ cwd: item.cwd, text: joined }); }
   }
   for (const { name, recursive } of collectReferencedScriptNames(item.text)) {
@@ -114,6 +115,99 @@ function expandFrontierItem(
   }
 }
 
+function isAzurePipelinePath(rel: string): boolean {
+  const lower = rel.replace(/\\/g, "/").toLowerCase();
+  return (
+    /^\.?azure-pipelines\.ya?ml$/.test(lower) ||
+    ((lower.startsWith("ci/") || lower.startsWith(".azure-pipelines/") || lower.startsWith(".azuredevops/")) && /\.ya?ml$/.test(lower))
+  );
+}
+
+function isAzureDisabled(node: Record<string, unknown>): boolean {
+  if (node.enabled === false || node.continueOnError === true) return true;
+  if (typeof node.condition === "string") {
+    const c = node.condition.trim().toLowerCase();
+    if (c === "false" || c.includes("failed(") || c.includes("canceled(") || /^eq\s*\(\s*1\s*,\s*2\s*\)$/.test(c)) return true;
+  }
+  return false;
+}
+
+function extractAzureStepCommands(step: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  for (const field of ["script", "bash", "pwsh", "powershell"] as const) {
+    if (typeof step[field] === "string") out.push(...sanitizeShellBlock(step[field]));
+  }
+  const task = typeof step.task === "string" ? step.task.trim().toLowerCase() : "";
+  const inputs = step.inputs && typeof step.inputs === "object" && !Array.isArray(step.inputs) ? (step.inputs as Record<string, unknown>) : undefined;
+  if (!task || !inputs) return out;
+  if (task.startsWith("dotnetcorecli@") && typeof inputs.command === "string") {
+    const cmd = inputs.command.trim().toLowerCase();
+    const args = typeof inputs.arguments === "string" ? inputs.arguments.trim() : "";
+    if (cmd === "build" || cmd === "test" || cmd === "run" || cmd === "format") out.push(`dotnet ${cmd}${args ? ` ${args}` : ""}`);
+  } else if ((task.startsWith("bash@") || task.startsWith("cmdline@") || task.startsWith("powershell@")) && typeof inputs.script === "string") {
+    out.push(...sanitizeShellBlock(inputs.script));
+  } else if (task.startsWith("npm@") && inputs.command === "custom" && typeof inputs.customCommand === "string") {
+    out.push(`npm ${inputs.customCommand.trim()}`);
+  }
+  return out;
+}
+
+function resolveAzureTemplate(baseRel: string, tpl: string, filesByRel: ReadonlyMap<string, ScannedFile>): ScannedFile | undefined {
+  const clean = tpl.split("@")[0]?.trim() ?? "";
+  if (!clean || clean.includes("..")) return undefined;
+  const dir = path.posix.dirname(baseRel);
+  const candidate = clean.startsWith("/") ? clean.slice(1) : dir === "." ? clean : path.posix.normalize(`${dir}/${clean}`);
+  return filesByRel.get(candidate) ?? filesByRel.get(clean);
+}
+
+function parseAzurePipeline(
+  wf: ScannedFile,
+  filesByRel: ReadonlyMap<string, ScannedFile>,
+): { isPrBlocking: boolean; hasSchedules: boolean; commands: string[] } {
+  let rootDoc: unknown;
+  try { rootDoc = YAML.parse(wf.content); } catch { return { isPrBlocking: false, hasSchedules: false, commands: [] }; }
+  if (!rootDoc || typeof rootDoc !== "object" || Array.isArray(rootDoc)) return { isPrBlocking: false, hasSchedules: false, commands: [] };
+  const doc = rootDoc as Record<string, unknown>;
+  const triggerOff = doc.trigger === "none" || doc.trigger === false;
+  const prOff = doc.pr === "none" || doc.pr === false;
+  const hasSchedules = Array.isArray(doc.schedules) && doc.schedules.length > 0;
+  const isPrBlocking = !(triggerOff && prOff);
+  const commands: string[] = [];
+  const stack: Array<{ fileRel: string; node: Record<string, unknown>; depth: number; visited: ReadonlySet<string> }> = [
+    { fileRel: wf.rel, node: doc, depth: 0, visited: new Set([wf.rel]) },
+  ];
+  const enqueueTpl = (cur: { fileRel: string; depth: number; visited: ReadonlySet<string> }, tpl: unknown): void => {
+    if (typeof tpl !== "string" || cur.depth >= 4) return;
+    const f = resolveAzureTemplate(cur.fileRel, tpl, filesByRel);
+    if (!f || cur.visited.has(f.rel)) return;
+    try {
+      const parsed = YAML.parse(f.content);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const nextVisited = new Set(cur.visited); nextVisited.add(f.rel);
+        stack.push({ fileRel: f.rel, node: parsed as Record<string, unknown>, depth: cur.depth + 1, visited: nextVisited });
+      }
+    } catch { void 0; }
+  };
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (!cur || isAzureDisabled(cur.node)) continue;
+    enqueueTpl(cur, cur.node.template);
+    for (const key of ["stages", "jobs", "steps"] as const) {
+      const arr = cur.node[key];
+      if (!Array.isArray(arr)) continue;
+      for (const item of arr) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+        const rec = item as Record<string, unknown>;
+        if (isAzureDisabled(rec)) continue;
+        if (key === "steps") commands.push(...extractAzureStepCommands(rec));
+        enqueueTpl(cur, rec.template);
+        if (rec.jobs || rec.steps) stack.push({ fileRel: cur.fileRel, node: rec, depth: cur.depth, visited: cur.visited });
+      }
+    }
+  }
+  return { isPrBlocking, hasSchedules, commands };
+}
+
 function buildActivePrCiText(files: readonly ScannedFile[], defaultBranch?: string): {
   hasCiWorkflows: boolean; workflowFiles: string[]; effectiveCiText: string; scheduledOrDeployText: string;
 } {
@@ -123,6 +217,7 @@ function buildActivePrCiText(files: readonly ScannedFile[], defaultBranch?: stri
   const chunks: string[] = [];
   const scheduledChunks: string[] = [];
   const scopedChunks: Array<{ cwd: string; text: string }> = [];
+  const fileByRel = new Map(files.map((f) => [f.rel.replace(/\\/g, "/"), f]));
   const parsedGha = workflows.filter((wf) => wf.rel.startsWith(".github/workflows/")).map((wf) => ({ wf, info: parseGitHubWorkflow(wf, files, defaultBranch) }));
   const matchedPathPool = new Set<string>();
   for (const { info } of parsedGha) {
@@ -149,6 +244,16 @@ function buildActivePrCiText(files: readonly ScannedFile[], defaultBranch?: stri
   }
   for (const wf of workflows) {
     if (wf.rel.startsWith(".github/workflows/")) continue;
+    if (isAzurePipelinePath(wf.rel)) {
+      const az = parseAzurePipeline(wf, fileByRel);
+      if (az.commands.length === 0) continue;
+      if (az.hasSchedules) scheduledChunks.push(...az.commands);
+      if (!az.isPrBlocking) continue;
+      activeWorkflowFiles.push(wf.rel);
+      chunks.push(...az.commands);
+      for (const l of az.commands) scopedChunks.push({ cwd: "", text: l });
+      continue;
+    }
     const lines = sanitizeShellBlock(wf.content);
     if (lines.length === 0) continue;
     activeWorkflowFiles.push(wf.rel);
@@ -159,7 +264,6 @@ function buildActivePrCiText(files: readonly ScannedFile[], defaultBranch?: stri
   if (chunks.length === 0) return { hasCiWorkflows: false, workflowFiles: [], effectiveCiText: "", scheduledOrDeployText };
 
   const pkgByDir = parsePackageScriptsByDir(files);
-  const fileByRel = new Map(files.map((f) => [f.rel.replace(/\\/g, "/"), f]));
   const visitedScripts = new Set<string>();
   const visitedShells = new Set<string>();
   let frontier = scopedChunks;
@@ -293,7 +397,7 @@ function buildToolSignalsFromContext(ctx: SignalTextContext): { signals: ToolSig
     hasKnipOrDeadCode: hasHostPath(/(?:^|\/)knip\.jsonc?$/) || /\b(?:knip|vulture|deadcode|cargo-udeps|cargo-machete)\b|"noUnusedLocals"\s*:\s*true|CS0162|IDE0051|dead_code|<AnalysisLevel>latest|\bclippy\b|\bruff\s+check\b|\bgo\s+vet\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`),
     hasJscpd: hasHostPath(/jscpd/) || /\bjscpd\b/i.test(configAndCi),
     hasArchFitness: /\b(?:dependency-cruiser|archunit|netarchtest|import-linter|deptrac|packwerk|turbo\s+boundaries|check-max-lines)\b/i.test(`${configAndCi}\n${testImportLines}`) || hasHostPath(/(?:check-boundaries|arch-fitness|architecture.*test|clippy\.toml|\.golangci\.ya?ml|(?:^|\/)internal\/.+\.go$)/),
-    hasPreCommitHook: hasNonEmptyLefthook(hostFiles) || hasHostPath(/(?:^|\/)(?:\.husky\/pre-commit|\.pre-commit-config\.ya?ml|git-hooks\/pre-commit)/) || /core\.hooksPath/.test(configText),
+    hasPreCommitHook: hasNonEmptyLefthook(hostFiles) || hasHostPath(/(?:^|\/)(?:\.husky\/pre-commit|\.githooks\/pre-commit|\.pre-commit-config\.ya?ml|git-hooks\/pre-commit)/) || /core\.hooksPath/.test(configText),
     hasCodeowners: ctx.codeownersPassed,
     hasReviewMd: hasHostPath(/(?:^|\/)review\.md$/),
     hasAgentsMd: hasHostPath(/(?:^|\/)(?:agents|claude)\.md$/),
@@ -313,7 +417,7 @@ function buildToolSignalsFromContext(ctx: SignalTextContext): { signals: ToolSig
     hasFuzzTool: /\b(?:cargo-fuzz|libFuzzer|jazzer|atheris|SharpFuzz|go\s+test[^\n]*-fuzz)\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`) || /\bfuzzTest\s*\(|\bfunc\s+Fuzz[A-Z]\w*\s*\(/.test(codeTestText),
     hasBombadil: /\bbombadil\b/i.test(`${configAndCi}\n${scheduledOrDeployText}`) || hasHostPath(/(?:^|\/)tests\/bombadil\//),
     hasVisualTool: /@argos-ci|\b(?:chromatic|percy|argos)\b/i.test(configAndCi) || /\btoHaveScreenshot\s*\(/.test(codeTestText),
-    hasPerfOrLoadTool: hasHostPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js)|(?:tests\/load|k6)\/[^/]+\.(?:[cm]?[jt]s|py|go))$/) || /@lhci\/cli|\b(?:k6\s+run|BenchmarkDotNet|NBomber|criterion|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|vitest\s+bench|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*--?bench|web-vitals|lighthouse\s+(?:https?:|--)|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(`${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`),
+    hasPerfOrLoadTool: hasHostPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|(?:scripts|tools)\/(?:bench|perf)[a-z0-9_.-]*\.[cm]?[jt]sx?|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js)|(?:tests\/load|k6)\/[^/]+\.(?:[cm]?[jt]s|py|go))$/) || /@lhci\/cli|\b(?:k6\s+run|BenchmarkDotNet|NBomber|criterion|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|vitest\s+bench|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*--?bench|dotnet\s+test[^\n]*--filter[^\n]*(?:Benchmark|Perf)|web-vitals|lighthouse\s+(?:https?:|--)|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(`${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`),
     hasE2eTool: /@playwright\/test|\b(?:playwright|cypress|selenium|puppeteer)\b/i.test(testImportAndManifest) || hasHostPath(/(?:^|\/)(?:playwright\.config\.[cm]?[jt]s|cypress\.config\.[cm]?[jt]s|maestro\/)/),
     hasProdTelemetryOrCanary: hasHostPath(/(?:^|\/)(?:scripts\/canary\/|production-canar|production-drift|derived-device-drift|synthetic[-_]check|smoke[-_]prod)/) || /@opentelemetry|@sentry|\b(?:opentelemetry|launchdarkly|dd-trace|sentry-sdk|prometheus|goreplay|chaos-mesh)\b/i.test(`${manifestText}\n${prodImportLines}\n${effectiveCiText}`) || /\b(?:canary|production-drift|synthetic|rollback|post-deploy|smoke[-_]|Smoke check production)\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`),
     hasDiffSelection: /\b(?:testscope|--changed|--affected|affected-projects|turbo\s+run[^\n]*--filter)\b/i.test(configAndCi),
@@ -335,7 +439,7 @@ function buildCiSignalsFromContext(ctx: SignalTextContext, signals: ToolSignals,
     runsBoundaryOrMbtTests: runsVerifyAll || (hasCiWorkflows && /\b(?:pact|pact-go|schemathesis|oasdiff|storybook|test:contract|test:component|test:mbt|mobile-contracts|bun\s+test|vitest|jest|node\s+--test|vp\s+test|deno\s+test|dotnet\s+test|pytest\b|cargo\s+(?:test|nextest)|go\s+test|run-rung\s+(?:R3|all))\b/i.test(effectiveCiText)),
     runsIntegrationOrDbTests: runsVerifyAll || (hasCiWorkflows && (((hasInProcessRealDb || (signals.hasMigrationTest && /(?:bun:sqlite|better-sqlite3|sqlite|drizzle)/i.test(`${manifestAndConfig}\n${codeTestText}`))) && runsUnitTests) || (/\bdocker(?:\s+compose|-compose)\s+up\b/i.test(effectiveCiText) && (runsUnitTests || /\b(?:test|e2e|adapter|integration)\b/i.test(effectiveCiText))) || /\b(?:testcontainers|test:int|test:integration|cloud-integration|conformance|pytest[^\n]*-m\s+["']?integration|dotnet\s+test[^\n]*--filter[^\n]*Integration|cargo\s+(?:test|nextest)[^\n]*--test\s+integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|goose\s+up|run-rung\s+(?:R4|all))\b/i.test(effectiveCiText))),
     runsMutationOrFormal: runsVerifyAll || (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|cargo\s+(?:\+\w+\s+)?miri|pitest|gremlins|go-mutesting|go\s+test[^\n]*-fuzz|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|mutation(?:tests)?|run-rung\s+(?:R5|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`) || (hasCiWorkflows && (/\bbend\b[^\n]*--check-only/i.test(effectiveCiText) || /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText)))),
-    runsPerfOrBench: runsVerifyAll || (hasCiWorkflows && /\b(?:k6\s+run|BenchmarkDotNet|NBomber|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|vitest\s+bench|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*--?bench|lighthouse\s+(?:https?:|--)|lhci|check-perf-budget|perf:check|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(effectiveCiText)),
+    runsPerfOrBench: runsVerifyAll || (hasCiWorkflows && /\b(?:k6\s+run|BenchmarkDotNet|NBomber|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|vitest\s+bench|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*--?bench|dotnet\s+test[^\n]*--filter[^\n]*(?:Benchmark|Perf)|lighthouse\s+(?:https?:|--)|lhci|check-perf-budget|perf:check|(?:scripts|tools)\/(?:bench|perf)[a-z0-9_.-]*\.[cm]?[jt]sx?|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(effectiveCiText)),
     runsE2eTests: runsVerifyAll || (hasCiWorkflows && /\b(?:playwright\s+test|playwright-go|cypress\s+run|maestro\s+test|test:e2e|dashboard-e2e|pytest[^\n]*-m\s+["']?(?:e2e|chrome|browser|playwright)|dotnet\s+test[^\n]*--filter[^\n]*E2E|cargo\s+(?:test|nextest)[^\n]*--test\s+e2e|go\s+test[^\n]*\/e2e|run-rung\s+(?:R7|all))\b/i.test(effectiveCiText)),
     runsProdVerification: runsVerifyAll || /\b(?:synthetic|canary|production-canar|production-drift|rollback|smoke-prod|smoke-event-assets|post-deploy|healthcheck|run-rung\s+(?:R8|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`),
   };

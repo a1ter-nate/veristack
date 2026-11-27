@@ -121,9 +121,14 @@ export function handleScanCli(
   if (strict) return evaluateStrictScanExit(report);
 
   const s = report.summary;
+  const targetedGateOnly =
+    !strict &&
+    !ratchetEval &&
+    !rest.includes("--fail-on-poor-coverage") &&
+    (rest.includes("--fail-on-errors") || rest.includes("--fail-on-cheats"));
   if (ratchetEval) {
     if (!ratchetEval.passed || (!allowMissingRungs && (s.holeCount > 0 || s.unexecutedRungCount > 0))) return 1;
-  } else if (!allowMissingRungs && (s.holeCount > 0 || s.unexecutedRungCount > 0)) {
+  } else if (!allowMissingRungs && !targetedGateOnly && (s.holeCount > 0 || s.unexecutedRungCount > 0)) {
     if (!asJson && !asMd) console.error(`\nFAIL: ${s.holeCount} not-covered/over-budget rung(s) and ${s.unexecutedRungCount} rung(s) not executing in CI. Wire missing rungs into CI (or pass --allow-missing-rungs for snippet-only scans).`);
     return 1;
   }
