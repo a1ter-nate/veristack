@@ -50,6 +50,8 @@ test("two-tier hooks emit PostToolUse context, deduplicate on Stop, and block Cu
     spawnSync("git", ["config", "user.email", "dev@test.local"], { cwd: tmp });
     spawnSync("git", ["config", "user.name", "Dev"], { cwd: tmp });
     fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+    fs.mkdirSync(path.join(tmp, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".verification", "ratchet.json"), JSON.stringify({ version: 1, rules: {} }));
     const cleanFile = path.join(tmp, "src", "ok.ts");
     fs.writeFileSync(cleanFile, "export const ok = (n: number): number => n + 1;\n");
     spawnSync("git", ["add", "."], { cwd: tmp });
@@ -162,6 +164,8 @@ test("hooks admin installs/preserves/toggles/resets all 5 harness manifests and 
     const cleanTmp = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-doc-clean-"));
     try {
       spawnSync("git", ["init", "-q"], { cwd: cleanTmp });
+      fs.mkdirSync(path.join(cleanTmp, ".verification"), { recursive: true });
+      fs.writeFileSync(path.join(cleanTmp, ".verification", "ratchet.json"), JSON.stringify({ version: 1, rules: {} }));
       fs.writeFileSync(path.join(cleanTmp, "index.ts"), "export const x = 1;\n");
       const cliDoc = spawnSync(process.execPath, [binPath, "doctor", cleanTmp, "--json", "--fail"], { encoding: "utf8" });
       assert.equal(cliDoc.status, 0, cliDoc.stdout + cliDoc.stderr);
@@ -217,6 +221,58 @@ test("doctor rejects weakened hook manifests and root-anchored hooks fire from c
     assert.equal(runDoctor(dir).healthy, false);
     fs.writeFileSync(claudePath, JSON.stringify({ ...JSON.parse(claudeOrig), env: { VSTACK_HOOK_DISABLED: "1" } }));
     assert.equal(runDoctor(dir).healthy, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("greenfield zero-test enforcement: --strict, Stop hook, and doctor block until tests & rungs exist, and vstack init scaffolds rungs + hooks", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-greenfield-"));
+  try {
+    spawnSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+    spawnSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    spawnSync("git", ["config", "user.email", "t@test.local"], { cwd: dir });
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "fresh-lib", version: "1.0.0" }));
+    fs.writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+    fs.writeFileSync(path.join(dir, "src", "calc.ts"), "export function sum(a: number, b: number): number { return a + b; }\n");
+    spawnSync("git", ["add", "."], { cwd: dir });
+    spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: dir });
+
+    const strictScan = spawnSync(process.execPath, [binPath, "scan", dir, "--strict"], { encoding: "utf8" });
+    assert.equal(strictScan.status, 1);
+    assert.match(strictScan.stderr, /vstack scan --strict failed:/);
+    const strictJson = spawnSync(process.execPath, [binPath, "scan", dir, "--strict", "--json"], { encoding: "utf8" });
+    assert.equal(strictJson.status, 1);
+    const parsedStrict = JSON.parse(strictJson.stdout) as { findings: Array<{ rule: string }> };
+    const strictRules = new Set(parsedStrict.findings.map((f) => f.rule));
+    assert.equal(strictRules.has("rung-manifest-missing"), true);
+    assert.equal(strictRules.has("zero-tests-in-repo"), true);
+    assert.equal(strictRules.has("rung-not-covered"), true);
+
+    const doctorBefore = runDoctor(dir);
+    assert.equal(doctorBefore.healthy, false);
+    assert.equal(doctorBefore.findings.some((f) => f.id.includes("zero-tests")), true);
+
+    const stopBefore = executeHookEvent("stop", JSON.stringify({ cwd: dir, session_id: "gf-1" }), { repoRoot: dir, harness: "claude" });
+    assert.equal(JSON.parse(stopBefore.stdout).decision, "block");
+    assert.equal(stopBefore.findings.some((f) => f.rule === "zero-tests-in-repo"), true);
+    assert.equal(stopBefore.findings.some((f) => f.rule === "rung-manifest-missing"), true);
+
+    const initRes = spawnSync(process.execPath, [binPath, "init", dir, "--json"], { encoding: "utf8" });
+    assert.equal(initRes.status, 0, initRes.stdout + initRes.stderr);
+    const initJson = JSON.parse(initRes.stdout) as { manifestCreated: boolean; hooksEnabled: boolean; testFilesCount: number; uncoveredRungs: string[] };
+    assert.equal(initJson.manifestCreated, true);
+    assert.equal(initJson.hooksEnabled, true);
+    assert.equal(initJson.testFilesCount, 0);
+    assert.equal(initJson.uncoveredRungs.includes("R2"), true);
+    assert.equal(fs.existsSync(path.join(dir, ".verification", "rungs.json")), true);
+    assert.match(fs.readFileSync(path.join(dir, ".gitignore"), "utf8"), /\.verification\/receipts\//);
+
+    const stopAfterInit = executeHookEvent("stop", JSON.stringify({ cwd: dir, session_id: "gf-2" }), { repoRoot: dir, harness: "claude" });
+    assert.equal(JSON.parse(stopAfterInit.stdout).decision, "block");
+    assert.equal(stopAfterInit.findings.some((f) => f.rule === "zero-tests-in-repo"), true);
+    assert.equal(stopAfterInit.findings.some((f) => f.rule === "rung-not-covered"), true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

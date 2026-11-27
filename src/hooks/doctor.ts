@@ -10,6 +10,7 @@ import { auditFormalSync } from "../zero-defect/formal-sync.ts";
 import { auditZeroDefectArtifacts } from "../zero-defect/index.ts";
 import { loadRepoConfig } from "../zero-defect/repo-config.ts";
 import { manageHooks } from "./install.ts";
+import { evaluateGreenfieldRungGate } from "./rung-gate.ts";
 
 export type DoctorActionLevel = "auto" | "mention" | "route";
 
@@ -184,6 +185,9 @@ function auditDoctorConfigAndArtifacts(repo: ReturnType<typeof discoverRepo>, fi
   }
   for (const f of auditAgentDocs(repo)) {
     if (f.severity !== "info") findings.push({ id: `DOC:${f.rule}:${f.file}:${f.line}`, level: "mention", artifact: f.file, summary: f.message, fix: f.fix });
+  }
+  for (const f of evaluateGreenfieldRungGate(repo)) {
+    findings.push({ id: `DOC:${f.id}`, level: "route", artifact: f.file, summary: f.message, fix: f.fix });
   }
 }
 

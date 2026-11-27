@@ -38,12 +38,13 @@ Use these tokens consistently across plans, PR briefs, and reviews:
 
 ## Workflow (Execute in Order)
 
-### Phase 0: Measure Ground Truth
+### Phase 0: Measure Ground Truth & Bootstrap Rungs
 
 1. Read the relevant source files, existing checks, and prior art directly before generating code.
-2. Run `vstack scan . --json` (pair with `--ratchet .verification/ratchet.json` on brownfield repos; run `vstack --help` for subcommands).
+2. On a greenfield or unconfigured repo without `.verification/rungs.json`, run `vstack init .` to scaffold `.verification/rungs.json` and fail-closed agent hooks (`PreToolUse`, `PostToolUse`, `Stop`).
+3. Run `vstack scan . --json` (pair with `--ratchet .verification/ratchet.json` on brownfield repos; run `vstack --help` for subcommands).
 
-- **Done when:** rung coverage, push-down candidates, and findings are in hand, and every active `cheat`, `no-comments`, `no-implicit-state-machine`, `agent-doc-stale-path`, and `formal-spec-stale` error is cleared (or tracked on a shrink-only ratchet).
+- **Done when:** `.verification/rungs.json` declares every applicable rung, rung coverage, push-down candidates, and findings are in hand, and every active `cheat`, `no-comments`, `no-implicit-state-machine`, `agent-doc-stale-path`, and `formal-spec-stale` error is cleared (or tracked on a shrink-only ratchet). Never stop on a repo with zero tests or uncovered applicable rungs — author real tests across `R2`+ (per archetype) before concluding.
 
 ### Phase 1: Agree Seams, Subtraction & Minimum Valid Rung
 
@@ -78,11 +79,11 @@ For every requirement, bugfix, or check above `R2`:
 
 1. For bugfixes, prove **red**→green with `vstack red-before-fix . --base <ref> --test-cmd "<cmd>"`. Record repeat defect classes (`>= 2×`) in `.verification/escapes.json` and promote them to `R0`/`R1`.
 2. For new checks or push-downs, inject one controlled fault (or run diff mutation) to confirm **red**, restore, and confirm green.
-3. Run `vstack scan . --fail-on-cheats` (plus `vstack formal-sync . --fail` when formal models cover touched code and `--ratchet` on brownfield repos) and delete redundant higher-rung tests replaced by tighter checks.
+3. Run `vstack verify . --strict` and `vstack doctor . --fail` (or `vstack scan . --ratchet .verification/ratchet.json` on brownfield repos tracking legacy debt; plus `vstack formal-sync . --fail` when formal models cover touched code) and delete redundant higher-rung tests replaced by tighter checks.
 4. Run `vstack review-brief . --base <ref> --md` to check slop-asymmetry budgets and emit the **stakes**-ranked human review queue, verifier blind spots, and AI-authorship disclosure (remembering linters and agent reviews are necessary, never sufficient).
 5. Emit one compact evidence line per moved/added check: `[ID | Old → New Rung | Failure Mechanism | Controlled-Fault Result | Residual Gap]`.
 
-- **Done when:** `vstack scan . --fail-on-cheats` exits `0` with zero cheats/prose-comments/implicit-state-machines, controlled-fault **red**→green is recorded, redundant tests are deleted, and the human reviewer receives a bounded, **stakes**-ranked brief.
+- **Done when:** `vstack verify . --strict` and `vstack doctor . --fail` exit `0` with zero uncovered rungs, zero zero-test repos, zero cheats/prose-comments/implicit-state-machines, controlled-fault **red**→green is recorded, redundant tests are deleted, and the human reviewer receives a bounded, **stakes**-ranked brief.
 
 ## Disclosed References (Load Only the Active Branch)
 

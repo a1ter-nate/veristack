@@ -386,6 +386,7 @@ test("Azure Pipelines detection, pre-commit targeted scan, bun run <file.ts> + R
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, noUnusedLocals: true } }),
     ".githooks/pre-commit": "#!/usr/bin/env bash\nvstack scan . --fail-on-cheats --fail-on-errors\n",
     ".vstackignore": ".repospec/\nobj/\n",
+    ".verification/ratchet.json": JSON.stringify({ version: 1, rules: {} }),
     ".verification/rungs.json": JSON.stringify({
       schemaVersion: 1,
       archetype: "library",

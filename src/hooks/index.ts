@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { formatSingleFileReport, scanSingleFile, type CheckFileTier } from "./check-file.ts";
 import { formatDoctorReport, runDoctor } from "./doctor.ts";
+import { formatInitReport, initVeristackRepo } from "./init.ts";
 import { formatHooksStatus, type HooksAdminAction, manageHooks } from "./install.ts";
 import { executeHookEvent, type HookEventKind, type HookHarness } from "./runtime.ts";
 
@@ -129,6 +130,21 @@ export function handleHooksAndDoctorCli(
     const result = scanSingleFile(fileArg, { tier, strict: rest.includes("--strict"), maxLines: maxRaw ? Number(maxRaw) : undefined });
     console.log(asJson ? JSON.stringify(result, null, 2) : formatSingleFileReport(result));
     return rest.includes("--fail") && result.findings.length > 0 ? 1 : 0;
+  }
+  if (cmd === "init") {
+    const dirArg = firstPositionalArg(rest, new Set(["--harness", "--command"])) ?? ".";
+    const harnessesRaw = parseFlag(rest, "--harness");
+    const harnesses = harnessesRaw
+      ? harnessesRaw.split(",").map((s) => parseHarness(s.trim())).filter((h): h is HookHarness => Boolean(h))
+      : undefined;
+    const res = initVeristackRepo(dirArg, {
+      force: rest.includes("--force"),
+      noHooks: rest.includes("--no-hooks"),
+      harnesses,
+      commandPrefix: parseFlag(rest, "--command"),
+    });
+    console.log(asJson ? JSON.stringify(res, null, 2) : formatInitReport(res));
+    return 0;
   }
   if (cmd === "hook") return handleHookEventCli(rest);
   if (cmd === "hooks") return handleHooksAdminCli(rest, asJson);

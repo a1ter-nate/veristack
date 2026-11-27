@@ -41,6 +41,7 @@ const USAGE_LINES: readonly string[] = [
   "vstack — Deterministic Verification Stack, Push-Down Analyzer, Formal Checks & JEV-Style System 1 Circuits",
   "",
   "Commands:",
+  "  vstack init [dir] [--force] [--no-hooks] [--harness claude,codex,cursor,copilot,grok] [--command <cmd>] [--json]",
   "  vstack scan [dir] [--json | --md] [--config <file>] [--disable <rules>] [--ratchet <file>] [--ratchet-base <ref>] [--update-ratchet] [--strict] [--allow-missing-rungs] [--fail-on-poor-coverage] [--fail-on-cheats] [--fail-on-errors]",
   "  vstack verify [dir] [--strict] [--json | --md]",
   "  vstack run-rung <R0..R8|all> [dir] [--json]",

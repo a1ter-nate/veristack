@@ -350,6 +350,8 @@ test("round9 arch: manifest archetype inference & allowExcluded, oracle-check he
   withTempDir((cleanDir) => {
     initGit(cleanDir);
     fs.mkdirSync(path.join(cleanDir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(cleanDir, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(cleanDir, ".verification", "ratchet.json"), JSON.stringify({ version: 1, rules: {} }));
     fs.writeFileSync(path.join(cleanDir, "src", "ok.ts"), "export const ok = 1;\n");
     runGitClean(cleanDir, ["add", "."]);
     runGitClean(cleanDir, ["commit", "-q", "-m", "clean"]);

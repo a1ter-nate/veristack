@@ -47,6 +47,7 @@ export interface ScanCliOutputOptions {
 }
 
 function evaluateStrictScanExit(report: ReturnType<typeof scanRepo>): number {
+  if (!report.summary) throw new Error("ScanReport.summary is required.");
   const s = report.summary;
   if (report.config) {
     console.error("vstack scan --strict failed: .vstack.json overrides/ignores are forbidden under --strict.");
@@ -61,10 +62,20 @@ function evaluateStrictScanExit(report: ReturnType<typeof scanRepo>): number {
     console.error(`vstack scan --strict failed: ${failingWorkspaces.length} workspace(s) scored below 80% (${failingWorkspaces.map((w) => `${w.name}=${w.score}%`).join(", ")}).`);
     return 1;
   }
-  if (
-    s.totalFindings > 0 || s.errorCount > 0 || s.warnCount > 0 || s.cheatCount > 0 || s.noCommentCount > 0 ||
-    s.holeCount > 0 || s.poorlyCoveredCount > 0 || s.unexecutedRungCount > 0 || s.pushDownCount > 0 || s.overallCoverageScore < 80
-  ) return 1;
+  const reasons: string[] = [];
+  if (s.errorCount > 0) reasons.push(`${s.errorCount} error(s)`);
+  if (s.warnCount > 0) reasons.push(`${s.warnCount} warning(s)`);
+  if (s.cheatCount > 0) reasons.push(`${s.cheatCount} cheat(s)`);
+  if (s.noCommentCount > 0) reasons.push(`${s.noCommentCount} no-comments finding(s)`);
+  if (s.holeCount > 0) reasons.push(`${s.holeCount} uncovered/over-budget rung(s)`);
+  if (s.poorlyCoveredCount > 0) reasons.push(`${s.poorlyCoveredCount} poorly-covered rung(s)`);
+  if (s.unexecutedRungCount > 0) reasons.push(`${s.unexecutedRungCount} unexecuted rung(s)`);
+  if (s.pushDownCount > 0) reasons.push(`${s.pushDownCount} push-down opportunity(ies)`);
+  if (s.overallCoverageScore < 80) reasons.push(`ladder score ${s.overallCoverageScore}% < 80%`);
+  if (reasons.length > 0 || s.totalFindings > 0) {
+    console.error(`vstack scan --strict failed: ${reasons.join(", ") || `${s.totalFindings} finding(s)`}.`);
+    return 1;
+  }
   return 0;
 }
 

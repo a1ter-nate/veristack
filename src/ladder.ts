@@ -1,6 +1,7 @@
 import { auditAgentDocs } from "./anti-slop/agent-docs.ts";
 import { auditCiWorkflows } from "./ci-auditor.ts";
 import { discoverRepo, type DiscoveredRepo } from "./discover.ts";
+import { auditRungCoverageFindings } from "./hooks/rung-gate.ts";
 import { lintNoComments } from "./no-comments.ts";
 import { buildRungStatuses, buildWorkspaceLadders } from "./rungs/coverage.ts";
 import { auditDeclaredArchetype } from "./rungs/manifest.ts";
@@ -199,6 +200,9 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
   const findings = applied.findings;
   const requireReceipts = Boolean(options.strict) || Boolean(repo.manifest);
   const rungs = buildRungStatuses(repo, testResult.inventory, { receipts, requireReceipts });
+  if (options.strict) {
+    findings.push(...auditRungCoverageFindings(repo, rungs, { requireWellCovered: true, respectRatchet: false }));
+  }
   const tigerStyle = buildTigerStyleReport(repo, findings, rungs);
   const workspaces = buildWorkspaceLadders(repo, testResult.inventory, findings);
   const missingLinters = recommendMissingLinters(repo);

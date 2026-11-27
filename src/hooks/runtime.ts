@@ -4,10 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { hasPathologicalNesting } from "../ast/ts-ast.ts";
 import { scanGitDiffCheats } from "../ci-auditor.ts";
+import { discoverRepo } from "../discover.ts";
 import { runGitClean } from "../rungs/config-audit.ts";
 import type { Finding } from "../types.ts";
 import { auditManifestDowngrade } from "../zero-defect/anti-evasion.ts";
 import { type CheckFileTier, scanSingleFile } from "./check-file.ts";
+import { evaluateGreenfieldRungGate } from "./rung-gate.ts";
 
 export type HookEventKind = "post-edit" | "pre-edit" | "stop";
 export type HookHarness = "claude" | "codex" | "cursor" | "copilot" | "grok";
@@ -443,7 +445,7 @@ function handleStopHook(ctx: HookRuntimeCtx): HookExecutionResult {
   }
   const hasOriginBase = ["origin/main", "origin/master"].some((c) => runGitClean(repoRoot, ["rev-parse", "--verify", `${c}^{commit}`]).status === 0);
   const stopBaseRef = state.anchorBaseSha ?? resolveCurrentAnchorSha(repoRoot) ?? "HEAD";
-  findings.push(...scanGitDiffCheats(repoRoot, stopBaseRef));
+  findings.push(...scanGitDiffCheats(repoRoot, stopBaseRef), ...evaluateGreenfieldRungGate(discoverRepo(repoRoot)));
   if (!hasOriginBase) {
     const hist = runGitClean(repoRoot, ["log", "--max-count=5", "--format=%H", "--", ".verification/rungs.json"]);
     for (const sha of hist.status === 0 ? hist.stdout.trim().split(/\r?\n/).filter(Boolean) : []) {
