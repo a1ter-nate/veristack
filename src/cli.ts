@@ -158,7 +158,7 @@ async function run(): Promise<number> {
   const hookOrDoctorCode = handleHooksAndDoctorCli(cmd, rest, target, asJson);
   if (hookOrDoctorCode !== null) return hookOrDoctorCode;
 
-  const rungToolCode = handleRungToolsCli(cmd, rest, target, asJson);
+  const rungToolCode = await handleRungToolsCli(cmd, rest, target, asJson);
   if (rungToolCode !== null) return rungToolCode;
 
   if (cmd === "scan") {

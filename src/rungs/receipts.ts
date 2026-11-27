@@ -6,7 +6,7 @@ import type { Finding, PlantedFaultReport, RungId, RungManifest, RungReceipt } f
 import { extractToolHead, parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "./command-audit.ts";
 import { runGitClean } from "./config-audit.ts";
 import { loadRungManifest } from "./manifest.ts";
-import { runPlantedFaultCanary } from "./mutation-probe.ts";
+import { runPlantedFaultCanary, runPlantedFaultCanaryAsync } from "./mutation-probe.ts";
 import { parseStructuredReports, reportParsers } from "./reports.ts";
 import { hasTestRunnerCommand, parseRunnerTestCounts, stripAnsi } from "./runner-metrics.ts";
 
@@ -142,40 +142,20 @@ function parseCommandMetrics(
   return { metrics: Object.keys(metrics).length > 0 ? metrics : undefined, hasTestRunner: parsedCounts.hasTestRunner };
 }
 
-export function runRungAndWriteReceipt(
+function finalizeAndWriteReceipt(
   repo: DiscoveredRepo,
   rung: RungId,
-  manifest: RungManifest,
+  entry: NonNullable<RungManifest["rungs"][RungId]>,
+  commitSha: string,
+  treeHashAfter: string,
+  mutatedTree: boolean,
+  exitCode: number,
+  durationMs: number,
+  metrics: RungReceipt["metrics"],
+  hasTestRunner: boolean,
+  canary: PlantedFaultReport | undefined,
   hmacKeyOverride?: string,
 ): RungReceipt {
-  const entry = manifest.rungs[rung];
-  if (!entry) throw new Error(`Rung ${rung} is not declared in .verification/rungs.json.`);
-  const parsedCmd = parseAndValidateCommandArgv(rung, entry.command, repo.root);
-  if (parsedCmd.error) throw new Error(parsedCmd.error);
-
-  const treeHashBefore = computeRepoTreeHash(repo);
-  const preSnapshot = snapshotReportFiles(repo.root);
-  const commitSha = readGitHeadSha(repo.root);
-  const started = performance.now();
-  const proc = runArgvChain(parsedCmd.steps, repo.root, scrubChildEnv(), 300_000, parsedCmd.stepCwds);
-  const durationMs = Math.round(performance.now() - started);
-  const exitCode = proc.status;
-  const combined = `${proc.stdout}\n${proc.stderr}`;
-  const { metrics, hasTestRunner } = parseCommandMetrics(repo.root, combined, rung, parsedCmd.steps, preSnapshot);
-  const treeHashAfter = computeRepoTreeHash(repo);
-  const mutatedTree = treeHashBefore !== treeHashAfter;
-
-  let canary: PlantedFaultReport | undefined;
-  if (exitCode === 0 && !mutatedTree && entry.canary?.enabled) {
-    canary = runPlantedFaultCanary({
-      repoRoot: repo.root,
-      testCmd: entry.canary.testCommand ?? entry.command,
-      targets: entry.canary.targets,
-      maxMutants: entry.canary.maxMutants,
-      minKillRate: entry.canary.minKillRate,
-    });
-  }
-
   const testsPassed = metrics?.testsPassed;
   const testsFailed = metrics?.testsFailed ?? 0;
   const requiresPositiveTests = rung === "R2" || rung === "R3" || ((rung === "R4" || rung === "R7") && hasTestRunner);
@@ -185,7 +165,6 @@ export function runRungAndWriteReceipt(
   const minCanaryMutants = entry.canary?.enabled ? Math.min(4, entry.canary.maxMutants ?? 4) : 0;
   const canaryFailed = Boolean(canary && (!canary.passed || canary.totalMutants < minCanaryMutants || canary.invalidKills > 0));
   const finalExit = mutatedTree || testCountMissing || canaryFailed ? 1 : exitCode;
-
   const baseReceipt: Omit<RungReceipt, "digest"> = {
     schemaVersion: 1,
     rung,
@@ -199,12 +178,75 @@ export function runRungAndWriteReceipt(
     ...(canary ? { canary } : {}),
     timestamp: new Date().toISOString(),
   };
-
   const receipt: RungReceipt = { ...baseReceipt, digest: digestPayload(baseReceipt, hmacKeyOverride) };
   const dir = path.join(repo.root, RECEIPTS_REL_DIR);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `${rung}.json`), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
   return receipt;
+}
+
+export function runRungAndWriteReceipt(
+  repo: DiscoveredRepo,
+  rung: RungId,
+  manifest: RungManifest,
+  hmacKeyOverride?: string,
+): RungReceipt {
+  const entry = manifest.rungs[rung];
+  if (!entry) throw new Error(`Rung ${rung} is not declared in .verification/rungs.json.`);
+  const parsedCmd = parseAndValidateCommandArgv(rung, entry.command, repo.root);
+  if (parsedCmd.error) throw new Error(parsedCmd.error);
+  const treeHashBefore = computeRepoTreeHash(repo);
+  const preSnapshot = snapshotReportFiles(repo.root);
+  const commitSha = readGitHeadSha(repo.root);
+  const started = performance.now();
+  const proc = runArgvChain(parsedCmd.steps, repo.root, scrubChildEnv(), 300_000, parsedCmd.stepCwds);
+  const durationMs = Math.round(performance.now() - started);
+  const { metrics, hasTestRunner } = parseCommandMetrics(repo.root, `${proc.stdout}\n${proc.stderr}`, rung, parsedCmd.steps, preSnapshot);
+  const treeHashAfter = computeRepoTreeHash(repo);
+  const mutatedTree = treeHashBefore !== treeHashAfter;
+  let canary: PlantedFaultReport | undefined;
+  if (proc.status === 0 && !mutatedTree && entry.canary?.enabled) {
+    canary = runPlantedFaultCanary({
+      repoRoot: repo.root,
+      testCmd: entry.canary.testCommand ?? entry.command,
+      targets: entry.canary.targets,
+      maxMutants: entry.canary.maxMutants,
+      minKillRate: entry.canary.minKillRate,
+    });
+  }
+  return finalizeAndWriteReceipt(repo, rung, entry, commitSha, treeHashAfter, mutatedTree, proc.status, durationMs, metrics, hasTestRunner, canary, hmacKeyOverride);
+}
+
+async function runRungAndWriteReceiptAsync(
+  repo: DiscoveredRepo,
+  rung: RungId,
+  manifest: RungManifest,
+  hmacKeyOverride?: string,
+): Promise<RungReceipt> {
+  const entry = manifest.rungs[rung];
+  if (!entry) throw new Error(`Rung ${rung} is not declared in .verification/rungs.json.`);
+  const parsedCmd = parseAndValidateCommandArgv(rung, entry.command, repo.root);
+  if (parsedCmd.error) throw new Error(parsedCmd.error);
+  const treeHashBefore = computeRepoTreeHash(repo);
+  const preSnapshot = snapshotReportFiles(repo.root);
+  const commitSha = readGitHeadSha(repo.root);
+  const started = performance.now();
+  const proc = runArgvChain(parsedCmd.steps, repo.root, scrubChildEnv(), 300_000, parsedCmd.stepCwds);
+  const durationMs = Math.round(performance.now() - started);
+  const { metrics, hasTestRunner } = parseCommandMetrics(repo.root, `${proc.stdout}\n${proc.stderr}`, rung, parsedCmd.steps, preSnapshot);
+  const treeHashAfter = computeRepoTreeHash(repo);
+  const mutatedTree = treeHashBefore !== treeHashAfter;
+  let canary: PlantedFaultReport | undefined;
+  if (proc.status === 0 && !mutatedTree && entry.canary?.enabled) {
+    canary = await runPlantedFaultCanaryAsync({
+      repoRoot: repo.root,
+      testCmd: entry.canary.testCommand ?? entry.command,
+      targets: entry.canary.targets,
+      maxMutants: entry.canary.maxMutants,
+      minKillRate: entry.canary.minKillRate,
+    });
+  }
+  return finalizeAndWriteReceipt(repo, rung, entry, commitSha, treeHashAfter, mutatedTree, proc.status, durationMs, metrics, hasTestRunner, canary, hmacKeyOverride);
 }
 
 export function loadValidReceipts(
@@ -296,6 +338,24 @@ export function runAllDeclaredRungs(
   let passed = true;
   for (const r of rungsToRun) {
     const rec = runRungAndWriteReceipt(repo, r, loaded.manifest, hmacKeyOverride);
+    receipts.push(rec);
+    if (rec.exitCode !== 0) passed = false;
+  }
+  return { receipts, passed, manifestPath: loaded.path ?? ".verification/rungs.json" };
+}
+
+export async function runAllDeclaredRungsAsync(
+  repo: DiscoveredRepo,
+  targetRung: RungId | "all",
+  hmacKeyOverride?: string,
+): Promise<{ receipts: RungReceipt[]; passed: boolean; manifestPath: string }> {
+  const loaded = loadRungManifest(repo.root);
+  if (!loaded.manifest) throw new Error(loaded.error ?? "Missing .verification/rungs.json manifest.");
+  const rungsToRun: RungId[] = targetRung === "all" ? (Object.keys(loaded.manifest.rungs) as RungId[]) : [targetRung];
+  const receipts: RungReceipt[] = [];
+  let passed = true;
+  for (const r of rungsToRun) {
+    const rec = await runRungAndWriteReceiptAsync(repo, r, loaded.manifest, hmacKeyOverride);
     receipts.push(rec);
     if (rec.exitCode !== 0) passed = false;
   }

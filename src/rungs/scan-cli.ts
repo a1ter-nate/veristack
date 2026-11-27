@@ -12,8 +12,8 @@ import {
 } from "../ratchet.ts";
 import type { RungId } from "../types.ts";
 import { auditManifestDowngrade } from "../zero-defect/anti-evasion.ts";
-import { runPlantedFaultCanary } from "./mutation-probe.ts";
-import { runAllDeclaredRungs } from "./receipts.ts";
+import { runPlantedFaultCanaryAsync } from "./mutation-probe.ts";
+import { runAllDeclaredRungsAsync } from "./receipts.ts";
 import { evaluateCrapForCoverageFile } from "./reports.ts";
 import { auditCodeownersPerimeter, checkGitHubBranchProtection } from "./workflow-audit.ts";
 
@@ -167,7 +167,7 @@ export function handleScanCli(
   return 0;
 }
 
-export function handleRungToolsCli(cmd: string, rest: readonly string[], target: string, asJson: boolean): number | null {
+export async function handleRungToolsCli(cmd: string, rest: readonly string[], target: string, asJson: boolean): Promise<number | null> {
   if (cmd === "verify") {
     const asMd = rest.includes("--md");
     const explicitBase = parseFlagValue(rest, "--base");
@@ -245,11 +245,16 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
       }
     }
     const ephemeralKey = crypto.randomBytes(32).toString("hex");
-    const runResult = runAllDeclaredRungs(repo, "all", ephemeralKey);
+    const runResult = await runAllDeclaredRungsAsync(repo, "all", ephemeralKey);
     if (!asJson && !asMd) {
       for (const r of runResult.receipts) {
-        const canaryTag = r.canary ? ` | canary=${(r.canary.killRate * 100).toFixed(0)}% (${r.canary.killedMutants}/${r.canary.totalMutants})` : "";
+        const invTag = r.canary && r.canary.invalidKills > 0 ? `, invalid=${r.canary.invalidKills}` : "";
+        const canaryTag = r.canary ? ` | canary=${(r.canary.killRate * 100).toFixed(0)}% (${r.canary.killedMutants}/${r.canary.totalMutants}${invTag})` : "";
         console.log(`verify ${r.rung}: ${r.exitCode === 0 ? "PASS" : "FAIL"} (${r.durationMs}ms${canaryTag})`);
+        if (r.canary && !r.canary.passed) {
+          for (const s of r.canary.survivors) console.log(`  - [SURVIVED] ${s.file}:${s.line} (${s.operator}) — ${s.original}`);
+          for (const d of r.canary.invalidDiagnostics ?? []) console.log(`  - [INVALID] ${d}`);
+        }
       }
     }
     const scanArgs = rest.includes("--strict") ? rest : [...rest, "--strict"];
@@ -265,13 +270,18 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
     }
     const dirArg = rest[1] && !rest[1].startsWith("-") ? rest[1] : ".";
     const repo = discoverRepo(dirArg);
-    const result = runAllDeclaredRungs(repo, rungArg as RungId | "all");
+    const result = await runAllDeclaredRungsAsync(repo, rungArg as RungId | "all");
     if (asJson) {
       console.log(JSON.stringify(result, null, 2));
     } else {
       for (const r of result.receipts) {
-        const canaryTag = r.canary ? ` | canary=${(r.canary.killRate * 100).toFixed(0)}% (${r.canary.killedMutants}/${r.canary.totalMutants})` : "";
+        const invTag = r.canary && r.canary.invalidKills > 0 ? `, invalid=${r.canary.invalidKills}` : "";
+        const canaryTag = r.canary ? ` | canary=${(r.canary.killRate * 100).toFixed(0)}% (${r.canary.killedMutants}/${r.canary.totalMutants}${invTag})` : "";
         console.log(`run-rung ${r.rung}: ${r.exitCode === 0 ? "PASS" : "FAIL"} (${r.durationMs}ms${canaryTag}) -> .verification/receipts/${r.rung}.json`);
+        if (r.canary && !r.canary.passed) {
+          for (const s of r.canary.survivors) console.log(`  - [SURVIVED] ${s.file}:${s.line} (${s.operator}) — ${s.original}`);
+          for (const d of r.canary.invalidDiagnostics ?? []) console.log(`  - [INVALID] ${d}`);
+        }
       }
     }
     return result.passed ? 0 : 1;
@@ -287,7 +297,7 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
     const baseRef = parseFlagValue(rest, "--base");
     const maxRaw = parseFlagValue(rest, "--max-mutants");
     const minRateRaw = parseFlagValue(rest, "--min-kill-rate");
-    const report = runPlantedFaultCanary({
+    const report = await runPlantedFaultCanaryAsync({
       repoRoot: target,
       testCmd,
       targets,
@@ -303,6 +313,9 @@ export function handleRungToolsCli(cmd: string, rest: readonly string[], target:
       );
       for (const s of report.survivors) {
         console.log(`  - [SURVIVED] ${s.file}:${s.line} (${s.operator}) — ${s.original}`);
+      }
+      for (const d of report.invalidDiagnostics ?? []) {
+        console.log(`  - [INVALID] ${d}`);
       }
     }
     return rest.includes("--fail") && !report.passed ? 1 : 0;

@@ -101,6 +101,7 @@ export interface PlantedFaultReport {
   minKillRate: number;
   passed: boolean;
   survivors: PlantedFaultSurvivor[];
+  invalidDiagnostics?: string[];
 }
 
 export interface RungReceipt {

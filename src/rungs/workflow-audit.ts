@@ -152,7 +152,13 @@ function extractTriggers(onField: unknown, defaultBranch?: string): {
   return { triggers: [...new Set(triggers)], isPrBlocking, ignoredPaths: [...new Set(ignoredPaths)], matchedPaths: [...new Set(matchedPaths)], hasPrOrPushTrigger, falsyInputs };
 }
 
-export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly ScannedFile[], defaultBranch?: string, depth = 0): ActiveWorkflowInfo {
+export function parseGitHubWorkflow(
+  file: ScannedFile,
+  allFiles?: readonly ScannedFile[],
+  defaultBranch?: string,
+  depth = 0,
+  visited: ReadonlySet<string> = new Set(),
+): ActiveWorkflowInfo {
   let doc: unknown;
   try {
     doc = YAML.parse(file.content);
@@ -270,12 +276,14 @@ export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly Scann
     const isDeployJob = deployJobSet.has(jobId);
     if ((deadJobSet.has(jobId) && !isDeployJob) || !isRecord(jobVal)) continue;
     if (wfPoisoned || hasPoisonedEnv(jobVal.env)) continue;
-    if (typeof jobVal.uses === "string" && depth < 2 && allFiles) {
+    if (typeof jobVal.uses === "string" && depth < 4 && allFiles) {
       const rawRef = jobVal.uses.trim().replace(/^\$\//, "").replace(/^\.\//, "").split("@")[0] ?? "";
-      if (rawRef.startsWith(".github/workflows/")) {
+      const nextVisited = new Set(visited);
+      nextVisited.add(file.rel);
+      if (rawRef.startsWith(".github/workflows/") && !nextVisited.has(rawRef)) {
         const callee = allFiles.find((f) => f.rel === rawRef);
         if (callee) {
-          const sub = parseGitHubWorkflow(callee, allFiles, defaultBranch, depth + 1);
+          const sub = parseGitHubWorkflow(callee, allFiles, defaultBranch, depth + 1, nextVisited);
           for (const c of sub.activeCommands) {
             if (isDeployJob) deployCommands.push(c);
             else activeCommands.push(c);

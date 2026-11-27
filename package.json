@@ -54,6 +54,7 @@
     "perf:check": "bun scripts/check-perf-budget.mjs",
     "lint:no-comments": "bun src/cli.ts no-comments . --fail",
     "lint:state-machines": "bun src/cli.ts state-machines . --fail",
+    "crap:self": "bun test --coverage --coverage-reporter=lcov --coverage-dir=/tmp/veristack-crap-cov ./tests/ ./examples/typescript/clean/ && bun src/cli.ts crap . --coverage /tmp/veristack-crap-cov/lcov.info --max-crap 30",
     "test:csharp": "dotnet test lint/csharp/VStack.Analyzers.Tests/VStack.Analyzers.Tests.csproj && dotnet test templates/csharp-reference/OrderLifecycle.slnx",
     "test:rust": "cargo fmt --manifest-path templates/rust-reference/Cargo.toml --check && cargo clippy --manifest-path templates/rust-reference/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path templates/rust-reference/Cargo.toml",
     "test:go": "cd templates/go-reference && go vet ./... && go test -race -v ./...",

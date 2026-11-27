@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "title": "Veristack Self-Verification Core Security & Monotonicity Laws",
+  "laws": [
+    {
+      "id": "veristack-receipt-hmac-canary-fail-closed",
+      "invariant": "Strict receipt validation accepts only HMAC-authenticated, treeHash-matching, exit-0 receipts whose test counts are positive and whose planted-fault canary meets >= 75% kill rate with 0 invalid kills (modeled in .verification/formal/veristack_gates.qnt).",
+      "witnessRef": "tests/rungs/gate-invariants.test.ts"
+    },
+    {
+      "id": "veristack-ratchet-grade-monotonicity",
+      "invariant": "Ratchet evaluation rejects any rung grade downgrade, CI execution drop, archetype excuse to not-applicable, or missing rung snapshot.",
+      "witnessRef": "tests/rungs/property-and-mbt.test.ts"
+    },
+    {
+      "id": "veristack-control-plane-hook-fail-closed",
+      "invariant": "Agent pre-edit and stop hooks fail closed on empty/malformed payloads, protected control-plane writes, shell tampering, and tampered hooks.json.",
+      "witnessRef": "tests/anti-slop/fail-closed-contracts.test.ts"
+    },
+    {
+      "id": "veristack-canary-and-oracle-mutation-pins",
+      "invariant": "Canary mutant classification, AST operators, two-sided oracle checks, report parsers, and workflow-audit multi-hop reusable expansion are pinned against regressions.",
+      "witnessRef": "tests/rungs/mutation-pins.test.ts"
+    }
+  ]
+}
