@@ -292,7 +292,7 @@ test("reports preSnapshot freshness ignores stale files and accepts newly modifi
     assert.equal(crapRep.passed, false);
     assert.deepEqual(crapRep.uncoveredRepoFiles, []);
 
-    const chainFail = runArgvChain([["node", "-e", "process.exit(1)"], ["node", "-e", "console.log('RAN_SECOND')"]], dir, process.env, 5000);
+    const chainFail = runArgvChain([["node", "-e", "process.exit(1)"], ["node", "-e", "console.log('RAN_SECOND')"]], { cwd: dir, env: process.env, timeoutMs: 5000 });
     assert.equal(chainFail.status, 1);
     assert.equal(chainFail.stdout.includes("RAN_SECOND"), false);
   });

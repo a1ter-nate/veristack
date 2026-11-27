@@ -26,14 +26,22 @@ function makeFinding(rule: string, severity: Finding["severity"] = "error"): Fin
 
 test("auto-shrinking ratchet passes on exact match, fails on regression, and flags tighten opportunities", () => {
   const initial = [makeFinding("no-test-doubles"), makeFinding("no-test-doubles"), makeFinding("wide-directory", "warn")];
-  const baseline = buildRatchetBaseline(initial);
+  const baseline = buildRatchetBaseline(initial, undefined, 4);
   assert.equal(baseline.version, 1);
+  assert.equal(baseline.dependenciesCount, 4);
   assert.deepEqual(baseline.rules, { "no-test-doubles": 2, "wide-directory": 1 });
 
-  const same = evaluateRatchet(initial, baseline);
+  const same = evaluateRatchet(initial, baseline, undefined, 4);
   assert.equal(same.passed, true);
   assert.equal(same.regressions.length, 0);
   assert.equal(same.tightenAvailable.length, 0);
+
+  const depRegressed = evaluateRatchet(initial, baseline, undefined, 5);
+  assert.equal(depRegressed.passed, false);
+  assert.equal(depRegressed.regressions.some((r) => r.rule === "tiger-minimal-dependencies" && r.delta === 1), true);
+  const depTightened = evaluateRatchet(initial, baseline, undefined, 3);
+  assert.equal(depTightened.passed, false);
+  assert.equal(depTightened.tightenAvailable.some((r) => r.rule === "tiger-minimal-dependencies" && r.delta === -1), true);
 
   const regressed = evaluateRatchet([...initial, makeFinding("no-test-doubles")], baseline);
   assert.equal(regressed.passed, false);

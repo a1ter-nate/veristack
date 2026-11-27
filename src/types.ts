@@ -258,6 +258,31 @@ export interface ScanConfigMeta {
   suppressedCount: number;
 }
 
+export type TigerStylePillar = "safety" | "performance" | "developer-experience";
+export type TigerStyleGrade = "strong" | "partial" | "missing" | "not-applicable";
+
+export interface TigerStylePrincipleStatus {
+  id: string;
+  pillar: TigerStylePillar;
+  name: string;
+  rung: RungId;
+  grade: TigerStyleGrade;
+  score: number;
+  mode: "gate" | "advisory";
+  observed: string;
+  violationsCount: number;
+  gaps: string[];
+}
+
+export interface TigerStyleReport {
+  overallScore: number;
+  applicableCount: number;
+  strongCount: number;
+  partialCount: number;
+  missingCount: number;
+  principles: TigerStylePrincipleStatus[];
+}
+
 export interface ScanReport {
   schemaVersion: 1;
   repo: string;
@@ -267,6 +292,7 @@ export interface ScanReport {
   config?: ScanConfigMeta;
   summary: ScanSummary;
   rungs: RungStatus[];
+  tigerStyle?: TigerStyleReport;
   workspaces?: WorkspaceLadderSummary[];
   scopeExclusions: ScopeExclusion[];
   pushDownOpportunities: PushDownOpportunity[];

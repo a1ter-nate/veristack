@@ -145,6 +145,8 @@ function manifestPathFor(repoRoot: string, harness: HookHarness): string {
 }
 
 function installHarnessManifest(repoRoot: string, harness: HookHarness, cmdPrefix: string): string {
+  if (!repoRoot) throw new Error("repoRoot is required.");
+  if (!cmdPrefix.trim()) throw new Error("cmdPrefix is required.");
   const filePath = manifestPathFor(repoRoot, harness);
   const rel = path.relative(repoRoot, filePath).split(path.sep).join("/");
   const doc = readJsonObj(filePath);
@@ -175,7 +177,7 @@ function installHarnessManifest(repoRoot: string, harness: HookHarness, cmdPrefi
     hooks: [{ type: "command", command: buildHookCommand(cmdPrefix, "pre-edit", harness), timeout: 15 }],
   });
   hooks.PostToolUse = mergeHookBucket(hooks.PostToolUse, {
-    matcher: harness === "codex" ? "Edit|Write|apply_patch" : "Edit|Write|MultiEdit|NotebookEdit|Bash",
+    matcher,
     hooks: [{ type: "command", command: buildHookCommand(cmdPrefix, "post-edit", harness), timeout: 15 }],
   });
   hooks.Stop = mergeHookBucket(hooks.Stop, {
@@ -217,11 +219,56 @@ function removeHarnessManifest(repoRoot: string, harness: HookHarness): string |
   return rel;
 }
 
+function isHarnessInstalled(repoRoot: string, harness: HookHarness, claudeGlobalDisabled: boolean): boolean {
+  if (harness === "claude" && claudeGlobalDisabled) return false;
+  const p = manifestPathFor(repoRoot, harness);
+  if (!fs.existsSync(p)) return false;
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(p, "utf8"));
+    if (!isRecord(parsed) || parsed.disableAllHooks === true || !isRecord(parsed.hooks)) return false;
+    if (isRecord(parsed.env) && parsed.env.VSTACK_HOOK_DISABLED === "1") return false;
+    if (harness === "claude" || harness === "codex") {
+      const preReq = harness === "codex" ? ["Edit", "Write", "apply_patch"] : ["Edit", "Write", "MultiEdit"];
+      const hasPre = Array.isArray(parsed.hooks.PreToolUse) && parsed.hooks.PreToolUse.some((e) => containsVstackCommand(e, "pre-edit", preReq));
+      const hasPost = Array.isArray(parsed.hooks.PostToolUse) && parsed.hooks.PostToolUse.some((e) => containsVstackCommand(e, "post-edit", preReq));
+      const hasStop = Array.isArray(parsed.hooks.Stop) && parsed.hooks.Stop.some((e) => containsVstackCommand(e, "stop"));
+      return hasPre && hasPost && hasStop;
+    }
+    if (harness === "cursor") {
+      return Array.isArray(parsed.hooks.preToolUse) && parsed.hooks.preToolUse.some((e) => containsVstackCommand(e, "pre-edit", ["Write", "Edit", "StrReplace", "Delete"], true));
+    }
+    return Object.values(parsed.hooks).some(
+      (bucket) => Array.isArray(bucket) && bucket.some((entry) => containsVstackCommand(entry)),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getHooksStatus(repoRoot: string, configRel: string, current: HookProjectConfig): HooksAdminResult {
+  const claudeSettings = path.join(repoRoot, ".claude", "settings.json");
+  let claudeGlobalDisabled = false;
+  if (fs.existsSync(claudeSettings)) {
+    try {
+      claudeGlobalDisabled = (JSON.parse(fs.readFileSync(claudeSettings, "utf8")) as Record<string, unknown>).disableAllHooks === true;
+    } catch { claudeGlobalDisabled = false; }
+  }
+  const installed = ALL_HARNESSES.filter((h) => isHarnessInstalled(repoRoot, h, claudeGlobalDisabled));
+  const envDisabled = process.env.VSTACK_HOOK_DISABLED === "1";
+  const enabled = current.enabled && !envDisabled && installed.length > 0;
+  return {
+    action: "status", repoRoot, configPath: configRel, enabled, harnesses: installed,
+    touchedManifests: installed.map((h) => path.relative(repoRoot, manifestPathFor(repoRoot, h)).split(path.sep).join("/")),
+    summary: `hooks: ${enabled ? "ON" : "OFF"} (tier=${current.tier}, installed=[${installed.join(", ") || "none"}]${envDisabled ? ", VSTACK_HOOK_DISABLED=1" : ""})`,
+  };
+}
+
 export function manageHooks(
   repoPath: string,
   action: HooksAdminAction,
   options: { harnesses?: readonly HookHarness[]; commandPrefix?: string } = {},
 ): HooksAdminResult {
+  if (!repoPath) throw new Error("repoPath is required.");
   const repoRoot = path.resolve(repoPath);
   const configPath = path.join(repoRoot, ".verification", "hooks.json");
   const configRel = ".verification/hooks.json";
@@ -234,92 +281,19 @@ export function manageHooks(
         : ["claude", "codex", "cursor"];
   const cmdPrefix = options.commandPrefix ?? "npx --no-install vstack";
 
-  if (action === "status") {
-    const claudeGlobalDisabled = (() => {
-      const p = path.join(repoRoot, ".claude", "settings.json");
-      if (!fs.existsSync(p)) return false;
-      try {
-        const d = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
-        return d.disableAllHooks === true;
-      } catch {
-        return false;
-      }
-    })();
-    const installed = ALL_HARNESSES.filter((h) => {
-      if (h === "claude" && claudeGlobalDisabled) return false;
-      const p = manifestPathFor(repoRoot, h);
-      if (!fs.existsSync(p)) return false;
-      try {
-        const parsed: unknown = JSON.parse(fs.readFileSync(p, "utf8"));
-        if (!isRecord(parsed) || parsed.disableAllHooks === true || !isRecord(parsed.hooks)) return false;
-        if (isRecord(parsed.env) && parsed.env.VSTACK_HOOK_DISABLED === "1") return false;
-        if (h === "claude" || h === "codex") {
-          const preReq = h === "codex" ? ["Edit", "Write", "apply_patch"] : ["Edit", "Write", "MultiEdit"];
-          const hasPre = Array.isArray(parsed.hooks.PreToolUse) && parsed.hooks.PreToolUse.some((e) => containsVstackCommand(e, "pre-edit", preReq));
-          const hasPost = Array.isArray(parsed.hooks.PostToolUse) && parsed.hooks.PostToolUse.some((e) => containsVstackCommand(e, "post-edit", preReq));
-          const hasStop = Array.isArray(parsed.hooks.Stop) && parsed.hooks.Stop.some((e) => containsVstackCommand(e, "stop"));
-          return hasPre && hasPost && hasStop;
-        }
-        if (h === "cursor") {
-          return Array.isArray(parsed.hooks.preToolUse) && parsed.hooks.preToolUse.some((e) => containsVstackCommand(e, "pre-edit", ["Write", "Edit", "StrReplace", "Delete"], true));
-        }
-        return Object.values(parsed.hooks).some(
-          (bucket) => Array.isArray(bucket) && bucket.some((entry) => containsVstackCommand(entry)),
-        );
-      } catch {
-        return false;
-      }
-    });
-    const envDisabled = process.env.VSTACK_HOOK_DISABLED === "1";
-    const enabled = current.enabled && !envDisabled && installed.length > 0;
-    return {
-      action,
-      repoRoot,
-      configPath: configRel,
-      enabled,
-      harnesses: installed,
-      touchedManifests: installed.map((h) => path.relative(repoRoot, manifestPathFor(repoRoot, h)).split(path.sep).join("/")),
-      summary: `hooks: ${enabled ? "ON" : "OFF"} (tier=${current.tier}, installed=[${installed.join(", ") || "none"}]${envDisabled ? ", VSTACK_HOOK_DISABLED=1" : ""})`,
-    };
-  }
+  if (action === "status") return getHooksStatus(repoRoot, configRel, current);
 
   if (action === "on") {
     const touched = selected.map((h) => installHarnessManifest(repoRoot, h, cmdPrefix));
-    const nextCfg: HookProjectConfig = {
-      enabled: true,
-      tier: current.tier,
-      ...(current.auditLog ? { auditLog: current.auditLog } : {}),
-      harnesses: selected,
-    };
+    const nextCfg: HookProjectConfig = { enabled: true, tier: current.tier, ...(current.auditLog ? { auditLog: current.auditLog } : {}), harnesses: selected };
     writeJsonObj(configPath, nextCfg);
-    return {
-      action,
-      repoRoot,
-      configPath: configRel,
-      enabled: true,
-      harnesses: selected,
-      touchedManifests: touched,
-      summary: `hooks: ON — installed [${selected.join(", ")}] (${touched.join(", ")})`,
-    };
+    return { action, repoRoot, configPath: configRel, enabled: true, harnesses: selected, touchedManifests: touched, summary: `hooks: ON — installed [${selected.join(", ")}] (${touched.join(", ")})` };
   }
 
   if (action === "off") {
-    const nextCfg: HookProjectConfig = {
-      enabled: false,
-      tier: current.tier,
-      ...(current.auditLog ? { auditLog: current.auditLog } : {}),
-      harnesses: current.harnesses,
-    };
+    const nextCfg: HookProjectConfig = { enabled: false, tier: current.tier, ...(current.auditLog ? { auditLog: current.auditLog } : {}), harnesses: current.harnesses };
     writeJsonObj(configPath, nextCfg);
-    return {
-      action,
-      repoRoot,
-      configPath: configRel,
-      enabled: false,
-      harnesses: current.harnesses,
-      touchedManifests: [configRel],
-      summary: "hooks: OFF — automatic per-edit and stop hooks paused in .verification/hooks.json.",
-    };
+    return { action, repoRoot, configPath: configRel, enabled: false, harnesses: current.harnesses, touchedManifests: [configRel], summary: "hooks: OFF — automatic per-edit and stop hooks paused in .verification/hooks.json." };
   }
 
   const removed: string[] = [];
@@ -327,19 +301,8 @@ export function manageHooks(
     const r = removeHarnessManifest(repoRoot, h);
     if (r) removed.push(r);
   }
-  if (fs.existsSync(configPath)) {
-    fs.unlinkSync(configPath);
-    removed.push(configRel);
-  }
-  return {
-    action,
-    repoRoot,
-    configPath: configRel,
-    enabled: false,
-    harnesses: [],
-    touchedManifests: removed,
-    summary: `hooks: RESET — removed Veristack hook entries (${removed.join(", ") || "none present"}).`,
-  };
+  if (fs.existsSync(configPath)) { fs.unlinkSync(configPath); removed.push(configRel); }
+  return { action, repoRoot, configPath: configRel, enabled: false, harnesses: [], touchedManifests: removed, summary: `hooks: RESET — removed Veristack hook entries (${removed.join(", ") || "none present"}).` };
 }
 
 export function formatHooksStatus(result: HooksAdminResult): string {

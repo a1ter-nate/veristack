@@ -54,59 +54,54 @@ function parseCodeowners(text: string): Array<{ regex: RegExp; owners: string[] 
   return rules;
 }
 
-export function analyzeOracleAndInstructions(repo: DiscoveredRepo): Finding[] {
-  const findings: Finding[] = [];
+function auditOracleCodeowners(
+  repo: DiscoveredRepo,
+  oracleArtifacts: readonly string[],
+  findings: Finding[],
+): void {
+  if (oracleArtifacts.length === 0) return;
   const codeownersFiles = repo.files.filter((f) => path.posix.basename(f.rel).toLowerCase() === "codeowners");
   const ownerRules = codeownersFiles.flatMap((f) => parseCodeowners(f.content));
-
-  const oracleArtifacts = repo.allRelPaths.filter(
-    (rel) => /\.feature$/i.test(rel) || /(?:^|\/)tests\/acceptance\//i.test(rel) || /(?:^|\/)contracts\.lock\.json$/i.test(rel),
-  );
-
-  if (oracleArtifacts.length > 0 && ownerRules.length > 0) {
-    for (const artifact of oracleArtifacts) {
-      const normalized = artifact.replace(/\\/g, "/").replace(/^\.\//, "");
-      const covered = ownerRules.some((r) => r.regex.test(normalized));
-      if (!covered) {
-        findings.push({
-          id: `OL:unowned:${artifact}`,
-          rule: "oracle-lock-unowned",
-          category: "oracle-lock",
-          rung: "R0",
-          severity: "warn",
-          file: artifact,
-          line: 1,
-          message: `Oracle/acceptance artifact ${artifact} is not covered by any CODEOWNERS rule.`,
-          fix: "Add an explicit CODEOWNERS entry protecting acceptance specs and contract locks.",
-        });
-      }
-    }
+  if (ownerRules.length === 0) return;
+  for (const artifact of oracleArtifacts) {
+    const normalized = artifact.replace(/\\/g, "/").replace(/^\.\//, "");
+    if (ownerRules.some((r) => r.regex.test(normalized))) continue;
+    findings.push({
+      id: `OL:unowned:${artifact}`,
+      rule: "oracle-lock-unowned",
+      category: "oracle-lock",
+      rung: "R0",
+      severity: "warn",
+      file: artifact,
+      line: 1,
+      message: `Oracle/acceptance artifact ${artifact} is not covered by any CODEOWNERS rule.`,
+      fix: "Add an explicit CODEOWNERS entry protecting acceptance specs and contract locks.",
+    });
   }
+}
 
+function auditInstructionPolicies(
+  repo: DiscoveredRepo,
+  oracleArtifacts: readonly string[],
+  findings: Finding[],
+): void {
   const instructionFiles = repo.files.filter((f) =>
     INSTRUCTION_NAMES.has(path.posix.basename(f.rel).toLowerCase()),
   );
-
+  if (instructionFiles.length === 0) return;
   let forbidFile: string | undefined;
   let allowFile: string | undefined;
   let allowLine = 1;
   let hasOracleLockRule = false;
-
   for (const file of instructionFiles) {
     const lines = file.content.split(/\r?\n/);
     for (let idx = 0; idx < lines.length; idx++) {
       const line = lines[idx] ?? "";
-      if (ORACLE_NO_EDIT_TOPIC.test(line) && ORACLE_LOCK_VERB.test(line)) {
-        hasOracleLockRule = true;
-      }
+      if (ORACLE_NO_EDIT_TOPIC.test(line) && ORACLE_LOCK_VERB.test(line)) hasOracleLockRule = true;
       if (!forbidFile && WEAKEN_FORBID.test(line)) forbidFile = file.rel;
-      if (!allowFile && WEAKEN_ALLOW.test(line)) {
-        allowFile = file.rel;
-        allowLine = idx + 1;
-      }
+      if (!allowFile && WEAKEN_ALLOW.test(line)) { allowFile = file.rel; allowLine = idx + 1; }
     }
   }
-
   if (forbidFile && allowFile) {
     findings.push({
       id: `IC:weaken-conflict:${allowFile}:${allowLine}`,
@@ -120,8 +115,7 @@ export function analyzeOracleAndInstructions(repo: DiscoveredRepo): Finding[] {
       fix: "Remove contradictory test-weakening guidance so all agent instructions enforce one deterministic policy.",
     });
   }
-
-  if (oracleArtifacts.length > 0 && instructionFiles.length > 0 && !hasOracleLockRule) {
+  if (oracleArtifacts.length > 0 && !hasOracleLockRule) {
     findings.push({
       id: `OL:missing-no-edit:${instructionFiles[0]?.rel ?? "AGENTS.md"}`,
       rule: "oracle-lock-instruction-missing",
@@ -134,6 +128,16 @@ export function analyzeOracleAndInstructions(repo: DiscoveredRepo): Finding[] {
       fix: "State in AGENTS.md that implementing agents must not edit locked acceptance specs or contract locks.",
     });
   }
+}
 
+export function analyzeOracleAndInstructions(repo: DiscoveredRepo): Finding[] {
+  if (!repo.root) throw new Error("Repo root is required.");
+  const findings: Finding[] = [];
+  if (repo.files.length === 0) return findings;
+  const oracleArtifacts = repo.allRelPaths.filter(
+    (rel) => /\.feature$/i.test(rel) || /(?:^|\/)tests\/acceptance\//i.test(rel) || /(?:^|\/)contracts\.lock\.json$/i.test(rel),
+  );
+  auditOracleCodeowners(repo, oracleArtifacts, findings);
+  auditInstructionPolicies(repo, oracleArtifacts, findings);
   return findings;
 }

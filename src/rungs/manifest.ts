@@ -43,90 +43,76 @@ function isDangerousAllowPattern(raw: string): string | null {
   return null;
 }
 
+function parseManifestRungEntry(
+  rungId: RungId,
+  val: Record<string, unknown>,
+  repoRoot: string,
+): { entry?: RungManifestEntry; error?: string } {
+  if (typeof val.command !== "string" || val.command.trim().length === 0) return {};
+  const cmdErr = validateRungCommand(rungId, val.command.trim(), repoRoot);
+  if (cmdErr) return { error: cmdErr };
+  const entry: RungManifestEntry = {
+    command: val.command.trim(),
+    required: typeof val.required === "boolean" ? val.required : true,
+  };
+  if (isRecord(val.canary) && typeof val.canary.enabled === "boolean") {
+    const minKillRate = typeof val.canary.minKillRate === "number" ? Math.max(0.75, val.canary.minKillRate) : 0.8;
+    const maxMutants = typeof val.canary.maxMutants === "number" ? Math.max(4, val.canary.maxMutants) : 6;
+    const canaryCmd = typeof val.canary.testCommand === "string" ? val.canary.testCommand.trim() : undefined;
+    if (canaryCmd) {
+      const canaryErr = validateExecutableCommand("canary", canaryCmd, repoRoot);
+      if (canaryErr) return { error: canaryErr };
+    }
+    entry.canary = {
+      enabled: val.canary.enabled,
+      testCommand: canaryCmd,
+      targets: Array.isArray(val.canary.targets)
+        ? val.canary.targets.filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+        : undefined,
+      maxMutants,
+      minKillRate,
+    };
+  }
+  return { entry };
+}
+
 export function loadRungManifest(repoRoot: string): { path?: string; manifest?: RungManifest; error?: string } {
   const rel = ".verification/rungs.json";
   const abs = path.join(repoRoot, rel);
   if (!fs.existsSync(abs)) return {};
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(abs, "utf8"));
-    if (!isRecord(parsed)) return { path: rel, error: `${rel} must be a JSON object.` };
-    const arch = parsed.archetype;
-    if (typeof arch !== "string" || !VALID_ARCHETYPES.has(arch as RepoArchetype)) {
-      return { path: rel, error: `${rel} must declare valid archetype (library|service|frontend|fullstack).` };
-    }
-    const rawRungs = isRecord(parsed.rungs) ? parsed.rungs : {};
-    const rungs: Partial<Record<RungId, RungManifestEntry>> = {};
-    for (const [key, val] of Object.entries(rawRungs)) {
-      if (!VALID_RUNGS.has(key as RungId) || !isRecord(val)) continue;
-      if (typeof val.command !== "string" || val.command.trim().length === 0) continue;
-      const rungId = key as RungId;
-      const cmdErr = validateRungCommand(rungId, val.command.trim(), repoRoot);
-      if (cmdErr) return { path: rel, error: cmdErr };
-      const entry: RungManifestEntry = {
-        command: val.command.trim(),
-        required: typeof val.required === "boolean" ? val.required : true,
-      };
-      if (isRecord(val.canary) && typeof val.canary.enabled === "boolean") {
-        const minKillRate = typeof val.canary.minKillRate === "number" ? Math.max(0.75, val.canary.minKillRate) : 0.8;
-        const maxMutants = typeof val.canary.maxMutants === "number" ? Math.max(4, val.canary.maxMutants) : 6;
-        const canaryCmd = typeof val.canary.testCommand === "string" ? val.canary.testCommand.trim() : undefined;
-        if (canaryCmd) {
-          const canaryErr = validateExecutableCommand("canary", canaryCmd, repoRoot);
-          if (canaryErr) return { path: rel, error: canaryErr };
-        }
-        entry.canary = {
-          enabled: val.canary.enabled,
-          testCommand: canaryCmd,
-          targets: Array.isArray(val.canary.targets)
-            ? val.canary.targets.filter((t): t is string => typeof t === "string" && t.trim().length > 0)
-            : undefined,
-          maxMutants,
-          minKillRate,
-        };
-      }
-      rungs[rungId] = entry;
-    }
-
-    const allowExcluded = Array.isArray(parsed.allowExcluded)
-      ? parsed.allowExcluded.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
-      : [];
-    for (const pat of allowExcluded) {
-      const reason = isDangerousAllowPattern(pat);
-      if (reason) {
-        return {
-          path: rel,
-          error: `allowExcluded pattern '${pat}' is too broad (${reason}); cannot hide source/test paths under --strict.`,
-        };
-      }
-    }
-
-    const workspaces = Array.isArray(parsed.workspaces)
-      ? parsed.workspaces
-          .filter(
-            (w): w is { name: string; path: string; archetype: RepoArchetype } =>
-              isRecord(w) &&
-              typeof w.name === "string" &&
-              typeof w.path === "string" &&
-              typeof w.archetype === "string" &&
-              VALID_ARCHETYPES.has(w.archetype as RepoArchetype),
-          )
-          .map((w) => ({ name: w.name, path: w.path.replace(/^\/+|\/+$/g, ""), archetype: w.archetype }))
-      : undefined;
-
-    return {
-      path: rel,
-      manifest: {
-        schemaVersion: 1,
-        archetype: arch as RepoArchetype,
-        allowExcluded,
-        rungs,
-        workspaces,
-      },
-    };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { path: rel, error: `Invalid JSON in ${rel}: ${msg}` };
+  let parsed: unknown;
+  try { parsed = JSON.parse(fs.readFileSync(abs, "utf8")); } catch (err: unknown) {
+    return { path: rel, error: `Invalid JSON in ${rel}: ${err instanceof Error ? err.message : String(err)}` };
   }
+  if (!isRecord(parsed)) return { path: rel, error: `${rel} must be a JSON object.` };
+  const arch = parsed.archetype;
+  if (typeof arch !== "string" || !VALID_ARCHETYPES.has(arch as RepoArchetype)) {
+    return { path: rel, error: `${rel} must declare valid archetype (library|service|frontend|fullstack).` };
+  }
+  const rawRungs = isRecord(parsed.rungs) ? parsed.rungs : {};
+  const rungs: Partial<Record<RungId, RungManifestEntry>> = {};
+  for (const [key, val] of Object.entries(rawRungs)) {
+    if (!VALID_RUNGS.has(key as RungId) || !isRecord(val)) continue;
+    const parsedEntry = parseManifestRungEntry(key as RungId, val, repoRoot);
+    if (parsedEntry.error) return { path: rel, error: parsedEntry.error };
+    if (parsedEntry.entry) rungs[key as RungId] = parsedEntry.entry;
+  }
+  const allowExcluded = Array.isArray(parsed.allowExcluded)
+    ? parsed.allowExcluded.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    : [];
+  for (const pat of allowExcluded) {
+    const reason = isDangerousAllowPattern(pat);
+    if (reason) return { path: rel, error: `allowExcluded pattern '${pat}' is too broad (${reason}); cannot hide source/test paths under --strict.` };
+  }
+  const workspaces = Array.isArray(parsed.workspaces)
+    ? parsed.workspaces
+        .filter(
+          (w): w is { name: string; path: string; archetype: RepoArchetype } =>
+            isRecord(w) && typeof w.name === "string" && typeof w.path === "string" && typeof w.archetype === "string" && VALID_ARCHETYPES.has(w.archetype as RepoArchetype),
+        )
+        .map((w) => ({ name: w.name, path: w.path.replace(/^\/+|\/+$/g, ""), archetype: w.archetype }))
+    : undefined;
+  return { path: rel, manifest: { schemaVersion: 1, archetype: arch as RepoArchetype, allowExcluded, rungs, workspaces } };
 }
 
 export function isHostRepoFile(rel: string): boolean {
@@ -136,6 +122,8 @@ export function isHostRepoFile(rel: string): boolean {
 }
 
 function extractManifestDependencyText(files: readonly ScannedFile[]): { prodDeps: string; uiDeps: string } {
+  if (!files) throw new Error("files list is required.");
+  if (files.length === 0) return { prodDeps: "", uiDeps: "" };
   const prodChunks: string[] = [];
   const uiChunks: string[] = [];
   for (const f of files) {
@@ -266,6 +254,8 @@ export function discoverWorkspaces(
   repo: DiscoveredRepo,
   manifest?: RungManifest,
 ): Array<{ name: string; path: string; archetype: RepoArchetype }> {
+  if (!repo) throw new Error("repo is required.");
+  if (!repo.root) throw new Error("repo.root is required.");
   const discovered: Array<{ name: string; path: string; archetype: RepoArchetype }> = [];
   const seen = new Set<string>();
   if (manifest?.workspaces) {

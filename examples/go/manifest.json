@@ -17,10 +17,16 @@
       "go-error-type-assert-not-as",
       "http-unnormalized-path-authz-match",
       "float-nan-unsafe-cmp"
+    ],
+    "tigerstyle_go.go": [
+      "tiger-fixed-width-types",
+      "tiger-hot-path-allocation",
+      "tiger-explicit-over-implicit"
     ]
   },
   "clean": [
     "safe_go_titans.go",
-    "safe_go_runtime.go"
+    "safe_go_runtime.go",
+    "safe_tigerstyle_go.go"
   ]
 }

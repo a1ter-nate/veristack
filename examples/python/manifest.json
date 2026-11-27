@@ -11,6 +11,7 @@
       "cdc-wall-clock-duration",
       "perf-quadratic-loop-scan",
       "perf-loop-compile-or-deepcopy",
+      "tiger-unbounded-loop",
       "unbounded-loop-risk"
     ],
     "test_bad_patterns.py": [
@@ -27,7 +28,8 @@
       "py-unscoped-fd-or-connection-lifecycle",
       "py-orm-dynamic-kwarg-alias-injection",
       "http-case-sensitive-header-directive",
-      "py-cleanup-require-finally-or-baseexception"
+      "py-cleanup-require-finally-or-baseexception",
+      "tiger-interface-surface"
     ],
     "titans_b_http.py": [
       "jwt-unsafe-alg-or-unverified-jwe",
@@ -44,6 +46,12 @@
     "blackhole_guards.py": [
       "py-json-loads-missing-recursion-error",
       "http-ipv6-unbracketed-host-header"
+    ],
+    "tigerstyle_python.py": [
+      "py-no-eager-asyncio-primitive-init",
+      "tiger-explicit-over-implicit",
+      "tiger-fixed-width-types",
+      "tiger-unbounded-queue"
     ]
   },
   "clean": [
@@ -53,6 +61,7 @@
     "safe_oss_hardening.py",
     "safe_titans_b_http.py",
     "safe_titans_a_guards.py",
-    "safe_blackhole_guards.py"
+    "safe_blackhole_guards.py",
+    "safe_tigerstyle_python.py"
   ]
 }

@@ -49,12 +49,25 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function flattenTomlObj(obj: unknown, prefix: string[] = []): Array<{ path: string[]; key: string; value: unknown }> {
   const out: Array<{ path: string[]; key: string; value: unknown }> = [];
-  if (Array.isArray(obj)) { for (const item of obj) if (isRecord(item)) out.push(...flattenTomlObj(item, prefix)); return out; }
-  if (!isRecord(obj)) return out;
-  for (const [k, v] of Object.entries(obj)) {
-    const next = [...prefix, k];
-    out.push({ path: next, key: next.join(".").toLowerCase(), value: v });
-    if (isRecord(v) || (Array.isArray(v) && v.some((x) => isRecord(x)))) out.push(...flattenTomlObj(v, next));
+  const stack: Array<{ val: unknown; path: string[] }> = [{ val: obj, path: prefix }];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (!cur) continue;
+    if (Array.isArray(cur.val)) {
+      for (let i = cur.val.length - 1; i >= 0; i--) {
+        if (isRecord(cur.val[i])) stack.push({ val: cur.val[i], path: cur.path });
+      }
+      continue;
+    }
+    if (!isRecord(cur.val)) continue;
+    const entries = Object.entries(cur.val);
+    for (const [k, v] of entries) {
+      const next = [...cur.path, k];
+      out.push({ path: next, key: next.join(".").toLowerCase(), value: v });
+      if (isRecord(v) || (Array.isArray(v) && v.some((x) => isRecord(x)))) {
+        stack.push({ val: v, path: next });
+      }
+    }
   }
   return out;
 }
@@ -292,6 +305,70 @@ function auditJsTestConfig(rel: string, raw: string): string | null {
 
 const LOCAL_SPEC_RE = /^(?:file:|link:|portal:|workspace:|\.\.?\/|\/|git\+|https?:|npm:|github:|gitlab:|bitbucket:|jsr:|[a-z0-9_.-]+\/[a-z0-9_.-]+(?:$|[#@]))|\.tgz$/i;
 
+function checkLocalPkgBinShadow(dir: string, rel: string, bagKey: string, entry: [string, string]): string | null {
+  const [k, val] = entry;
+  const toolName = k.split("@")[0]?.toLowerCase() ?? k.toLowerCase();
+  const cleanLocal = val.replace(/^(?:file:|link:|portal:)/i, "");
+  if (/\.tgz$/i.test(cleanLocal)) {
+    if (VERIFICATION_TOOLS.has(toolName) || /(?:typescript|tsc|vitest|jest|oxlint|eslint|vstack|veristack)/i.test(cleanLocal)) {
+      return `${rel} (${bagKey}) installs local verification-tool tarball '${val}'.`;
+    }
+    return null;
+  }
+  const subPkg = path.resolve(dir, cleanLocal, "package.json");
+  if (!fs.existsSync(subPkg) || !fs.statSync(subPkg).isFile()) return null;
+  try {
+    const subDoc = JSON.parse(fs.readFileSync(subPkg, "utf8")) as { bin?: string | Record<string, string> };
+    if (!isRecord(subDoc.bin)) return null;
+    for (const binName of Object.keys(subDoc.bin)) {
+      if (VERIFICATION_TOOLS.has(binName.toLowerCase())) {
+        return `${rel} (${bagKey}) local package '${k}' shadows verification binary '${binName}'.`;
+      }
+    }
+  } catch { void 0; }
+  return null;
+}
+
+function inspectPackageBags(dir: string, rel: string, bags: Array<[string, Record<string, unknown>]>): string | null {
+  const stack: Array<[string, Record<string, unknown>]> = [...bags];
+  while (stack.length > 0) {
+    const nextBag = stack.pop();
+    if (!nextBag) continue;
+    const [bagKey, bag] = nextBag;
+    for (const [k, v] of Object.entries(bag)) {
+      const toolName = k.split("@")[0]?.toLowerCase() ?? k.toLowerCase();
+      if (isRecord(v)) { stack.push([`${bagKey}.${k}`, v]); continue; }
+      const val = typeof v === "string" ? v.trim() : "";
+      if (!val) continue;
+      if (bagKey.endsWith("patchedDependencies") && VERIFICATION_TOOLS.has(toolName)) return `${rel} (${bagKey}) patches verification tool '${k}'.`;
+      if (VERIFICATION_TOOLS.has(toolName) && LOCAL_SPEC_RE.test(val)) return `${rel} (${bagKey}) overrides verification tool '${k}' with untrusted/alias spec '${val}'.`;
+      if (/^(?:file:|link:|portal:|\.\.?\/|\/)|\.tgz$/i.test(val)) {
+        const localErr = checkLocalPkgBinShadow(dir, rel, bagKey, [k, val]);
+        if (localErr) return localErr;
+      }
+    }
+  }
+  return null;
+}
+
+function auditNodeModulesBinLinks(dir: string, absRoot: string): string | null {
+  const nmBin = path.join(dir, "node_modules", ".bin");
+  if (!fs.existsSync(nmBin) || !fs.statSync(nmBin).isDirectory()) return null;
+  const realRoot = (() => { try { return fs.realpathSync(absRoot); } catch { return absRoot; } })();
+  const realNm = (() => { try { return fs.realpathSync(path.join(dir, "node_modules")); } catch { return path.join(dir, "node_modules"); } })();
+  for (const tool of VERIFICATION_TOOLS) {
+    const binEntry = path.join(nmBin, tool);
+    if (!fs.existsSync(binEntry)) continue;
+    try {
+      const resolved = fs.realpathSync(binEntry);
+      const insideRoot = resolved === realRoot || resolved.startsWith(`${realRoot}${path.sep}`);
+      const insideNm = resolved === realNm || resolved.startsWith(`${realNm}${path.sep}`);
+      if (insideRoot && !insideNm) return `node_modules/.bin/${tool} resolves outside node_modules (${path.relative(realRoot, resolved)}).`;
+    } catch { continue; }
+  }
+  return null;
+}
+
 function auditPackageToolShadowing(dir: string, rel: string, raw: string, absRoot: string): string | null {
   try {
     const pkg = JSON.parse(raw) as Record<string, unknown>;
@@ -303,34 +380,8 @@ function auditPackageToolShadowing(dir: string, rel: string, raw: string, absRoo
       if (isRecord(pkg.pnpm.overrides)) bags.push(["pnpm.overrides", pkg.pnpm.overrides as Record<string, unknown>]);
       if (isRecord(pkg.pnpm.patchedDependencies)) bags.push(["pnpm.patchedDependencies", pkg.pnpm.patchedDependencies as Record<string, unknown>]);
     }
-    const inspectBag = (bagKey: string, bag: Record<string, unknown>): string | null => {
-      for (const [k, v] of Object.entries(bag)) {
-        const toolName = k.split("@")[0]?.toLowerCase() ?? k.toLowerCase();
-        if (isRecord(v)) { const nested = inspectBag(`${bagKey}.${k}`, v); if (nested) return nested; continue; }
-        const val = typeof v === "string" ? v.trim() : "";
-        if (!val) continue;
-        if (bagKey.endsWith("patchedDependencies") && VERIFICATION_TOOLS.has(toolName)) return `${rel} (${bagKey}) patches verification tool '${k}'.`;
-        if (VERIFICATION_TOOLS.has(toolName) && LOCAL_SPEC_RE.test(val)) return `${rel} (${bagKey}) overrides verification tool '${k}' with untrusted/alias spec '${val}'.`;
-        if (/^(?:file:|link:|portal:|\.\.?\/|\/)|\.tgz$/i.test(val)) {
-          const cleanLocal = val.replace(/^(?:file:|link:|portal:)/i, "");
-          if (/\.tgz$/i.test(cleanLocal)) {
-            if (VERIFICATION_TOOLS.has(toolName) || /(?:typescript|tsc|vitest|jest|oxlint|eslint|vstack|veristack)/i.test(cleanLocal)) return `${rel} (${bagKey}) installs local verification-tool tarball '${val}'.`;
-          } else {
-            const subPkg = path.resolve(dir, cleanLocal, "package.json");
-            if (fs.existsSync(subPkg) && fs.statSync(subPkg).isFile()) {
-              try {
-                const subDoc = JSON.parse(fs.readFileSync(subPkg, "utf8")) as { bin?: string | Record<string, string> };
-                if (isRecord(subDoc.bin)) {
-                  for (const binName of Object.keys(subDoc.bin)) if (VERIFICATION_TOOLS.has(binName.toLowerCase())) return `${rel} (${bagKey}) local package '${k}' shadows verification binary '${binName}'.`;
-                }
-              } catch { void 0; }
-            }
-          }
-        }
-      }
-      return null;
-    };
-    for (const [bagKey, bag] of bags) { const err = inspectBag(bagKey, bag); if (err) return err; }
+    const bagErr = inspectPackageBags(dir, rel, bags);
+    if (bagErr) return bagErr;
     if (isRecord(pkg.bin)) {
       const pkgName = typeof pkg.name === "string" ? pkg.name.toLowerCase() : "";
       for (const binName of Object.keys(pkg.bin)) {
@@ -340,23 +391,8 @@ function auditPackageToolShadowing(dir: string, rel: string, raw: string, absRoo
       }
     }
     if (isRecord(pkg.jest)) { const err = auditJsTestConfig(`${rel}#jest`, JSON.stringify(pkg.jest)); if (err) return err; }
-    const nmBin = path.join(dir, "node_modules", ".bin");
-    if (fs.existsSync(nmBin) && fs.statSync(nmBin).isDirectory()) {
-      const realRoot = (() => { try { return fs.realpathSync(absRoot); } catch { return absRoot; } })();
-      const realNm = (() => { try { return fs.realpathSync(path.join(dir, "node_modules")); } catch { return path.join(dir, "node_modules"); } })();
-      for (const tool of VERIFICATION_TOOLS) {
-        const binEntry = path.join(nmBin, tool);
-        if (!fs.existsSync(binEntry)) continue;
-        try {
-          const resolved = fs.realpathSync(binEntry);
-          const insideRoot = resolved === realRoot || resolved.startsWith(`${realRoot}${path.sep}`);
-          const insideNm = resolved === realNm || resolved.startsWith(`${realNm}${path.sep}`);
-          if (insideRoot && !insideNm) return `node_modules/.bin/${tool} resolves outside node_modules (${path.relative(realRoot, resolved)}).`;
-        } catch { continue; }
-      }
-    }
+    return auditNodeModulesBinLinks(dir, absRoot);
   } catch { return null; }
-  return null;
 }
 
 const PY_SHADOW_FILES = ["sitecustomize.py", "usercustomize.py", "pytest.py", "unittest.py", "mypy.py", "ruff.py", "mutmut.py", "vulture.py"];
@@ -378,21 +414,63 @@ const CONFIG_TRIGGER_FILES = new Set(["conftest.py", ".pytest.toml", "pytest.tom
 
 function discoverRepoConfigDirs(absRoot: string): string[] {
   const dirs = new Set<string>([absRoot]);
-  const walk = (cur: string, depth: number): void => {
-    if (depth > 8) return;
+  const stack: Array<{ cur: string; depth: number }> = [{ cur: absRoot, depth: 0 }];
+  while (stack.length > 0) {
+    const item = stack.pop();
+    if (!item || item.depth > 8) continue;
     let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { return; }
+    try { entries = fs.readdirSync(item.cur, { withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
       if (e.isSymbolicLink()) {
-        if (CONFIG_TRIGGER_FILES.has(e.name)) dirs.add(cur);
+        if (CONFIG_TRIGGER_FILES.has(e.name)) dirs.add(item.cur);
         continue;
       }
-      if (e.isDirectory()) { if (!WALK_SKIP.has(e.name)) walk(path.join(cur, e.name), depth + 1); }
-      else if (CONFIG_TRIGGER_FILES.has(e.name)) dirs.add(cur);
+      if (e.isDirectory()) { if (!WALK_SKIP.has(e.name)) stack.push({ cur: path.join(item.cur, e.name), depth: item.depth + 1 }); }
+      else if (CONFIG_TRIGGER_FILES.has(e.name)) dirs.add(item.cur);
     }
-  };
-  walk(absRoot, 0);
+  }
   return [...dirs];
+}
+
+function auditSingleConfigDir(dir: string, absRoot: string): string | null {
+  const pyErr = auditPythonShadowing(dir);
+  if (pyErr) return pyErr;
+  const bunfig = path.join(dir, "bunfig.toml");
+  if (fs.existsSync(bunfig)) {
+    try { const err = auditBunfigContent(fs.readFileSync(bunfig, "utf8")); if (err) return err; } catch { return "unreadable bunfig.toml."; }
+  }
+  for (const rel of [".cargo/config.toml", ".cargo/config"]) {
+    const cargoCfg = path.join(dir, rel);
+    if (!fs.existsSync(cargoCfg)) continue;
+    try { const err = auditCargoConfigContent(rel, fs.readFileSync(cargoCfg, "utf8")); if (err) return err; } catch { return `unreadable ${rel}.`; }
+  }
+  const cargoToml = path.join(dir, "Cargo.toml");
+  if (fs.existsSync(cargoToml)) {
+    try { const res = auditCargoManifest("Cargo.toml", fs.readFileSync(cargoToml, "utf8")); if (res.error) return res.error; } catch { return "unreadable Cargo.toml."; }
+  }
+  const nextest = path.join(dir, ".config", "nextest.toml");
+  if (fs.existsSync(nextest)) {
+    try { const err = auditNextestConfig(".config/nextest.toml", fs.readFileSync(nextest, "utf8")); if (err) return err; } catch { return "unreadable .config/nextest.toml."; }
+  }
+  for (const rel of ["pyproject.toml", "pytest.toml", ".pytest.toml", "pytest.ini", "setup.cfg", "tox.ini"]) {
+    const p = path.join(dir, rel);
+    if (!fs.existsSync(p)) continue;
+    try { const err = auditPytestFile(rel, fs.readFileSync(p, "utf8"), dir); if (err) return err; } catch { return `unreadable ${rel}.`; }
+  }
+  const conftest = path.join(dir, "conftest.py");
+  if (fs.existsSync(conftest)) {
+    try { if (CONFTEST_TAMPER.test(fs.readFileSync(conftest, "utf8"))) return `${path.relative(absRoot, conftest)} alters pytest collection/reporting or overrides exitstatus.`; } catch { return "unreadable conftest.py."; }
+  }
+  for (const rel of JS_TEST_CONFIG_FILES) {
+    const p = path.join(dir, rel);
+    if (!fs.existsSync(p)) continue;
+    try { const err = auditJsTestConfig(rel, fs.readFileSync(p, "utf8")); if (err) return err; } catch { return `unreadable ${rel}.`; }
+  }
+  const pkgPath = path.join(dir, "package.json");
+  if (fs.existsSync(pkgPath)) {
+    try { const err = auditPackageToolShadowing(dir, "package.json", fs.readFileSync(pkgPath, "utf8"), absRoot); if (err) return err; } catch { void 0; }
+  }
+  return null;
 }
 
 export function auditRunnerConfigs(repoRoot: string, extraDirs: readonly string[] = []): string | null {
@@ -408,48 +486,8 @@ export function auditRunnerConfigs(repoRoot: string, extraDirs: readonly string[
     }
   }
   for (const dir of dirSet) {
-    const pyErr = auditPythonShadowing(dir);
-    if (pyErr) return pyErr;
-    const bunfig = path.join(dir, "bunfig.toml");
-    if (fs.existsSync(bunfig)) {
-      try { const err = auditBunfigContent(fs.readFileSync(bunfig, "utf8")); if (err) return err; } catch { return "unreadable bunfig.toml."; }
-    }
-    for (const rel of [".cargo/config.toml", ".cargo/config"]) {
-      const cargoCfg = path.join(dir, rel);
-      if (fs.existsSync(cargoCfg)) {
-        try { const err = auditCargoConfigContent(rel, fs.readFileSync(cargoCfg, "utf8")); if (err) return err; } catch { return `unreadable ${rel}.`; }
-      }
-    }
-    const cargoToml = path.join(dir, "Cargo.toml");
-    if (fs.existsSync(cargoToml)) {
-      try { const res = auditCargoManifest("Cargo.toml", fs.readFileSync(cargoToml, "utf8")); if (res.error) return res.error; } catch { return "unreadable Cargo.toml."; }
-    }
-    const nextest = path.join(dir, ".config", "nextest.toml");
-    if (fs.existsSync(nextest)) {
-      try { const err = auditNextestConfig(".config/nextest.toml", fs.readFileSync(nextest, "utf8")); if (err) return err; } catch { return "unreadable .config/nextest.toml."; }
-    }
-    for (const rel of ["pyproject.toml", "pytest.toml", ".pytest.toml", "pytest.ini", "setup.cfg", "tox.ini"]) {
-      const p = path.join(dir, rel);
-      if (fs.existsSync(p)) {
-        try { const err = auditPytestFile(rel, fs.readFileSync(p, "utf8"), dir); if (err) return err; } catch { return `unreadable ${rel}.`; }
-      }
-    }
-    const conftest = path.join(dir, "conftest.py");
-    if (fs.existsSync(conftest)) {
-      try {
-        if (CONFTEST_TAMPER.test(fs.readFileSync(conftest, "utf8"))) return `${path.relative(absRoot, conftest)} alters pytest collection/reporting or overrides exitstatus.`;
-      } catch { return "unreadable conftest.py."; }
-    }
-    for (const rel of JS_TEST_CONFIG_FILES) {
-      const p = path.join(dir, rel);
-      if (fs.existsSync(p)) {
-        try { const err = auditJsTestConfig(rel, fs.readFileSync(p, "utf8")); if (err) return err; } catch { return `unreadable ${rel}.`; }
-      }
-    }
-    const pkgPath = path.join(dir, "package.json");
-    if (fs.existsSync(pkgPath)) {
-      try { const err = auditPackageToolShadowing(dir, "package.json", fs.readFileSync(pkgPath, "utf8"), absRoot); if (err) return err; } catch { void 0; }
-    }
+    const err = auditSingleConfigDir(dir, absRoot);
+    if (err) return err;
   }
   return null;
 }

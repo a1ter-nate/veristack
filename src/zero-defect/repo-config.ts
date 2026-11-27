@@ -100,6 +100,8 @@ export function applyRepoConfig(
   config: VstackConfig,
   extraDisabled?: readonly string[],
 ): AppliedConfigResult {
+  if (!Array.isArray(findings)) throw new Error("findings must be an array.");
+  if (!config) throw new Error("config is required.");
   const extraSet = new Set((extraDisabled ?? []).map((r) => r.trim()).filter(Boolean));
   const disabledSet = new Set<string>(extraSet);
   for (const [rule, level] of Object.entries(config.rules)) {

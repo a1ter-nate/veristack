@@ -30,28 +30,27 @@ function isOracleSurface(rel: string): boolean {
 function listAllWorkingTreeOracleFiles(repoRoot: string): string[] {
   const out: string[] = [];
   const skipDirs = new Set([".git", "node_modules", ".venv", "venv", "target", "dist", "bin", "obj"]);
-  const walk = (dir: string, relPrefix: string): void => {
+  const stack: Array<[string, string]> = [[repoRoot, ""]];
+  while (stack.length > 0) {
+    const pair = stack.pop();
+    if (!pair) continue;
+    const [dir, relPrefix] = pair;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
-      if (entry.isSymbolicLink()) {
-        out.push(rel);
-        continue;
-      }
+      if (entry.isSymbolicLink()) { out.push(rel); continue; }
       if (entry.isDirectory()) {
-        if (skipDirs.has(entry.name)) continue;
-        walk(path.join(dir, entry.name), rel);
+        if (!skipDirs.has(entry.name)) stack.push([path.join(dir, entry.name), rel]);
       } else if (isOracleSurface(rel)) {
         out.push(rel);
       }
     }
-  };
-  walk(repoRoot, "");
+  }
   return out;
 }
 
 function extractRustInlineTestSpans(raw: string): Array<{ start: number; end: number }> {
   const withTests = maskCode(raw, "rust", false);
-  const prodOnly = maskCode(raw, "rust", true, true);
+  const prodOnly = maskCode(raw, "rust", "prod-strip-standalone-tests");
   const spans: Array<{ start: number; end: number }> = [];
   let inRegion = false;
   let start = -1;
@@ -104,29 +103,40 @@ function loadBaseApprovedBehaviorChanges(repoRoot: string, baseRef: string): Set
   return approved;
 }
 
+function linkSingleWorkspaceNodeModule(
+  entry: fs.Dirent,
+  paths: { srcDir: string; dstDir: string; absRoot: string; sandboxDir: string },
+  stack: Array<[string, string]>,
+): void {
+  const sPath = path.join(paths.srcDir, entry.name);
+  const dPath = path.join(paths.dstDir, entry.name);
+  if (entry.name.startsWith("@") && entry.isDirectory() && !entry.isSymbolicLink()) { stack.push([sPath, dPath]); return; }
+  if (entry.isSymbolicLink()) {
+    try {
+      const target = fs.realpathSync(sPath);
+      if (target === paths.absRoot || target.startsWith(`${paths.absRoot}${path.sep}`)) {
+        fs.symlinkSync(path.join(paths.sandboxDir, path.relative(paths.absRoot, target)), dPath);
+        return;
+      }
+    } catch { return; }
+  }
+  try { fs.symlinkSync(sPath, dPath); } catch { return; }
+}
+
 function linkNodeModulesWorkspaceAware(absRoot: string, sandboxDir: string): void {
   const srcNm = path.join(absRoot, "node_modules");
   const dstNm = path.join(sandboxDir, "node_modules");
   if (!fs.existsSync(srcNm)) return;
-  const linkDir = (srcDir: string, dstDir: string): void => {
+  const stack: Array<[string, string]> = [[srcNm, dstNm]];
+  while (stack.length > 0) {
+    const pair = stack.pop();
+    if (!pair) continue;
+    const [srcDir, dstDir] = pair;
     fs.mkdirSync(dstDir, { recursive: true });
     for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
-      const sPath = path.join(srcDir, entry.name);
-      const dPath = path.join(dstDir, entry.name);
-      if (entry.name.startsWith("@") && entry.isDirectory() && !entry.isSymbolicLink()) { linkDir(sPath, dPath); continue; }
-      if (entry.isSymbolicLink()) {
-        try {
-          const target = fs.realpathSync(sPath);
-          if (target === absRoot || target.startsWith(`${absRoot}${path.sep}`)) {
-            fs.symlinkSync(path.join(sandboxDir, path.relative(absRoot, target)), dPath);
-            continue;
-          }
-        } catch { continue; }
-      }
-      try { fs.symlinkSync(sPath, dPath); } catch { continue; }
+      linkSingleWorkspaceNodeModule(entry, { srcDir, dstDir, absRoot, sandboxDir }, stack);
     }
-  };
-  linkDir(srcNm, dstNm);
+  }
 }
 
 function copyWorkingTreeToSandbox(repoRoot: string): string {
@@ -166,6 +176,77 @@ function makeSandboxPythonEnv(baseEnv: NodeJS.ProcessEnv, sandboxDir: string, ho
   return { ...baseEnv, HOME: homeDir, XDG_CONFIG_HOME: homeDir, TMPDIR: homeDir, TMP: homeDir, TEMP: homeDir, PYTHONPATH: pyPaths.join(path.delimiter) };
 }
 
+function collectRustInlineSplices(
+  root: string,
+  baseRef: string,
+  rustInlineCandidates: readonly string[],
+): { splices: Array<{ rel: string; spliced: string }>; deletedRustWithTests: boolean } {
+  const splices: Array<{ rel: string; spliced: string }> = [];
+  let deletedRustWithTests = false;
+  for (const rel of rustInlineCandidates) {
+    const baseShow = runGitClean(root, ["show", `${baseRef}:${rel}`]);
+    if (baseShow.status !== 0) continue;
+    const headAbs = path.join(root, rel);
+    if (fs.existsSync(headAbs)) {
+      const spliced = spliceBaseRustTestsIntoHead(fs.readFileSync(headAbs, "utf8"), baseShow.stdout);
+      if (spliced !== null) splices.push({ rel, spliced });
+    } else if (extractRustInlineTestSpans(baseShow.stdout).length > 0) {
+      deletedRustWithTests = true;
+      splices.push({ rel, spliced: baseShow.stdout });
+    }
+  }
+  return { splices, deletedRustWithTests };
+}
+
+function runBaseOracleSandbox(input: {
+  root: string;
+  baseRef: string;
+  testCmd: string;
+  headExit: number;
+  changedOracleFiles: readonly string[];
+  rustInlineSplices: ReadonlyArray<{ rel: string; spliced: string }>;
+  allCheckedOracle: readonly string[];
+  allApproved: boolean;
+  childEnv: NodeJS.ProcessEnv;
+}): TwoSidedOracleResult {
+  const { root, baseRef, testCmd, headExit, changedOracleFiles, rustInlineSplices, allCheckedOracle, allApproved, childEnv } = input;
+  const sandboxDir = copyWorkingTreeToSandbox(root);
+  const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oh-"));
+  try {
+    for (const rel of changedOracleFiles) {
+      const baseContent = runGitCleanBuffer(root, ["show", `${baseRef}:${rel}`]);
+      const dest = path.resolve(sandboxDir, rel);
+      if (baseContent.status === 0) safeWriteInSandbox(sandboxDir, rel, baseContent.stdout);
+      else try { fs.rmSync(dest, { recursive: true, force: true }); } catch { void 0; }
+    }
+    for (const splice of rustInlineSplices) safeWriteInSandbox(sandboxDir, splice.rel, splice.spliced);
+
+    const baseParsedCmd = parseAndValidateCommandArgv("canary", testCmd, sandboxDir);
+    if (baseParsedCmd.error) {
+      return { passed: false, baseRef, baseTestsOnHeadCodeExit: -1, headTestsOnHeadCodeExit: headExit, declaredBehaviorChange: false, reason: `Rejected base-ref oracle --test-cmd: ${baseParsedCmd.error}` };
+    }
+    const baseOnHead = runArgvChain(baseParsedCmd.steps, { cwd: sandboxDir, env: makeSandboxPythonEnv(childEnv, sandboxDir, isolatedHome), timeoutMs: 120_000, stepCwds: baseParsedCmd.stepCwds });
+    const baseCounts = parseRunnerTestCounts(`${baseOnHead.stdout}\n${baseOnHead.stderr}`, baseParsedCmd.steps);
+    const baseRanZero = baseOnHead.status === 0 && baseCounts.hasTestRunner && (!baseCounts.matched || baseCounts.passed <= 0 || baseCounts.failed > 0);
+    const effectiveBaseExit = baseRanZero ? 1 : baseOnHead.status;
+    return {
+      passed: effectiveBaseExit === 0 || allApproved, baseRef, baseTestsOnHeadCodeExit: effectiveBaseExit,
+      headTestsOnHeadCodeExit: headExit, declaredBehaviorChange: allApproved,
+      reason:
+        effectiveBaseExit === 0
+          ? "Two-sided oracle PASS: base tests and runner config still pass against working-tree code."
+          : allApproved
+            ? "Two-sided oracle PASS: base-ref .verification/behavior-changes.json explicitly approves modified oracle files."
+            : baseRanZero
+              ? "ORACLE REWRITE DETECTED: base oracle executed 0 passing tests against working-tree code."
+              : `ORACLE REWRITE DETECTED: base tests/configs from ${baseRef} fail against working-tree code (exit ${effectiveBaseExit}) without base-approved .verification/behavior-changes.json entries for [${allCheckedOracle.join(", ")}].`,
+    };
+  } finally {
+    fs.rmSync(sandboxDir, { recursive: true, force: true });
+    fs.rmSync(isolatedHome, { recursive: true, force: true });
+  }
+}
+
 export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCmd: string): TwoSidedOracleResult {
   const fail = (headExit: number, baseExit: number, reason: string): TwoSidedOracleResult => ({
     passed: false, baseRef: baseRef || "<missing>", baseTestsOnHeadCodeExit: baseExit,
@@ -173,23 +254,14 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   });
   if (!baseRef || baseRef.startsWith("-")) return fail(-1, -1, `Invalid or missing --base ref '${baseRef}'.`);
   const root = path.resolve(repoPath);
-  const revCheck = runGitClean(root, ["rev-parse", "--verify", `${baseRef}^{commit}`]);
-  if (revCheck.status !== 0) return fail(-1, -1, `git rev-parse failed for base ref '${baseRef}' — failing closed.`);
-
+  if (runGitClean(root, ["rev-parse", "--verify", `${baseRef}^{commit}`]).status !== 0) return fail(-1, -1, `git rev-parse failed for base ref '${baseRef}' — failing closed.`);
   const diffFiles = runGitClean(root, ["diff", "--no-renames", "--name-only", baseRef, "--"]);
   if (diffFiles.status !== 0) return fail(-1, -1, `git diff against '${baseRef}' failed — failing closed.`);
   const allDiffPaths = (diffFiles.stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const diffSet = new Set<string>(allDiffPaths.filter((s) => isOracleSurface(s)));
   const rustInlineCandidates = allDiffPaths.filter((s) => s.endsWith(".rs") && !diffSet.has(s));
-  const trackedAtBase = new Set(
-    (runGitClean(root, ["ls-tree", "-r", "--name-only", baseRef]).stdout ?? "")
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-  for (const rel of listAllWorkingTreeOracleFiles(root)) {
-    if (!trackedAtBase.has(rel)) diffSet.add(rel);
-  }
+  const trackedAtBase = new Set((runGitClean(root, ["ls-tree", "-r", "--name-only", baseRef]).stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+  for (const rel of listAllWorkingTreeOracleFiles(root)) if (!trackedAtBase.has(rel)) diffSet.add(rel);
 
   const parsedCmd = parseAndValidateCommandArgv("canary", testCmd, root);
   if (parsedCmd.error) return fail(-1, -1, `Rejected oracle --test-cmd: ${parsedCmd.error}`);
@@ -198,86 +270,26 @@ export function runTwoSidedOracleCheck(repoPath: string, baseRef: string, testCm
   const headHome = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oh-head-"));
   let headRun: ReturnType<typeof runArgvChain>;
   try {
-    headRun = runArgvChain(parsedCmd.steps, headSandboxDir, makeSandboxPythonEnv(childEnv, headSandboxDir, headHome), 120_000, parsedCmd.stepCwds);
+    headRun = runArgvChain(parsedCmd.steps, { cwd: headSandboxDir, env: makeSandboxPythonEnv(childEnv, headSandboxDir, headHome), timeoutMs: 120_000, stepCwds: parsedCmd.stepCwds });
   } finally {
     fs.rmSync(headSandboxDir, { recursive: true, force: true });
     fs.rmSync(headHome, { recursive: true, force: true });
   }
-  const headExit = headRun.status;
-  if (headExit !== 0) return fail(headExit, -1, `Head test suite fails (exit ${headExit}).`);
+  if (headRun.status !== 0) return fail(headRun.status, -1, `Head test suite fails (exit ${headRun.status}).`);
   const headCounts = parseRunnerTestCounts(`${headRun.stdout}\n${headRun.stderr}`, parsedCmd.steps);
   if (headCounts.hasTestRunner && (!headCounts.matched || headCounts.passed <= 0 || headCounts.failed > 0)) {
-    return fail(headExit, -1, `Head test suite executed 0 passing tests (matched=${headCounts.matched}, passed=${headCounts.passed}).`);
+    return fail(headRun.status, -1, `Head test suite executed 0 passing tests (matched=${headCounts.matched}, passed=${headCounts.passed}).`);
   }
   const changedOracleFiles = [...diffSet].sort();
-  const rustInlineSplices: Array<{ rel: string; spliced: string }> = [];
-  let deletedRustWithTests = false;
-  for (const rel of rustInlineCandidates) {
-    const baseShow = runGitClean(root, ["show", `${baseRef}:${rel}`]);
-    const headAbs = path.join(root, rel);
-    if (baseShow.status === 0) {
-      if (fs.existsSync(headAbs)) {
-        const spliced = spliceBaseRustTestsIntoHead(fs.readFileSync(headAbs, "utf8"), baseShow.stdout);
-        if (spliced !== null) rustInlineSplices.push({ rel, spliced });
-      } else if (extractRustInlineTestSpans(baseShow.stdout).length > 0) {
-        deletedRustWithTests = true;
-        rustInlineSplices.push({ rel, spliced: baseShow.stdout });
-      }
-    }
-  }
-
+  const { splices: rustInlineSplices, deletedRustWithTests } = collectRustInlineSplices(root, baseRef, rustInlineCandidates);
   if (changedOracleFiles.length === 0 && rustInlineSplices.length === 0) {
-    return {
-      passed: true, baseRef, baseTestsOnHeadCodeExit: 0, headTestsOnHeadCodeExit: 0,
-      declaredBehaviorChange: false, reason: "No existing test files or test runner configs modified; head suite passes.",
-    };
+    return { passed: true, baseRef, baseTestsOnHeadCodeExit: 0, headTestsOnHeadCodeExit: 0, declaredBehaviorChange: false, reason: "No existing test files or test runner configs modified; head suite passes." };
   }
-
   const allCheckedOracle = [...changedOracleFiles, ...rustInlineSplices.map((r) => r.rel)];
   const approvedFiles = loadBaseApprovedBehaviorChanges(root, baseRef);
   const allApproved = allCheckedOracle.every((f) => approvedFiles.has(f));
   if (deletedRustWithTests && !allApproved) {
-    return fail(headExit, 1, `ORACLE REWRITE DETECTED: Rust file(s) containing inline tests were deleted compared to ${baseRef} without base-approved .verification/behavior-changes.json.`);
+    return fail(headRun.status, 1, `ORACLE REWRITE DETECTED: Rust file(s) containing inline tests were deleted compared to ${baseRef} without base-approved .verification/behavior-changes.json.`);
   }
-
-  const sandboxDir = copyWorkingTreeToSandbox(root);
-  const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-oh-"));
-  try {
-    for (const rel of changedOracleFiles) {
-      const baseContent = runGitCleanBuffer(root, ["show", `${baseRef}:${rel}`]);
-      const dest = path.resolve(sandboxDir, rel);
-      if (baseContent.status === 0) {
-        safeWriteInSandbox(sandboxDir, rel, baseContent.stdout);
-      } else {
-        try { fs.rmSync(dest, { recursive: true, force: true }); } catch { void 0; }
-      }
-    }
-    for (const splice of rustInlineSplices) {
-      safeWriteInSandbox(sandboxDir, splice.rel, splice.spliced);
-    }
-
-    const baseParsedCmd = parseAndValidateCommandArgv("canary", testCmd, sandboxDir);
-    if (baseParsedCmd.error) return fail(headExit, -1, `Rejected base-ref oracle --test-cmd: ${baseParsedCmd.error}`);
-    const baseOnHead = runArgvChain(baseParsedCmd.steps, sandboxDir, makeSandboxPythonEnv(childEnv, sandboxDir, isolatedHome), 120_000, baseParsedCmd.stepCwds);
-    const baseExit = baseOnHead.status;
-    const baseCounts = parseRunnerTestCounts(`${baseOnHead.stdout}\n${baseOnHead.stderr}`, baseParsedCmd.steps);
-    const baseRanZero = baseExit === 0 && baseCounts.hasTestRunner && (!baseCounts.matched || baseCounts.passed <= 0 || baseCounts.failed > 0);
-    const effectiveBaseExit = baseRanZero ? 1 : baseExit;
-    const passed = effectiveBaseExit === 0 || allApproved;
-    return {
-      passed, baseRef, baseTestsOnHeadCodeExit: effectiveBaseExit, headTestsOnHeadCodeExit: headExit,
-      declaredBehaviorChange: allApproved,
-      reason:
-        effectiveBaseExit === 0
-          ? "Two-sided oracle PASS: base tests and runner config still pass against working-tree code."
-          : allApproved
-            ? "Two-sided oracle PASS: base-ref .verification/behavior-changes.json explicitly approves modified oracle files."
-            : baseRanZero
-              ? `ORACLE REWRITE DETECTED: base oracle executed 0 passing tests against working-tree code.`
-              : `ORACLE REWRITE DETECTED: base tests/configs from ${baseRef} fail against working-tree code (exit ${effectiveBaseExit}) without base-approved .verification/behavior-changes.json entries for [${allCheckedOracle.join(", ")}].`,
-    };
-  } finally {
-    fs.rmSync(sandboxDir, { recursive: true, force: true });
-    fs.rmSync(isolatedHome, { recursive: true, force: true });
-  }
+  return runBaseOracleSandbox({ root, baseRef, testCmd, headExit: headRun.status, changedOracleFiles, rustInlineSplices, allCheckedOracle, allApproved, childEnv });
 }

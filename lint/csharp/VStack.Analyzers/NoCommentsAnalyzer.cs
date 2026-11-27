@@ -49,6 +49,7 @@ public sealed class NoCommentsAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeTree(SyntaxTreeAnalysisContext context)
     {
+        if (context.Tree is null) return;
         var root = context.Tree.GetRoot(context.CancellationToken);
         var firstToken = root.GetFirstToken();
         var firstCodePos = firstToken.SpanStart;

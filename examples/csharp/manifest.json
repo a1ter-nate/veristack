@@ -10,7 +10,9 @@
       "no-release-stripped-assert",
       "cdc-wall-clock-duration",
       "perf-quadratic-loop-scan",
-      "perf-loop-compile-or-deepcopy"
+      "perf-loop-compile-or-deepcopy",
+      "tiger-hot-path-allocation",
+      "tiger-non-halting-assert"
     ],
     "BadTests.Tests.cs": [
       "no-fixed-sleep",
@@ -36,6 +38,13 @@
       "float-nan-unsafe-cmp",
       "condvar-wait-without-loop",
       "atomic-check-then-mutate-toctou"
+    ],
+    "TigerStyleCSharp.cs": [
+      "no-release-stripped-assert",
+      "tiger-non-halting-assert",
+      "tiger-unbounded-queue",
+      "tiger-explicit-over-implicit",
+      "tiger-fixed-width-types"
     ]
   },
   "clean": [
@@ -44,6 +53,7 @@
     "CleanBehaviorTests.Tests.cs",
     "SafeOssHardening.cs",
     "SafeTitansBHardening.cs",
-    "SafeTitansAHardening.cs"
+    "SafeTitansAHardening.cs",
+    "SafeTigerStyleCSharp.cs"
   ]
 }

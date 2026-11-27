@@ -1,4 +1,5 @@
 export function buildBlindAuditPrompt(packetPath: string, repoPath: string, modelLabel: string): string {
+  if (!packetPath || !repoPath) throw new Error("packetPath and repoPath are required");
   return [
     `You are an independent verification-engineering auditor (${modelLabel}).`,
     `Perform a DOUBLE-BLIND ground-truth audit of the repository at ${repoPath}.`,

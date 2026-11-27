@@ -158,16 +158,18 @@ function extractWorkflowLinks(wfContent: string, trackedSet: ReadonlySet<string>
   return [...refs];
 }
 
-export function harvestRepoEvidence(repoPath: string): RepoEvidencePacket {
-  const root = path.resolve(repoPath);
-  const commitSha = runGit(root, ["rev-parse", "HEAD"]).trim() || "untracked";
-  const originHead = runGit(root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).trim().replace(/^origin\//, "");
-  const currentBranch = runGit(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
-  const defaultBranch = originHead || (currentBranch && currentBranch !== "HEAD" ? currentBranch : "main");
+function recordHarvestSignals(signalHits: Map<string, string[]>, rel: string, text: string): void {
+  for (const [sig, re] of VERIFICATION_SIGNAL_RE) {
+    if (re.test(text)) {
+      const list = signalHits.get(sig) ?? [];
+      if (list.length < 8) list.push(rel);
+      signalHits.set(sig, list);
+    }
+  }
+}
 
-  const tracked = listTrackedFiles(root);
-  const trackedSet = new Set(tracked);
-
+function scanTrackedRepoFiles(root: string, tracked: readonly string[], trackedSet: ReadonlySet<string>) {
+  if (!root) throw new Error("root is required");
   const dirLangCounts = new Map<string, number>();
   const langCounts = new Map<string, number>();
   const symlinks: Array<{ path: string; kind: "doc-or-agent" | "code" | "other" }> = [];
@@ -177,27 +179,12 @@ export function harvestRepoEvidence(repoPath: string): RepoEvidencePacket {
   const inlineRustTestFiles: string[] = [];
   const signalHits = new Map<string, string[]>();
   const linkedScriptSet = new Set<string>();
-
-  const recordSignals = (rel: string, text: string): void => {
-    for (const [sig, re] of VERIFICATION_SIGNAL_RE) {
-      if (re.test(text)) {
-        const list = signalHits.get(sig) ?? [];
-        if (list.length < 8) list.push(rel);
-        signalHits.set(sig, list);
-      }
-    }
-  };
-
   for (const rel of tracked) {
     const abs = path.join(root, rel);
     let stat: fs.Stats;
     try { stat = fs.lstatSync(abs); } catch { continue; }
-    if (stat.isSymbolicLink()) {
-      symlinks.push({ path: rel, kind: classifySymlinkTarget(rel) });
-      continue;
-    }
+    if (stat.isSymbolicLink()) { symlinks.push({ path: rel, kind: classifySymlinkTarget(rel) }); continue; }
     if (!stat.isFile()) continue;
-
     const ext = path.posix.extname(rel).toLowerCase();
     const base = path.posix.basename(rel).toLowerCase();
     const lang = CODE_EXT_LANG.get(ext);
@@ -206,7 +193,6 @@ export function harvestRepoEvidence(repoPath: string): RepoEvidencePacket {
       const dlKey = `${rel.split("/").slice(0, 2).join("/")}::${lang}`;
       dirLangCounts.set(dlKey, (dirLangCounts.get(dlKey) ?? 0) + 1);
     }
-
     const isWorkflow =
       (rel.startsWith(".github/workflows/") && /\.(?:ya?ml)$/i.test(rel)) ||
       rel === ".gitlab-ci.yml" ||
@@ -217,53 +203,51 @@ export function harvestRepoEvidence(repoPath: string): RepoEvidencePacket {
       const links = extractWorkflowLinks(content, trackedSet);
       for (const l of links) linkedScriptSet.add(l);
       workflows.push({ path: rel, lines: content.split(/\r?\n/).length, links, content });
-      recordSignals(rel, content);
+      recordHarvestSignals(signalHits, rel, content);
       continue;
     }
-
     const isManifest = MANIFEST_BASES.has(base) || base.endsWith(".csproj") || base.endsWith(".sln") || base.endsWith(".slnx");
     if (isManifest && manifests.length < 120) {
       const content = readBounded(abs, 8_000);
       manifests.push(summarizeManifest(rel, content));
-      recordSignals(rel, content);
+      recordHarvestSignals(signalHits, rel, content);
     }
-
     if (TEST_PATH_RE.test(rel)) {
       testFiles.push(rel);
-      if (testFiles.length <= 250 && lang) recordSignals(rel, readBounded(abs, 6_000));
+      if (testFiles.length <= 250 && lang) recordHarvestSignals(signalHits, rel, readBounded(abs, 6_000));
     } else if (ext === ".rs" && stat.size <= 256_000) {
       const text = readBounded(abs, 64_000);
-      if (/#\[cfg\(test\)\]/.test(text) && /#\[(?:test|tokio::test|rstest)\]/.test(text)) {
-        inlineRustTestFiles.push(rel);
-      }
+      if (/#\[cfg\(test\)\]/.test(text) && /#\[(?:test|tokio::test|rstest)\]/.test(text)) inlineRustTestFiles.push(rel);
     }
   }
+  return { dirLangCounts, langCounts, symlinks, manifests, workflows, testFiles, inlineRustTestFiles, signalHits, linkedScriptSet };
+}
 
+export function harvestRepoEvidence(repoPath: string): RepoEvidencePacket {
+  if (!repoPath) throw new Error("repoPath is required");
+  const root = path.resolve(repoPath);
+  const commitSha = runGit(root, ["rev-parse", "HEAD"]).trim() || "untracked";
+  const originHead = runGit(root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).trim().replace(/^origin\//, "");
+  const currentBranch = runGit(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+  const defaultBranch = originHead || (currentBranch && currentBranch !== "HEAD" ? currentBranch : "main");
+  const tracked = listTrackedFiles(root);
+  const trackedSet = new Set(tracked);
+  const s = scanTrackedRepoFiles(root, tracked, trackedSet);
   const secondHop = new Set<string>();
-  for (const rel of linkedScriptSet) {
-    const txt = readBounded(path.join(root, rel), 8_000);
-    for (const next of extractWorkflowLinks(txt, trackedSet)) secondHop.add(next);
+  for (const rel of s.linkedScriptSet) {
+    for (const next of extractWorkflowLinks(readBounded(path.join(root, rel), 8_000), trackedSet)) secondHop.add(next);
   }
-  for (const rel of secondHop) linkedScriptSet.add(rel);
-  const linkedArtifacts = [...linkedScriptSet].slice(0, 45).map((rel) => ({
-    path: rel,
-    content: readBounded(path.join(root, rel), 10_000),
-  }));
-
-  const topDirLangs = [...dirLangCounts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 60)
-    .map(([k, count]) => {
-      const [dir = "", lang = ""] = k.split("::");
-      return { dir, lang, files: count };
-    });
-
+  for (const rel of secondHop) s.linkedScriptSet.add(rel);
+  const linkedArtifacts = [...s.linkedScriptSet].slice(0, 45).map((rel) => ({ path: rel, content: readBounded(path.join(root, rel), 10_000) }));
+  const topDirLangs = [...s.dirLangCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 60).map(([k, count]) => {
+    const [dir = "", lang = ""] = k.split("::");
+    return { dir, lang, files: count };
+  });
   const testDirs = new Map<string, number>();
-  for (const tf of testFiles) {
+  for (const tf of s.testFiles) {
     const key = tf.split("/").slice(0, 2).join("/");
     testDirs.set(key, (testDirs.get(key) ?? 0) + 1);
   }
-
   return {
     schemaVersion: 1,
     repoPath: root,
@@ -271,22 +255,22 @@ export function harvestRepoEvidence(repoPath: string): RepoEvidencePacket {
     commitSha,
     defaultBranch,
     totalTrackedFiles: tracked.length,
-    languageCensus: Object.fromEntries([...langCounts.entries()].sort((a, b) => b[1] - a[1])),
+    languageCensus: Object.fromEntries([...s.langCounts.entries()].sort((a, b) => b[1] - a[1])),
     topDirectoriesByLanguage: topDirLangs,
     symlinks: {
-      total: symlinks.length,
-      docOrAgent: symlinks.filter((s) => s.kind === "doc-or-agent").map((s) => s.path).slice(0, 25),
-      code: symlinks.filter((s) => s.kind === "code").map((s) => s.path).slice(0, 25),
+      total: s.symlinks.length,
+      docOrAgent: s.symlinks.filter((x) => x.kind === "doc-or-agent").map((x) => x.path).slice(0, 25),
+      code: s.symlinks.filter((x) => x.kind === "code").map((x) => x.path).slice(0, 25),
     },
-    manifests,
-    workflows,
+    manifests: s.manifests,
+    workflows: s.workflows,
     linkedCiArtifacts: linkedArtifacts,
     testSurface: {
-      totalTestFiles: testFiles.length,
-      inlineRustTestFilesCount: inlineRustTestFiles.length,
-      inlineRustTestSample: inlineRustTestFiles.slice(0, 25),
+      totalTestFiles: s.testFiles.length,
+      inlineRustTestFilesCount: s.inlineRustTestFiles.length,
+      inlineRustTestSample: s.inlineRustTestFiles.slice(0, 25),
       topTestDirectories: [...testDirs.entries()].sort((a, b) => b[1] - a[1]).slice(0, 35),
-      verificationSignals: Object.fromEntries(signalHits.entries()),
+      verificationSignals: Object.fromEntries(s.signalHits.entries()),
     },
   };
 }

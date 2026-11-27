@@ -46,10 +46,7 @@ public sealed class TestIntegrityAnalyzer : DiagnosticAnalyzer
     private static void AnalyzeMethod(SyntaxNodeAnalysisContext context)
     {
         var method = (MethodDeclarationSyntax)context.Node;
-        if (!IsTestMethod(method, out var skippedAttr))
-        {
-            return;
-        }
+        if (!IsTestMethod(method, out var skippedAttr)) return;
 
         if (skippedAttr is not null)
         {
@@ -61,11 +58,15 @@ public sealed class TestIntegrityAnalyzer : DiagnosticAnalyzer
         }
 
         var body = (SyntaxNode?)method.Body ?? method.ExpressionBody;
-        if (body is null)
-        {
-            return;
-        }
+        if (body is null) return;
 
+        CheckInvocations(context, body);
+        CheckDeterminismAndConditionals(context, body);
+    }
+
+    private static void CheckInvocations(SyntaxNodeAnalysisContext context, SyntaxNode body)
+    {
+        if (body is null) return;
         foreach (var invocation in body.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
             var exprText = invocation.Expression.ToString();
@@ -127,7 +128,11 @@ public sealed class TestIntegrityAnalyzer : DiagnosticAnalyzer
                 }
             }
         }
+    }
 
+    private static void CheckDeterminismAndConditionals(SyntaxNodeAnalysisContext context, SyntaxNode body)
+    {
+        if (body is null) return;
         foreach (var member in body.DescendantNodes().OfType<MemberAccessExpressionSyntax>())
         {
             var text = member.ToString();
@@ -160,11 +165,7 @@ public sealed class TestIntegrityAnalyzer : DiagnosticAnalyzer
 
         foreach (var ifStmt in body.DescendantNodes().OfType<IfStatementSyntax>())
         {
-            if (ifStmt.Else is not null)
-            {
-                continue;
-            }
-
+            if (ifStmt.Else is not null) continue;
             var hasAssert = ifStmt.Statement.DescendantNodes().OfType<InvocationExpressionSyntax>()
                 .Any(inv => inv.Expression.ToString().StartsWith("Assert.", StringComparison.Ordinal));
             if (hasAssert)

@@ -152,41 +152,85 @@ function extractTriggers(onField: unknown, defaultBranch?: string): {
   return { triggers: [...new Set(triggers)], isPrBlocking, ignoredPaths: [...new Set(ignoredPaths)], matchedPaths: [...new Set(matchedPaths)], hasPrOrPushTrigger, falsyInputs };
 }
 
-export function parseGitHubWorkflow(
-  file: ScannedFile,
-  allFiles?: readonly ScannedFile[],
-  defaultBranch?: string,
-  depth = 0,
-  visited: ReadonlySet<string> = new Set(),
-): ActiveWorkflowInfo {
-  let doc: unknown;
-  try {
-    doc = YAML.parse(file.content);
-  } catch {
-    return { file: file.rel, isPrBlocking: false, triggers: [], activeCommands: [], deadJobs: ["<invalid-yaml>"] };
-  }
-  if (!isRecord(doc)) {
-    return { file: file.rel, isPrBlocking: false, triggers: [], activeCommands: [], deadJobs: [] };
-  }
+const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?=$|_))/i;
+const BAD_ENV_INLINE = /\b(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?:_[A-Z0-9_]+)?)\s*=/i;
+const SAFE_GOFLAGS = /^(?:\s*-(?:tags=[A-Za-z0-9_,.-]+|race|mod=readonly|count=1|trimpath|v))+\s*$/;
+const SAFE_GIT_AUTH_KEY = /^url\.https:\/\/x-access-token:\$\{\{\s*(?:github\.token|secrets\.[A-Z0-9_]+)\s*\}\}@github\.com\/\.insteadOf$/i;
 
-  const onField = doc.on ?? doc.true;
-  const { triggers, isPrBlocking, ignoredPaths, matchedPaths, hasPrOrPushTrigger, falsyInputs } = extractTriggers(onField, defaultBranch);
-  const rawJobs = isRecord(doc.jobs) ? doc.jobs : {};
+function isPoisoningGithubEnv(runText: string): boolean {
+  if (/\bGITHUB_PATH\b/i.test(runText)) return true;
+  if (!/\bGITHUB_ENV\b/i.test(runText)) return false;
+  return BAD_ENV_INLINE.test(runText) || /\b(?:eval|base64|xxd)\b|\$[A-Za-z_]\w*=/.test(runText);
+}
 
+function isBenignGitAuthEnv(envObj: Record<string, unknown>): boolean {
+  return String(envObj.GIT_CONFIG_COUNT ?? "").trim() === "1" && typeof envObj.GIT_CONFIG_KEY_0 === "string" && SAFE_GIT_AUTH_KEY.test(envObj.GIT_CONFIG_KEY_0.trim()) && typeof envObj.GIT_CONFIG_VALUE_0 === "string" && envObj.GIT_CONFIG_VALUE_0.trim() === "https://github.com/";
+}
+
+function hasPoisonedEnv(envObj: unknown): boolean {
+  return isRecord(envObj) && Object.entries(envObj).some(([k, v]) => {
+    if (!BAD_ENV_KEY.test(k)) return false;
+    if (/^GOFLAGS$/i.test(k) && typeof v === "string" && SAFE_GOFLAGS.test(v)) return false;
+    if (/^GIT_CONFIG_(?:COUNT|KEY_0|VALUE_0)$/i.test(k) && isBenignGitAuthEnv(envObj)) return false;
+    return true;
+  });
+}
+
+function extractSafeEnvLiterals(envObj: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!isRecord(envObj)) return out;
+  for (const [k, v] of Object.entries(envObj)) {
+    if (typeof v === "string" && !BAD_ENV_KEY.test(k) && /^[A-Za-z0-9_./:${}\s-]+$/.test(v.trim())) out.set(k, v.trim());
+  }
+  return out;
+}
+
+function expandSafeEnv(runText: string, envMap: ReadonlyMap<string, string>): string {
+  return runText
+    .replace(/\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (m, key: string) => envMap.get(key) ?? m)
+    .replace(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, key: string) => envMap.get(key) ?? m);
+}
+
+function knownActionCommands(step: Record<string, unknown>, envMap: ReadonlyMap<string, string>): string[] {
+  if (typeof step.uses !== "string") return [];
+  const uses = step.uses.trim().split("@")[0]?.toLowerCase() ?? "";
+  if (uses === "golangci/golangci-lint-action") return ["golangci-lint run"];
+  if (uses === "golang/govulncheck-action") return ["govulncheck"];
+  if (uses === "astral-sh/ruff-action") return ["ruff check"];
+  if (uses === "actions-rs/clippy-check") return ["cargo clippy"];
+  if (uses === "codspeedhq/action" && isRecord(step.with) && typeof step.with.run === "string") return ["codspeed", ...sanitizeShellBlock(expandSafeEnv(step.with.run, envMap))];
+  return [];
+}
+
+function isLocalActionSafe(usesVal: string, filesByRel?: ReadonlyMap<string, ScannedFile>): boolean {
+  if (!filesByRel || filesByRel.size === 0) return false;
+  const queue: Array<{ uses: string; depth: number }> = [{ uses: usesVal, depth: 0 }];
+  while (queue.length > 0) {
+    const cur = queue.pop();
+    if (!cur || cur.depth > 2) return false;
+    const base = cur.uses.trim().replace(/^\.\//, "").replace(/\/+$/, "");
+    const actionFile = filesByRel.get(`${base}/action.yml`) ?? filesByRel.get(`${base}/action.yaml`) ?? filesByRel.get(base);
+    if (!actionFile) return false;
+    let aDoc: unknown;
+    try { aDoc = YAML.parse(actionFile.content); } catch { return false; }
+    if (!isRecord(aDoc) || !isRecord(aDoc.runs) || !Array.isArray(aDoc.runs.steps)) return false;
+    for (const s of aDoc.runs.steps) {
+      if (!isRecord(s)) continue;
+      if (hasPoisonedEnv(s.env) || (typeof s.run === "string" && isPoisoningGithubEnv(s.run))) return false;
+      if (typeof s.uses === "string" && s.uses.trim().startsWith("./")) queue.push({ uses: s.uses, depth: cur.depth + 1 });
+    }
+  }
+  return true;
+}
+
+function computeDeadAndDeployJobs(rawJobs: Record<string, unknown>, falsyInputs: ReadonlySet<string>): { deadJobSet: Set<string>; deployJobSet: Set<string> } {
   const deadJobSet = new Set<string>();
   const deployJobSet = new Set<string>();
   for (const [jobId, jobVal] of Object.entries(rawJobs)) {
     if (!isRecord(jobVal)) continue;
-    if (isMainPushDeployIf(jobVal.if) && !isContinueOnError(jobVal["continue-on-error"])) {
-      deployJobSet.add(jobId);
-      deadJobSet.add(jobId);
-      continue;
-    }
-    if (!isUnconditionalIf(jobVal.if, falsyInputs) || isContinueOnError(jobVal["continue-on-error"])) {
-      deadJobSet.add(jobId);
-    }
+    if (isMainPushDeployIf(jobVal.if) && !isContinueOnError(jobVal["continue-on-error"])) { deployJobSet.add(jobId); deadJobSet.add(jobId); continue; }
+    if (!isUnconditionalIf(jobVal.if, falsyInputs) || isContinueOnError(jobVal["continue-on-error"])) deadJobSet.add(jobId);
   }
-
   let changed = true;
   while (changed) {
     changed = false;
@@ -194,144 +238,100 @@ export function parseGitHubWorkflow(
       if (deadJobSet.has(jobId) || !isRecord(jobVal)) continue;
       const needs = jobVal.needs;
       const depList = typeof needs === "string" ? [needs] : Array.isArray(needs) ? needs.filter((n): n is string => typeof n === "string") : [];
-      if (depList.some((dep) => deadJobSet.has(dep))) {
-        deadJobSet.add(jobId);
-        changed = true;
-      }
+      if (depList.some((dep) => deadJobSet.has(dep))) { deadJobSet.add(jobId); changed = true; }
     }
   }
+  return { deadJobSet, deployJobSet };
+}
 
+function collectJobStepCommands(
+  jobVal: Record<string, unknown>,
+  ctx: { wfEnvMap: Map<string, string>; wfDefaults: unknown; wfWorkDir: unknown; filesByRel?: ReadonlyMap<string, ScannedFile>; isDeployJob: boolean; activeCommands: string[]; scopedCommands: Array<{ cwd: string; command: string }>; deployCommands: string[] },
+): void {
+  const jobEnvMap = new Map(ctx.wfEnvMap);
+  for (const [k, v] of extractSafeEnvLiterals(jobVal.env)) jobEnvMap.set(k, v);
+  const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : ctx.wfDefaults;
+  const jobWorkDir = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run["working-directory"] : ctx.wfWorkDir;
+  const rawSteps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
+  const steps = rawSteps.flatMap((s) => (isRecord(s) && Array.isArray(s.parallel) ? s.parallel : [s]));
+  let jobEnvPoisoned = false;
+  for (const step of steps) {
+    if (!isRecord(step)) continue;
+    if (typeof step.uses === "string" && step.uses.trim().startsWith("./") && !isLocalActionSafe(step.uses, ctx.filesByRel)) { jobEnvPoisoned = true; continue; }
+    if (typeof step.run === "string" && isPoisoningGithubEnv(step.run)) { jobEnvPoisoned = true; continue; }
+    if (jobEnvPoisoned || hasPoisonedEnv(step.env) || !isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"]) || !isAllowedShell(step.shell ?? jobShell)) continue;
+    const rawWd = step["working-directory"] ?? jobWorkDir;
+    const cwd = typeof rawWd === "string" ? rawWd.trim().replace(/^\.\/+/, "").replace(/\/+$/, "") : "";
+    if (cwd.startsWith("/") || cwd.includes("..")) continue;
+    const stepEnvMap = new Map(jobEnvMap);
+    for (const [k, v] of extractSafeEnvLiterals(step.env)) stepEnvMap.set(k, v);
+    const stepCmds: string[] = knownActionCommands(step, stepEnvMap);
+    if (typeof step.run === "string") stepCmds.push(...sanitizeShellBlock(expandSafeEnv(step.run, stepEnvMap)));
+    for (const cmd of stepCmds) {
+      if (ctx.isDeployJob) ctx.deployCommands.push(cmd);
+      else { ctx.activeCommands.push(cmd); ctx.scopedCommands.push({ cwd: cwd === "." ? "" : cwd, command: cmd }); }
+    }
+  }
+}
+
+interface WorkflowFrame { wfFile: ScannedFile; doc: Record<string, unknown>; forceDeploy: boolean; depth: number; visited: ReadonlySet<string>; }
+
+function enqueueReusableWorkflow(
+  usesStr: string,
+  frame: WorkflowFrame,
+  isDeployJob: boolean,
+  ctx: { filesByRel?: ReadonlyMap<string, ScannedFile>; stack: WorkflowFrame[] },
+): void {
+  if (frame.depth >= 4 || !ctx.filesByRel) return;
+  const rawRef = usesStr.trim().replace(/^\$\//, "").replace(/^\.\//, "").split("@")[0] ?? "";
+  const nextVisited = new Set(frame.visited); nextVisited.add(frame.wfFile.rel);
+  const callee = rawRef.startsWith(".github/workflows/") && !nextVisited.has(rawRef) ? ctx.filesByRel.get(rawRef) : undefined;
+  if (!callee) return;
+  try {
+    const calleeDoc = YAML.parse(callee.content);
+    if (isRecord(calleeDoc)) ctx.stack.push({ wfFile: callee, doc: calleeDoc, forceDeploy: isDeployJob, depth: frame.depth + 1, visited: nextVisited });
+  } catch { void 0; }
+}
+
+export function parseGitHubWorkflow(file: ScannedFile, allFiles?: readonly ScannedFile[], defaultBranch?: string): ActiveWorkflowInfo {
+  if (!file.rel) throw new Error("Workflow ScannedFile must have rel.");
+  let rootDoc: unknown;
+  try { rootDoc = YAML.parse(file.content); } catch { return { file: file.rel, isPrBlocking: false, triggers: [], activeCommands: [], deadJobs: ["<invalid-yaml>"] }; }
+  if (!isRecord(rootDoc)) return { file: file.rel, isPrBlocking: false, triggers: [], activeCommands: [], deadJobs: [] };
+
+  const filesByRel = allFiles ? new Map(allFiles.map((f) => [f.rel, f])) : undefined;
+  const rootTriggers = extractTriggers(rootDoc.on ?? rootDoc.true, defaultBranch);
+  const rootRawJobs = isRecord(rootDoc.jobs) ? rootDoc.jobs : {};
+  const rootJobs = computeDeadAndDeployJobs(rootRawJobs, rootTriggers.falsyInputs);
   const activeCommands: string[] = [];
   const scopedCommands: Array<{ cwd: string; command: string }> = [];
   const deployCommands: string[] = [];
-  const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
-  const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
-  const BAD_ENV_KEY = /^(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?=$|_))/i;
-  const BAD_ENV_INLINE = /\b(?:VSTACK_ALLOW_MANIFEST_CHANGE|VSTACK_HOOK_DISABLED|VSTACK_RECEIPT_KEY|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_INSTALL|PYTEST_ADDOPTS|PYTEST_PLUGINS|PYTHONSTARTUP|PYTHONPATH|PYTHONUSERBASE|PYTHONHOME|VIRTUAL_ENV|GOFLAGS|GOENV|GOWORK|RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_HOME|CARGO_HOME|CARGO_BUILD_|CARGO_ENCODED_RUSTFLAGS|CARGO_TARGET_|CARGO_ALIAS_|CARGO_ENV_|DOTNET_STARTUP_HOOKS|DOTNET_ADDITIONAL_DEPS|DOTNET_ROOT|DOTNET_CLI_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PATH|BASH_ENV|ENV|ZDOTDIR|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_ATTRIBUTES|GIT_CONFIG(?:_[A-Z0-9_]+)?)\s*=/i;
-  const SAFE_GOFLAGS = /^(?:\s*-(?:tags=[A-Za-z0-9_,.-]+|race|mod=readonly|count=1|trimpath|v))+\s*$/;
-  const isPoisoningGithubEnv = (runText: string): boolean => {
-    if (/\bGITHUB_PATH\b/i.test(runText)) return true;
-    if (!/\bGITHUB_ENV\b/i.test(runText)) return false;
-    return BAD_ENV_INLINE.test(runText) || /\b(?:eval|base64|xxd)\b|\$[A-Za-z_]\w*=/.test(runText);
-  };
-  const SAFE_GIT_AUTH_KEY = /^url\.https:\/\/x-access-token:\$\{\{\s*(?:github\.token|secrets\.[A-Z0-9_]+)\s*\}\}@github\.com\/\.insteadOf$/i;
-  const isBenignGitAuthEnv = (envObj: Record<string, unknown>): boolean =>
-    String(envObj.GIT_CONFIG_COUNT ?? "").trim() === "1" &&
-    typeof envObj.GIT_CONFIG_KEY_0 === "string" &&
-    SAFE_GIT_AUTH_KEY.test(envObj.GIT_CONFIG_KEY_0.trim()) &&
-    typeof envObj.GIT_CONFIG_VALUE_0 === "string" &&
-    envObj.GIT_CONFIG_VALUE_0.trim() === "https://github.com/";
-  const hasPoisonedEnv = (envObj: unknown): boolean =>
-    isRecord(envObj) &&
-    Object.entries(envObj).some(([k, v]) => {
-      if (!BAD_ENV_KEY.test(k)) return false;
-      if (/^GOFLAGS$/i.test(k) && typeof v === "string" && SAFE_GOFLAGS.test(v)) return false;
-      if (/^GIT_CONFIG_(?:COUNT|KEY_0|VALUE_0)$/i.test(k) && isBenignGitAuthEnv(envObj)) return false;
-      return true;
-    });
-  const extractSafeEnvLiterals = (envObj: unknown): Map<string, string> => {
-    const out = new Map<string, string>();
-    if (!isRecord(envObj)) return out;
-    for (const [k, v] of Object.entries(envObj)) {
-      if (typeof v === "string" && !BAD_ENV_KEY.test(k) && /^[A-Za-z0-9_./:${}\s-]+$/.test(v.trim())) out.set(k, v.trim());
-    }
-    return out;
-  };
-  const wfEnvMap = extractSafeEnvLiterals(doc.env);
-  const expandSafeEnv = (runText: string, envMap: ReadonlyMap<string, string>): string =>
-    runText
-      .replace(/\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (m, key: string) => envMap.get(key) ?? m)
-      .replace(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, key: string) => envMap.get(key) ?? m);
-  const knownActionCommands = (step: Record<string, unknown>, envMap: ReadonlyMap<string, string>): string[] => {
-    if (typeof step.uses !== "string") return [];
-    const uses = step.uses.trim().split("@")[0]?.toLowerCase() ?? "";
-    if (uses === "golangci/golangci-lint-action") return ["golangci-lint run"];
-    if (uses === "golang/govulncheck-action") return ["govulncheck"];
-    if (uses === "astral-sh/ruff-action") return ["ruff check"];
-    if (uses === "actions-rs/clippy-check") return ["cargo clippy"];
-    if (uses === "codspeedhq/action" && isRecord(step.with) && typeof step.with.run === "string") {
-      return ["codspeed", ...sanitizeShellBlock(expandSafeEnv(step.with.run, envMap))];
-    }
-    return [];
-  };
-  const isLocalActionSafe = (usesVal: string, depth = 0): boolean => {
-    if (depth > 2 || !allFiles || allFiles.length === 0) return false;
-    const base = usesVal.trim().replace(/^\.\//, "").replace(/\/+$/, "");
-    const actionFile = allFiles.find((f) => f.rel === `${base}/action.yml` || f.rel === `${base}/action.yaml` || f.rel === base);
-    if (!actionFile) return false;
-    try {
-      const aDoc = YAML.parse(actionFile.content);
-      if (!isRecord(aDoc) || !isRecord(aDoc.runs) || !Array.isArray(aDoc.runs.steps)) return false;
-      for (const s of aDoc.runs.steps) {
-        if (!isRecord(s)) continue;
-        if (hasPoisonedEnv(s.env)) return false;
-        if (typeof s.run === "string" && isPoisoningGithubEnv(s.run)) return false;
-        if (typeof s.uses === "string" && s.uses.trim().startsWith("./") && !isLocalActionSafe(s.uses, depth + 1)) return false;
-      }
-      return true;
-    } catch { return false; }
-  };
-  const wfPoisoned = hasPoisonedEnv(doc.env);
-  for (const [jobId, jobVal] of Object.entries(rawJobs)) {
-    const isDeployJob = deployJobSet.has(jobId);
-    if ((deadJobSet.has(jobId) && !isDeployJob) || !isRecord(jobVal)) continue;
-    if (wfPoisoned || hasPoisonedEnv(jobVal.env)) continue;
-    if (typeof jobVal.uses === "string" && depth < 4 && allFiles) {
-      const rawRef = jobVal.uses.trim().replace(/^\$\//, "").replace(/^\.\//, "").split("@")[0] ?? "";
-      const nextVisited = new Set(visited);
-      nextVisited.add(file.rel);
-      if (rawRef.startsWith(".github/workflows/") && !nextVisited.has(rawRef)) {
-        const callee = allFiles.find((f) => f.rel === rawRef);
-        if (callee) {
-          const sub = parseGitHubWorkflow(callee, allFiles, defaultBranch, depth + 1, nextVisited);
-          for (const c of sub.activeCommands) {
-            if (isDeployJob) deployCommands.push(c);
-            else activeCommands.push(c);
-          }
-          if (!isDeployJob && sub.scopedCommands) scopedCommands.push(...sub.scopedCommands);
-        }
-      }
-      continue;
-    }
-    const jobEnvMap = new Map(wfEnvMap);
-    for (const [k, v] of extractSafeEnvLiterals(jobVal.env)) jobEnvMap.set(k, v);
-    const jobShell = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run.shell : wfDefaults;
-    const jobWorkDir = isRecord(jobVal.defaults) && isRecord(jobVal.defaults.run) ? jobVal.defaults.run["working-directory"] : wfWorkDir;
-    const rawSteps = Array.isArray(jobVal.steps) ? jobVal.steps : [];
-    const steps = rawSteps.flatMap((s) => (isRecord(s) && Array.isArray(s.parallel) ? s.parallel : [s]));
-    let jobEnvPoisoned = false;
-    for (const step of steps) {
-      if (!isRecord(step)) continue;
-      if (typeof step.uses === "string" && step.uses.trim().startsWith("./") && !isLocalActionSafe(step.uses)) { jobEnvPoisoned = true; continue; }
-      if (typeof step.run === "string" && isPoisoningGithubEnv(step.run)) { jobEnvPoisoned = true; continue; }
-      if (jobEnvPoisoned || hasPoisonedEnv(step.env)) continue;
-      if (!isUnconditionalIf(step.if) || isContinueOnError(step["continue-on-error"])) continue;
-      if (!isAllowedShell(step.shell ?? jobShell)) continue;
-      const rawWd = step["working-directory"] ?? jobWorkDir;
-      const cwd = typeof rawWd === "string" ? rawWd.trim().replace(/^\.\/+/, "").replace(/\/+$/, "") : "";
-      if (cwd.startsWith("/") || cwd.includes("..")) continue;
-      const stepEnvMap = new Map(jobEnvMap);
-      for (const [k, v] of extractSafeEnvLiterals(step.env)) stepEnvMap.set(k, v);
-      const stepCmds: string[] = knownActionCommands(step, stepEnvMap);
-      if (typeof step.run === "string") stepCmds.push(...sanitizeShellBlock(expandSafeEnv(step.run, stepEnvMap)));
-      for (const cmd of stepCmds) {
-        if (isDeployJob) deployCommands.push(cmd);
-        else { activeCommands.push(cmd); scopedCommands.push({ cwd: cwd === "." ? "" : cwd, command: cmd }); }
-      }
+  const stack: WorkflowFrame[] = [{ wfFile: file, doc: rootDoc, forceDeploy: false, depth: 0, visited: new Set() }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (!frame || hasPoisonedEnv(frame.doc.env)) continue;
+    const { doc, wfFile, forceDeploy } = frame;
+    const tr = wfFile === file ? rootTriggers : extractTriggers(doc.on ?? doc.true, defaultBranch);
+    const rawJobs = isRecord(doc.jobs) ? doc.jobs : {};
+    const { deadJobSet, deployJobSet } = wfFile === file ? rootJobs : computeDeadAndDeployJobs(rawJobs, tr.falsyInputs);
+    const wfDefaults = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run.shell : undefined;
+    const wfWorkDir = isRecord(doc.defaults) && isRecord(doc.defaults.run) ? doc.defaults.run["working-directory"] : undefined;
+    const wfEnvMap = extractSafeEnvLiterals(doc.env);
+    for (const [jobId, jobVal] of Object.entries(rawJobs)) {
+      const isDeployJob = forceDeploy || deployJobSet.has(jobId);
+      if ((deadJobSet.has(jobId) && !deployJobSet.has(jobId)) || !isRecord(jobVal) || hasPoisonedEnv(jobVal.env)) continue;
+      if (typeof jobVal.uses === "string") { enqueueReusableWorkflow(jobVal.uses, frame, isDeployJob, { filesByRel, stack }); continue; }
+      collectJobStepCommands(jobVal, { wfEnvMap, wfDefaults, wfWorkDir, filesByRel, isDeployJob, activeCommands, scopedCommands, deployCommands });
     }
   }
 
   return {
-    file: file.rel,
-    isPrBlocking,
-    triggers,
-    activeCommands,
-    scopedCommands,
+    file: file.rel, isPrBlocking: rootTriggers.isPrBlocking, triggers: rootTriggers.triggers, activeCommands, scopedCommands,
     ...(deployCommands.length > 0 ? { deployCommands } : {}),
-    ...(ignoredPaths.length > 0 ? { ignoredPaths } : {}),
-    ...(matchedPaths.length > 0 ? { matchedPaths } : {}),
-    hasPrOrPushTrigger,
-    deadJobs: [...deadJobSet].sort(),
+    ...(rootTriggers.ignoredPaths.length > 0 ? { ignoredPaths: rootTriggers.ignoredPaths } : {}),
+    ...(rootTriggers.matchedPaths.length > 0 ? { matchedPaths: rootTriggers.matchedPaths } : {}),
+    hasPrOrPushTrigger: rootTriggers.hasPrOrPushTrigger, deadJobs: [...rootJobs.deadJobSet].sort(),
   };
 }
 
@@ -467,6 +467,7 @@ export function checkGitHubBranchProtection(repoRoot: string): {
 export function evaluateBranchProtectionJson(defaultBranch: string, rawJson: string): {
   checked: boolean; passed: boolean; requiredChecks: string[]; codeOwnerReviewsRequired: boolean; adminsEnforced: boolean; detail: string;
 } {
+  if (!defaultBranch || !rawJson) return { checked: false, passed: false, requiredChecks: [], codeOwnerReviewsRequired: false, adminsEnforced: false, detail: "Missing branch protection JSON." };
   try {
     const parsed = JSON.parse(rawJson) as {
       required_status_checks?: { contexts?: string[]; checks?: Array<{ context?: string }> };

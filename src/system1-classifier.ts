@@ -147,14 +147,19 @@ function selectRoundRobin<T extends { component: string; file: string }>(
   return { selected, distribution };
 }
 
-function buildTestFacts(
-  file: ScannedFile,
-  ordinal: number,
-  boundary: TestBoundary,
-  testCaseCount: number,
-  hasTableOrPbt: boolean,
-  networkMock: boolean,
-): System1CandidateFacts {
+interface TestFactsInput {
+  file: ScannedFile;
+  ordinal: number;
+  boundary: TestBoundary;
+  testCaseCount: number;
+  hasTableOrPbt: boolean;
+  networkMock: boolean;
+}
+
+function buildTestFacts(input: TestFactsInput): System1CandidateFacts {
+  const { file, ordinal, boundary, testCaseCount, hasTableOrPbt, networkMock } = input;
+  if (!file.rel) throw new Error("Test file relative path is required.");
+  if (ordinal < 1) throw new Error("Candidate ordinal must be >= 1.");
   const code = maskStrings(file.content);
   const hasSutImport = hasNonFrameworkImport(file.content, file.language);
   const coverageFarmName = COVERAGE_FARM.test(path.posix.basename(file.rel));
@@ -166,40 +171,18 @@ function buildTestFacts(
   const context: "complete" | "incomplete" = file.content.length <= MAX_SNIPPET_CHARS ? "complete" : "incomplete";
 
   const summaryParts = [
-    `boundary=${boundary}`,
-    `cases=${testCaseCount}`,
-    `lines=${file.lines}`,
-    `sutImport=${hasSutImport}`,
-    `mocks=${mockCount}`,
-    `networkMock=${networkMock}`,
-    `tableOrPbt=${hasTableOrPbt}`,
-    `literalOnly=${literalOnlyAssertion}`,
-    `selfDerived=${selfDerivedExpectation}`,
-    `multiStatus=${multiStatusCount}`,
-    `nondet=${nondeterminismCount}`,
-    `coverageFarm=${coverageFarmName}`,
-    `context=${context}`,
+    `boundary=${boundary}`, `cases=${testCaseCount}`, `lines=${file.lines}`, `sutImport=${hasSutImport}`,
+    `mocks=${mockCount}`, `networkMock=${networkMock}`, `tableOrPbt=${hasTableOrPbt}`,
+    `literalOnly=${literalOnlyAssertion}`, `selfDerived=${selfDerivedExpectation}`,
+    `multiStatus=${multiStatusCount}`, `nondet=${nondeterminismCount}`,
+    `coverageFarm=${coverageFarmName}`, `context=${context}`,
   ];
 
   return {
-    id: `s1-${String(ordinal).padStart(3, "0")}`,
-    component: componentOf(file.rel),
-    file: file.rel,
-    kind: "test",
-    context,
-    lines: file.lines,
-    testCaseCount,
-    observedBoundary: boundary,
-    hasSutImport,
-    coverageFarmName,
-    literalOnlyAssertion,
-    selfDerivedExpectation,
-    multiStatusCount,
-    mockCount,
-    networkMock,
-    nondeterminismCount,
-    hasTableOrPbt,
-    factSummary: summaryParts.join("; "),
+    id: `s1-${String(ordinal).padStart(3, "0")}`, component: componentOf(file.rel), file: file.rel,
+    kind: "test", context, lines: file.lines, testCaseCount, observedBoundary: boundary, hasSutImport,
+    coverageFarmName, literalOnlyAssertion, selfDerivedExpectation, multiStatusCount, mockCount,
+    networkMock, nondeterminismCount, hasTableOrPbt, factSummary: summaryParts.join("; "),
   };
 }
 
@@ -288,92 +271,67 @@ function staticLabelFor(facts: System1CandidateFacts, rubricId: System1RubricId,
   return { label: facts.observedBoundary === "unit" ? "low_auto_merge" : "medium_single_review", isIssue: false, reason: "Standard risk tier based on path and boundary." };
 }
 
-export function buildSystem1Packet(
-  repoOrPath: string | DiscoveredRepo,
-  options: { maxCandidates?: number; rubrics?: readonly System1RubricId[] } = {},
-): System1ClassificationReport {
-  const repo = typeof repoOrPath === "string" ? discoverRepo(repoOrPath) : repoOrPath;
-  const maxCandidates = Math.max(1, Math.min(100, options.maxCandidates ?? 30));
-  const activeRubrics: readonly System1RubricId[] = options.rubrics ?? [
-    "test-value",
-    "test-boundary",
-    "push-down-eligibility",
-    "assertion-independence",
-    "mock-boundary",
-    "instruction-to-lint",
-  ];
-
-  const analysis = analyzeTests(repo);
-  const invByFile = new Map(analysis.inventory.map((r) => [r.file, r]));
-  const rawByFile = new Map(repo.files.map((f) => [f.rel, f.content]));
-
-  const eligible: System1CandidateFacts[] = [];
-  let ordinal = 1;
-  for (const file of repo.files) {
-    if (file.isTest && file.language) {
-      const rec = invByFile.get(file.rel);
-      if (!rec) continue;
-      eligible.push(
-        buildTestFacts(file, ordinal++, rec.boundary, rec.testCaseCount, rec.hasTable || rec.hasPbt, rec.hasNetworkMock),
-      );
-    } else if (INSTRUCTION_FILE.test(file.rel)) {
-      eligible.push(buildInstructionFacts(file, ordinal++));
-    }
-  }
-
-  const { selected, distribution } = selectRoundRobin(eligible, maxCandidates);
+function buildRequestsAndJudgments(
+  selected: readonly System1CandidateFacts[],
+  rawByFile: ReadonlyMap<string, string>,
+  activeRubrics: readonly System1RubricId[],
+): { requests: System1Request[]; judgments: System1Judgment[] } {
   const requests: System1Request[] = [];
   const judgments: System1Judgment[] = [];
-
+  if (selected.length === 0) return { requests, judgments };
+  if (activeRubrics.length === 0) return { requests, judgments };
   for (const cand of selected) {
     const raw = rawByFile.get(cand.file) ?? "";
     const snippet = raw.length <= MAX_SNIPPET_CHARS ? raw : `${raw.slice(0, MAX_SNIPPET_CHARS)}\n[TRUNCATED: ABSTAIN ON INCOMPLETE CONTEXT]`;
     for (const rubricId of activeRubrics) {
       const def = SYSTEM1_RUBRICS[rubricId];
       if (def.kind !== cand.kind) continue;
-      requests.push({
-        id: `${cand.id}:${rubricId}`,
-        candidateId: cand.id,
-        rubricId,
-        question: def.question,
-        choices: def.choices,
-        factContext: cand.factSummary,
-        snippet,
-      });
-
+      requests.push({ id: `${cand.id}:${rubricId}`, candidateId: cand.id, rubricId, question: def.question, choices: def.choices, factContext: cand.factSummary, snippet });
       const stat = staticLabelFor(cand, rubricId, raw);
       const abstained = stat.label === "INSUFFICIENT_CONTEXT" || stat.label === "insufficient_context";
       judgments.push({
-        candidateId: cand.id,
-        file: cand.file,
-        component: cand.component,
-        rubricId,
-        staticLabel: stat.label,
-        modelChoice: null,
-        modelScore: null,
-        verdict: abstained ? "abstained" : "static_advisory",
-        reason: stat.reason,
-        humanReviewRequired: true,
+        candidateId: cand.id, file: cand.file, component: cand.component, rubricId,
+        staticLabel: stat.label, modelChoice: null, modelScore: null,
+        verdict: abstained ? "abstained" : "static_advisory", reason: stat.reason, humanReviewRequired: true,
       });
     }
   }
+  return { requests, judgments };
+}
 
+export function buildSystem1Packet(
+  repoOrPath: string | DiscoveredRepo,
+  options: { maxCandidates?: number; rubrics?: readonly System1RubricId[] } = {},
+): System1ClassificationReport {
+  if (!repoOrPath) throw new Error("Repository path or object is required.");
+  const repo = typeof repoOrPath === "string" ? discoverRepo(repoOrPath) : repoOrPath;
+  if (!repo.root) throw new Error("Discovered repository root is required.");
+  const maxCandidates = Math.max(1, Math.min(100, options.maxCandidates ?? 30));
+  const activeRubrics: readonly System1RubricId[] = options.rubrics ?? [
+    "test-value", "test-boundary", "push-down-eligibility", "assertion-independence", "mock-boundary", "instruction-to-lint",
+  ];
+  const analysis = analyzeTests(repo);
+  const invByFile = new Map(analysis.inventory.map((r) => [r.file, r]));
+  const rawByFile = new Map(repo.files.map((f) => [f.rel, f.content]));
+  const eligible: System1CandidateFacts[] = [];
+  let ordinal = 1;
+  for (const file of repo.files) {
+    if (file.isTest && file.language) {
+      const rec = invByFile.get(file.rel);
+      if (!rec) continue;
+      eligible.push(buildTestFacts({ file, ordinal: ordinal++, boundary: rec.boundary, testCaseCount: rec.testCaseCount, hasTableOrPbt: rec.hasTable || rec.hasPbt, networkMock: rec.hasNetworkMock }));
+    } else if (INSTRUCTION_FILE.test(file.rel)) {
+      eligible.push(buildInstructionFacts(file, ordinal++));
+    }
+  }
+  const { selected, distribution } = selectRoundRobin(eligible, maxCandidates);
+  const { requests, judgments } = buildRequestsAndJudgments(selected, rawByFile, activeRubrics);
   return {
-    schemaVersion: 1,
-    repo: repo.root,
-    rubricVersion: SYSTEM1_RUBRIC_VERSION,
-    rubricHash: SYSTEM1_RUBRIC_HASH,
-    mode: "static-preclassify",
-    calibrationStatus: "uncalibrated_advisory_only",
-    scoreSemantics: "choice_concentration_not_calibrated_precision",
-    releaseBar: { ...SYSTEM1_RELEASE_BAR },
-    totalEligible: eligible.length,
-    selectedCount: selected.length,
-    truncated: eligible.length > selected.length,
-    componentDistribution: distribution,
-    candidates: selected,
-    requests,
-    judgments,
+    schemaVersion: 1, repo: repo.root, rubricVersion: SYSTEM1_RUBRIC_VERSION, rubricHash: SYSTEM1_RUBRIC_HASH,
+    mode: "static-preclassify", calibrationStatus: "uncalibrated_advisory_only",
+    scoreSemantics: "choice_concentration_not_calibrated_precision", releaseBar: { ...SYSTEM1_RELEASE_BAR },
+    totalEligible: eligible.length, selectedCount: selected.length, truncated: eligible.length > selected.length,
+    componentDistribution: distribution, candidates: selected, requests, judgments,
   };
 }
 

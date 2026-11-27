@@ -13,6 +13,7 @@ export interface RatchetBaseline {
   rules: Record<string, number>;
   ruleFiles?: Record<string, number>;
   rungs?: Record<string, RatchetRungEntry>;
+  dependenciesCount?: number;
 }
 
 export interface RatchetDelta {
@@ -47,6 +48,7 @@ const GRADE_RANK: Record<RungCoverageGrade, number> = {
 export function buildRatchetBaseline(
   findings: readonly Finding[],
   rungs?: readonly RungStatus[],
+  dependenciesCount?: number,
 ): RatchetBaseline {
   const counts = new Map<string, number>();
   const fileCounts = new Map<string, number>();
@@ -64,8 +66,9 @@ export function buildRatchetBaseline(
   for (const key of [...fileCounts.keys()].sort()) {
     ruleFiles[key] = fileCounts.get(key) ?? 0;
   }
+  const depPart = typeof dependenciesCount === "number" ? { dependenciesCount } : {};
   if (!rungs || rungs.length === 0) {
-    return { version: 1, rules, ruleFiles };
+    return { version: 1, rules, ruleFiles, ...depPart };
   }
   const rungMap: Record<string, RatchetRungEntry> = {};
   for (const r of rungs) {
@@ -75,14 +78,81 @@ export function buildRatchetBaseline(
       executedInCi: r.executedInCi,
     };
   }
-  return { version: 1, rules, ruleFiles, rungs: rungMap };
+  return { version: 1, rules, ruleFiles, rungs: rungMap, ...depPart };
+}
+
+function evaluateRungRegressions(
+  baseline: RatchetBaseline,
+  rungs?: readonly RungStatus[],
+): { hasRungBaseline: boolean; rungRegressions: RatchetRungRegression[] } {
+  const rungRegressions: RatchetRungRegression[] = [];
+  const hasRungBaseline = Boolean(baseline.rungs && Object.keys(baseline.rungs).length > 0);
+  if (rungs && rungs.length > 0 && !hasRungBaseline) {
+    rungRegressions.push({
+      rung: "ALL",
+      reason: "ratchet baseline is missing 'rungs' snapshot — refusing to hide rung regressions",
+    });
+    return { hasRungBaseline, rungRegressions };
+  }
+  if (!baseline.rungs || !rungs) return { hasRungBaseline, rungRegressions };
+  for (const r of rungs) {
+    const base = baseline.rungs[r.rung];
+    if (!base) continue;
+    if (base.grade !== "not-applicable" && r.coverageGrade === "not-applicable") {
+      rungRegressions.push({
+        rung: r.rung,
+        reason: `archetype downgrade excused rung ${base.grade} -> not-applicable`,
+      });
+    } else if (
+      base.grade !== "not-applicable" &&
+      r.coverageGrade !== "not-applicable" &&
+      GRADE_RANK[r.coverageGrade] < GRADE_RANK[base.grade]
+    ) {
+      rungRegressions.push({
+        rung: r.rung,
+        reason: `grade regressed ${base.grade} -> ${r.coverageGrade} (${base.score}% -> ${r.coverageScore}%)`,
+      });
+    } else if (
+      base.grade !== "not-applicable" &&
+      r.coverageGrade !== "not-applicable" &&
+      r.coverageScore < base.score
+    ) {
+      rungRegressions.push({
+        rung: r.rung,
+        reason: `score regressed ${base.score}% -> ${r.coverageScore}%`,
+      });
+    } else if (base.executedInCi && !r.executedInCi && r.coverageGrade !== "not-applicable") {
+      rungRegressions.push({
+        rung: r.rung,
+        reason: "stopped executing in CI workflows",
+      });
+    }
+  }
+  return { hasRungBaseline, rungRegressions };
+}
+
+function evaluateDependencyDelta(
+  baselineDeps: number | undefined,
+  currentDeps: number | undefined,
+  regressions: RatchetDelta[],
+  tightenAvailable: RatchetDelta[],
+): void {
+  if (typeof baselineDeps !== "number" || typeof currentDeps !== "number") return;
+  if (currentDeps > baselineDeps) {
+    regressions.push({ rule: "tiger-minimal-dependencies", baseline: baselineDeps, current: currentDeps, delta: currentDeps - baselineDeps });
+  } else if (currentDeps < baselineDeps) {
+    tightenAvailable.push({ rule: "tiger-minimal-dependencies", baseline: baselineDeps, current: currentDeps, delta: currentDeps - baselineDeps });
+  }
 }
 
 export function evaluateRatchet(
   findings: readonly Finding[],
   baseline: RatchetBaseline,
   rungs?: readonly RungStatus[],
+  currentDependenciesCount?: number,
 ): RatchetEvaluation {
+  if (!baseline) throw new Error("Ratchet baseline is required.");
+  if (!baseline.rules) throw new Error("Ratchet baseline rules are required.");
   const built = buildRatchetBaseline(findings);
   const current = built.rules;
   const allRules = new Set([...Object.keys(baseline.rules), ...Object.keys(current)]);
@@ -111,48 +181,8 @@ export function evaluateRatchet(
     }
   }
 
-  const rungRegressions: RatchetRungRegression[] = [];
-  const hasRungBaseline = Boolean(baseline.rungs && Object.keys(baseline.rungs).length > 0);
-  if (rungs && rungs.length > 0 && !hasRungBaseline) {
-    rungRegressions.push({
-      rung: "ALL",
-      reason: "ratchet baseline is missing 'rungs' snapshot — refusing to hide rung regressions",
-    });
-  } else if (baseline.rungs && rungs) {
-    for (const r of rungs) {
-      const base = baseline.rungs[r.rung];
-      if (!base) continue;
-      if (base.grade !== "not-applicable" && r.coverageGrade === "not-applicable") {
-        rungRegressions.push({
-          rung: r.rung,
-          reason: `archetype downgrade excused rung ${base.grade} -> not-applicable`,
-        });
-      } else if (
-        base.grade !== "not-applicable" &&
-        r.coverageGrade !== "not-applicable" &&
-        GRADE_RANK[r.coverageGrade] < GRADE_RANK[base.grade]
-      ) {
-        rungRegressions.push({
-          rung: r.rung,
-          reason: `grade regressed ${base.grade} -> ${r.coverageGrade} (${base.score}% -> ${r.coverageScore}%)`,
-        });
-      } else if (
-        base.grade !== "not-applicable" &&
-        r.coverageGrade !== "not-applicable" &&
-        r.coverageScore < base.score
-      ) {
-        rungRegressions.push({
-          rung: r.rung,
-          reason: `score regressed ${base.score}% -> ${r.coverageScore}%`,
-        });
-      } else if (base.executedInCi && !r.executedInCi && r.coverageGrade !== "not-applicable") {
-        rungRegressions.push({
-          rung: r.rung,
-          reason: "stopped executing in CI workflows",
-        });
-      }
-    }
-  }
+  const { hasRungBaseline, rungRegressions } = evaluateRungRegressions(baseline, rungs);
+  evaluateDependencyDelta(baseline.dependenciesCount, currentDependenciesCount, regressions, tightenAvailable);
 
   return {
     passed: regressions.length === 0 && tightenAvailable.length === 0 && rungRegressions.length === 0,

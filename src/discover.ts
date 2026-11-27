@@ -72,61 +72,86 @@ export function isDeclarationStub(rel: string): boolean {
   return /\.(?:d\.[cm]?ts|pyi)$/i.test(rel);
 }
 
+function findSfcTagClose(raw: string, start: number): number {
+  let attrQ = "";
+  for (let k = start; k < raw.length; k++) {
+    const ac = raw[k] ?? "";
+    if (attrQ) { if (ac === attrQ) attrQ = ""; continue; }
+    if (ac === '"' || ac === "'") { attrQ = ac; continue; }
+    if (ac === ">") return k;
+  }
+  return -1;
+}
+
+function skipJsRegexLiteral(raw: string, start: number): number {
+  let rj = start + 1;
+  let inCls = false;
+  while (rj < raw.length && raw[rj] !== "\n" && raw[rj] !== "\r") {
+    if (raw[rj] === "\\") { rj += 2; continue; }
+    if (raw[rj] === "[") inCls = true;
+    else if (raw[rj] === "]") inCls = false;
+    else if (raw[rj] === "/" && !inCls) return rj + 1;
+    rj += 1;
+  }
+  return -1;
+}
+
+function findSfcScriptEnd(raw: string, bodyStart: number): { bodyEnd: number; closeLen: number } {
+  if (!raw) return { bodyEnd: -1, closeLen: 0 };
+  if (bodyStart >= raw.length) return { bodyEnd: -1, closeLen: 0 };
+  let j = bodyStart;
+  let q = "";
+  const tplStack: number[] = [];
+  while (j < raw.length) {
+    const ch = raw[j] ?? "";
+    const nx = raw[j + 1] ?? "";
+    if (q) {
+      if (ch === "\\") { j += 2; continue; }
+      if (q === "`" && ch === "$" && nx === "{") { q = ""; tplStack.push(0); j += 2; continue; }
+      if (ch === q) q = "";
+      j += 1;
+      continue;
+    }
+    if (tplStack.length > 0 && (ch === "{" || ch === "}")) {
+      const top = tplStack[tplStack.length - 1] ?? 0;
+      if (ch === "{") tplStack[tplStack.length - 1] = top + 1;
+      else if (top === 0) { tplStack.pop(); q = "`"; }
+      else tplStack[tplStack.length - 1] = top - 1;
+      j += 1;
+      continue;
+    }
+    if (ch === "/" && nx === "/") { while (j < raw.length && raw[j] !== "\n") j += 1; continue; }
+    if (ch === "/" && nx === "*") { const e = raw.indexOf("*/", j + 2); j = e < 0 ? raw.length : e + 2; continue; }
+    if (ch === "/" && nx !== "/" && nx !== "*" && canStartJsRegex(raw, j)) {
+      const afterRegex = skipJsRegexLiteral(raw, j);
+      if (afterRegex >= 0) { j = afterRegex; continue; }
+    }
+    if (ch === "'" && j > bodyStart && /[A-Za-z]/.test(raw[j - 1] ?? "") && /[A-Za-z]/.test(nx)) { j += 1; continue; }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; j += 1; continue; }
+    if (ch === "<" && nx === "/") {
+      const cm = /^<\/script\s*>/i.exec(raw.slice(j, j + 16));
+      if (cm) return { bodyEnd: j, closeLen: cm[0].length };
+    }
+    j += 1;
+  }
+  return { bodyEnd: -1, closeLen: 0 };
+}
+
 export function scanSfcScriptSpans(raw: string): Array<{ attrs: string; bodyStart: number; bodyEnd: number }> {
   const spans: Array<{ attrs: string; bodyStart: number; bodyEnd: number }> = [];
+  if (!raw) return spans;
   for (let i = 0; i < raw.length; ) {
     if (raw.startsWith("<!--", i)) { const e = raw.indexOf("-->", i + 4); if (e < 0) break; i = e + 3; continue; }
     if (raw[i] === "<" && /^<script\b/i.test(raw.slice(i, i + 8))) {
-      let gt = -1; let attrQ = "";
-      for (let k = i + 7; k < raw.length; k++) {
-        const ac = raw[k] ?? "";
-        if (attrQ) { if (ac === attrQ) attrQ = ""; continue; }
-        if (ac === '"' || ac === "'") { attrQ = ac; continue; }
-        if (ac === ">") { gt = k; break; }
-      }
+      const gt = findSfcTagClose(raw, i + 7);
       if (gt < 0) break;
-      const attrs = raw.slice(i + 7, gt); const bodyStart = gt + 1;
-      let j = bodyStart; let q = ""; let bodyEnd = -1; let closeLen = 0; const tplStack: number[] = [];
-      while (j < raw.length) {
-        const ch = raw[j] ?? ""; const nx = raw[j + 1] ?? "";
-        if (!q) {
-          if (tplStack.length > 0) {
-            const top = tplStack[tplStack.length - 1] ?? 0;
-            if (ch === "{") { tplStack[tplStack.length - 1] = top + 1; j += 1; continue; }
-            if (ch === "}") {
-              if (top === 0) { tplStack.pop(); q = "`"; j += 1; continue; }
-              tplStack[tplStack.length - 1] = top - 1; j += 1; continue;
-            }
-          }
-          if (ch === "/" && nx === "/") { while (j < raw.length && raw[j] !== "\n") j += 1; continue; }
-          if (ch === "/" && nx === "*") { const e = raw.indexOf("*/", j + 2); j = e < 0 ? raw.length : e + 2; continue; }
-          if (ch === "/" && nx !== "/" && nx !== "*" && canStartJsRegex(raw, j)) {
-            let rj = j + 1; let inCls = false; let ok = false;
-            while (rj < raw.length && raw[rj] !== "\n" && raw[rj] !== "\r") {
-              if (raw[rj] === "\\") { rj += 2; continue; }
-              if (raw[rj] === "[") inCls = true;
-              else if (raw[rj] === "]") inCls = false;
-              else if (raw[rj] === "/" && !inCls) { ok = true; break; }
-              rj += 1;
-            }
-            if (ok) { j = rj + 1; continue; }
-          }
-          if (ch === "'" && j > bodyStart && /[A-Za-z]/.test(raw[j - 1] ?? "") && /[A-Za-z]/.test(nx)) { j += 1; continue; }
-          if (ch === '"' || ch === "'" || ch === "`") { q = ch; j += 1; continue; }
-          if (ch === "<" && nx === "/") {
-            const cm = /^<\/script\s*>/i.exec(raw.slice(j, j + 16));
-            if (cm) { bodyEnd = j; closeLen = cm[0].length; break; }
-          }
-          j += 1;
-        } else {
-          if (ch === "\\") { j += 2; continue; }
-          if (q === "`" && ch === "$" && nx === "{") { q = ""; tplStack.push(0); j += 2; continue; }
-          if (ch === q) q = "";
-          j += 1;
-        }
-      }
+      const attrs = raw.slice(i + 7, gt);
+      const bodyStart = gt + 1;
+      const { bodyEnd, closeLen } = findSfcScriptEnd(raw, bodyStart);
       if (bodyEnd < 0) break;
-      spans.push({ attrs, bodyStart, bodyEnd }); i = bodyEnd + closeLen; continue;
+      spans.push({ attrs, bodyStart, bodyEnd });
+      i = bodyEnd + closeLen;
+      continue;
     }
     i += 1;
   }
@@ -187,71 +212,27 @@ function isWorkflowPath(rel: string): boolean {
   );
 }
 
+const READ_TEXT_BASENAMES = new Set([
+  "package.json", "pyproject.toml", "cargo.toml", "go.mod", "codeowners", "agents.md", "claude.md",
+  "gemini.md", ".cursorrules", "copilot-instructions.md", "skill.md", "review.md", "gates.md",
+  "lefthook.yml", ".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "turbo.json",
+  "directory.build.props", "directory.packages.props", ".editorconfig", "stryker-config.json",
+  "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml", "mutants.toml", "ruff.toml",
+  ".ruff.toml", "mypy.ini", "pyrightconfig.json", "pytest.ini", "control-plan.json", "escapes.json",
+  "knip.json", "knip.jsonc", ".golangci.yml", ".golangci.yaml", "biome.json", "biome.jsonc",
+  "build.ps1", "build.cake", "cake.cs",
+]);
+
 function shouldReadText(rel: string): boolean {
   const lower = rel.replace(/\\/g, "/").toLowerCase();
   const base = path.posix.basename(lower);
-  if (detectLanguage(rel) !== undefined) return true;
-  if (isWorkflowPath(rel)) return true;
-  if ((lower.endsWith(".yml") || lower.endsWith(".yaml")) && (/(?:^|\/)(?:maestro|e2e|mobile-e2e|flows)\//.test(lower) || /(?:^|\/)\.github\/(?:.+\/)?action\.ya?ml$/.test(lower))) {
-    return true;
-  }
-  if (lower.endsWith(".vue") || lower.endsWith(".svelte") || lower.endsWith(".astro") || lower.endsWith(".css") || lower.endsWith(".bend")) return true;
-  if (lower.endsWith(".sh") || lower.endsWith(".bash") || /^scripts\/[a-z0-9_.-]+$/.test(lower) || base === "build.ps1" || base === "build.cake" || base === "cake.cs") return true;
+  if (detectLanguage(rel) !== undefined || isWorkflowPath(rel) || READ_TEXT_BASENAMES.has(base)) return true;
+  if ((lower.endsWith(".yml") || lower.endsWith(".yaml")) && (/(?:^|\/)(?:maestro|e2e|mobile-e2e|flows)\//.test(lower) || /(?:^|\/)\.github\/(?:.+\/)?action\.ya?ml$/.test(lower))) return true;
+  if (/\.(?:vue|svelte|astro|css|bend|sh|bash|csproj|tla|qnt|als|dfy|lean|feature)$/.test(lower) || /^scripts\/[a-z0-9_.-]+$/.test(lower)) return true;
   if (lower.endsWith(".sql") && (/(?:^|\/)(?:migrations?|supabase|policies|rls|schema|db|sql|flyway)\//.test(lower) || base.endsWith("schema.sql"))) return true;
-  if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|hooks\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) {
-    return true;
-  }
-  if (base === ".golangci.yml" || base === ".golangci.yaml" || base === "biome.json" || base === "biome.jsonc") return true;
-  if (/^\.env\.(?:example|sample|template|dist)$/i.test(base)) return true;
-  if (base === "dockerfile" || base.startsWith("dockerfile.")) return true;
-  return (
-    base === "package.json" ||
-    /^tsconfig(?:\.[^/]+)?\.json$/.test(base) ||
-    base === "pyproject.toml" ||
-    base === "cargo.toml" ||
-    base === "go.mod" ||
-    base === "codeowners" ||
-    base === "agents.md" ||
-    base === "claude.md" ||
-    base === "gemini.md" ||
-    base === ".cursorrules" ||
-    base === "copilot-instructions.md" ||
-    base === "skill.md" ||
-    base === "review.md" ||
-    base === "gates.md" ||
-    base === "lefthook.yml" ||
-    base === ".oxlintrc.json" ||
-    base === ".oxlintrc.jsonc" ||
-    base === "oxlint.config.ts" ||
-    base === "turbo.json" ||
-    base === "directory.build.props" ||
-    base === "directory.packages.props" ||
-    base === ".editorconfig" ||
-    base === "stryker-config.json" ||
-    base === "clippy.toml" ||
-    base === ".clippy.toml" ||
-    base === "rustfmt.toml" ||
-    base === ".rustfmt.toml" ||
-    base === "mutants.toml" ||
-    base === "ruff.toml" ||
-    base === ".ruff.toml" ||
-    base === "mypy.ini" ||
-    base === "pyrightconfig.json" ||
-    base === "pytest.ini" ||
-    base === "control-plan.json" ||
-    base === "escapes.json" ||
-    base === "knip.json" ||
-    base === "knip.jsonc" ||
-    base.endsWith(".csproj") ||
-    base.endsWith(".tla") ||
-    base.endsWith(".qnt") ||
-    base.endsWith(".als") ||
-    base.endsWith(".dfy") ||
-    base.endsWith(".lean") ||
-    base.endsWith(".feature") ||
-    /^(?:vitest|vite|playwright|cypress|k6)\.config\.[cm]?[jt]s$/.test(base) ||
-    /^\.?lighthouserc\.(?:json|ya?ml|[cm]?js)$/.test(base)
-  );
+  if (lower.endsWith(".laws.json") || /(?:^|\/)\.verification\/(?:laws\/|chokepoints\.json|rungs\.json|hooks\.json|control-plan\.json|escapes\.json|behavior-changes\.json)/.test(lower)) return true;
+  if (/^\.env\.(?:example|sample|template|dist)$/i.test(base) || base === "dockerfile" || base.startsWith("dockerfile.")) return true;
+  return /^tsconfig(?:\.[^/]+)?\.json$/.test(base) || /^(?:vitest|vite|playwright|cypress|k6)\.config\.[cm]?[jt]s$/.test(base) || /^\.?lighthouserc\.(?:json|ya?ml|[cm]?js)$/.test(base);
 }
 
 const ARCHIVED_DOCS_PATH = /^docs\/.*\/(?:data|archive|snapshots|artifacts)\//i;
@@ -350,117 +331,89 @@ function detectDefaultBranch(root: string): string | undefined {
   return undefined;
 }
 
-export function discoverRepo(repoPath: string): DiscoveredRepo {
-  const root = path.resolve(repoPath);
-  const trackedDirs = loadGitTrackedDirs(root);
-  const ignoreRules = loadIgnoreRules(root);
-  const matchIgnore = (rel: string): IgnoreRule | undefined => ignoreRules.find((r) => r.regex.test(rel));
-  const files: ScannedFile[] = [];
-  const allRelPaths: string[] = [];
-  const scopeExclusions: ScopeExclusion[] = [];
-  const archivedDocDirs = new Set<string>();
-  const stack: string[] = [root];
-  let truncated = false;
+interface DiscoverWalkState {
+  root: string;
+  trackedDirs: ReadonlySet<string>;
+  ignoreRules: readonly IgnoreRule[];
+  files: ScannedFile[];
+  allRelPaths: string[];
+  scopeExclusions: ScopeExclusion[];
+  archivedDocDirs: Set<string>;
+}
 
-  while (stack.length > 0) {
-    if (allRelPaths.length >= MAX_FILES) {
-      truncated = true;
-      break;
-    }
-    const dir = stack.pop() ?? "";
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    const subdirs: string[] = [];
-    const prioritySubdirs: string[] = [];
-
-    for (const entry of entries) {
-      const abs = path.join(dir, entry.name);
-      const rel = path.relative(root, abs).split(path.sep).join("/");
-      if (entry.isSymbolicLink()) {
-        const isDocSymlink = /^(?:CLAUDE|AGENTS|GEMINI|README)\.md$|^\.(?:claude|agents|cursor|codex)\/|^docs\//i.test(rel);
-        if (rel !== "node_modules" && !rel.startsWith("node_modules/") && !isDocSymlink) {
-          scopeExclusions.push({ path: rel, reason: "symlink", detail: "symlinked path not followed" });
-        }
-        continue;
-      }
-      if (entry.isDirectory()) {
-        if (entry.name === "node_modules" && trackedDirs.has(rel)) {
-          scopeExclusions.push({ path: rel, reason: "skipped-tracked-dir", detail: "git-tracked node_modules directory" });
-          continue;
-        }
-        if (shouldSkipDirectory(rel, entry.name, trackedDirs)) continue;
-        const ignored = matchIgnore(rel);
-        if (ignored) {
-          scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` });
-          continue;
-        }
-        if (PRIORITY_DIRS.has(entry.name)) prioritySubdirs.push(abs);
-        else subdirs.push(abs);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (ARCHIVED_DOCS_PATH.test(rel)) {
-        if (detectLanguage(rel) !== undefined) {
-          const m = ARCHIVED_DOCS_PATH.exec(rel);
-          const rootDir = (m?.[0] ?? rel).replace(/\/+$/, "");
-          if (!archivedDocDirs.has(rootDir)) {
-            archivedDocDirs.add(rootDir);
-            scopeExclusions.push({ path: rootDir, reason: "skipped-tracked-dir", detail: "code under archived docs path" });
-          }
-        }
-        continue;
-      }
-      const ignored = matchIgnore(rel);
-      if (ignored) {
-        scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` });
-        continue;
-      }
-      allRelPaths.push(rel);
-      if (!shouldReadText(rel)) continue;
-      let stat: fs.Stats;
-      try { stat = fs.lstatSync(abs); } catch { continue; }
-      if (!stat.isFile() || stat.isSymbolicLink()) continue;
-      if (stat.size > MAX_FILE_BYTES) {
-        scopeExclusions.push({ path: rel, reason: "oversized", detail: `${stat.size} bytes > ${MAX_FILE_BYTES}` });
-        continue;
-      }
-      let content: string;
-      try { content = fs.readFileSync(abs, "utf8"); } catch { continue; }
-      const lines = content.length === 0 ? 0 : content.split(/\r?\n/).length;
-      if (isMinifiedJs(rel, content, lines)) {
-        scopeExclusions.push({ path: rel, reason: "minified", detail: "exceeds single-line or density threshold" });
-        continue;
-      }
-      const sfc = extractSfcScript(rel, content);
-      const language = sfc ? sfc.language : detectLanguage(rel);
-      files.push({
-        rel, abs, language, isTest: isTestFilePath(rel), isWorkflow: isWorkflowPath(rel),
-        ...(isDeclarationStub(rel) ? { isStub: true } : {}),
-        content: sfc ? sfc.content : content,
-        ...(sfc ? { rawContent: content } : {}),
-        lines,
-      });
-    }
-
-    for (let i = subdirs.length - 1; i >= 0; i--) {
-      const nextDir = subdirs[i];
-      if (nextDir) stack.push(nextDir);
-    }
-    for (let i = prioritySubdirs.length - 1; i >= 0; i--) {
-      const nextDir = prioritySubdirs[i];
-      if (nextDir) stack.push(nextDir);
-    }
+function readScannedFileEntry(abs: string, rel: string, state: DiscoverWalkState): void {
+  let stat: fs.Stats;
+  try { stat = fs.lstatSync(abs); } catch { return; }
+  if (!stat.isFile() || stat.isSymbolicLink()) return;
+  if (stat.size > MAX_FILE_BYTES) {
+    state.scopeExclusions.push({ path: rel, reason: "oversized", detail: `${stat.size} bytes > ${MAX_FILE_BYTES}` });
+    return;
   }
-
-  if (truncated) {
-    scopeExclusions.push({ path: ".", reason: "truncated", detail: `exceeded ${MAX_FILES}-file scan ceiling` });
+  let content: string;
+  try { content = fs.readFileSync(abs, "utf8"); } catch { return; }
+  const lines = content.length === 0 ? 0 : content.split(/\r?\n/).length;
+  if (isMinifiedJs(rel, content, lines)) {
+    state.scopeExclusions.push({ path: rel, reason: "minified", detail: "exceeds single-line or density threshold" });
+    return;
   }
+  const sfc = extractSfcScript(rel, content);
+  const language = sfc ? sfc.language : detectLanguage(rel);
+  state.files.push({
+    rel, abs, language, isTest: isTestFilePath(rel), isWorkflow: isWorkflowPath(rel),
+    ...(isDeclarationStub(rel) ? { isStub: true } : {}),
+    content: sfc ? sfc.content : content,
+    ...(sfc ? { rawContent: content } : {}),
+    lines,
+  });
+}
 
+function processDirEntry(
+  entry: fs.Dirent,
+  dir: string,
+  state: DiscoverWalkState,
+  queues: { subdirs: string[]; prioritySubdirs: string[] },
+): void {
+  if (!entry.name) return;
+  const abs = path.join(dir, entry.name);
+  if (abs !== state.root && !abs.startsWith(`${state.root}${path.sep}`)) return;
+  const rel = path.relative(state.root, abs).split(path.sep).join("/");
+  if (entry.isSymbolicLink()) {
+    const isDocSymlink = /^(?:CLAUDE|AGENTS|GEMINI|README)\.md$|^\.(?:claude|agents|cursor|codex)\/|^docs\//i.test(rel);
+    if (rel !== "node_modules" && !rel.startsWith("node_modules/") && !isDocSymlink) {
+      state.scopeExclusions.push({ path: rel, reason: "symlink", detail: "symlinked path not followed" });
+    }
+    return;
+  }
+  if (entry.isDirectory()) {
+    if (entry.name === "node_modules" && state.trackedDirs.has(rel)) {
+      state.scopeExclusions.push({ path: rel, reason: "skipped-tracked-dir", detail: "git-tracked node_modules directory" });
+      return;
+    }
+    if (shouldSkipDirectory(rel, entry.name, state.trackedDirs)) return;
+    const ignored = state.ignoreRules.find((r) => r.regex.test(rel));
+    if (ignored) { state.scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` }); return; }
+    if (PRIORITY_DIRS.has(entry.name)) queues.prioritySubdirs.push(abs);
+    else queues.subdirs.push(abs);
+    return;
+  }
+  if (!entry.isFile()) return;
+  if (ARCHIVED_DOCS_PATH.test(rel)) {
+    if (detectLanguage(rel) !== undefined) {
+      const rootDir = (ARCHIVED_DOCS_PATH.exec(rel)?.[0] ?? rel).replace(/\/+$/, "");
+      if (!state.archivedDocDirs.has(rootDir)) {
+        state.archivedDocDirs.add(rootDir);
+        state.scopeExclusions.push({ path: rootDir, reason: "skipped-tracked-dir", detail: "code under archived docs path" });
+      }
+    }
+    return;
+  }
+  const ignored = state.ignoreRules.find((r) => r.regex.test(rel));
+  if (ignored) { state.scopeExclusions.push({ path: rel, reason: ignored.source, detail: `matched '${ignored.pattern}'` }); return; }
+  state.allRelPaths.push(rel);
+  if (shouldReadText(rel)) readScannedFileEntry(abs, rel, state);
+}
+
+function finalizeDiscoveredMetadata(files: ScannedFile[]): Language[] {
   const csTestProjDirs = new Set<string>();
   for (const file of files) {
     if (file.rel.toLowerCase().endsWith(".csproj") && /<IsTestProject>\s*true\s*<\/IsTestProject>/i.test(file.content)) {
@@ -471,21 +424,50 @@ export function discoverRepo(repoPath: string): DiscoveredRepo {
   if (csTestProjDirs.size > 0) {
     for (const file of files) {
       if (file.language === "csharp" && !file.isTest) {
-        for (const prefix of csTestProjDirs) {
-          if (prefix === "" || file.rel.startsWith(prefix)) { file.isTest = true; break; }
-        }
+        if ([...csTestProjDirs].some((prefix) => prefix === "" || file.rel.startsWith(prefix))) file.isTest = true;
       }
     }
   }
-
   const languageSet = new Set<Language>();
   for (const file of files) if (file.language && isHostRepoFile(file.rel) && !HELPER_SCRIPT_ROOT.test(file.rel)) languageSet.add(file.language);
   if (languageSet.size === 0) for (const file of files) if (file.language && isHostRepoFile(file.rel)) languageSet.add(file.language);
   if (languageSet.size === 0) for (const file of files) if (file.language) languageSet.add(file.language);
-  const languages = [...languageSet].sort();
-  const observedArchetype = inferArchetypeFromFiles(files, allRelPaths);
+  return [...languageSet].sort();
+}
+
+export function discoverRepo(repoPath: string): DiscoveredRepo {
+  if (!repoPath) throw new Error("Repository path is required.");
+  const root = path.resolve(repoPath);
+  if (!root) throw new Error("Resolved repository root is required.");
+  const state: DiscoverWalkState = {
+    root,
+    trackedDirs: loadGitTrackedDirs(root),
+    ignoreRules: loadIgnoreRules(root),
+    files: [],
+    allRelPaths: [],
+    scopeExclusions: [],
+    archivedDocDirs: new Set<string>(),
+  };
+  const stack: string[] = [root];
+  let truncated = false;
+
+  while (stack.length > 0) {
+    if (state.allRelPaths.length >= MAX_FILES) { truncated = true; break; }
+    const dir = stack.pop() ?? "";
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    const queues = { subdirs: [] as string[], prioritySubdirs: [] as string[] };
+    for (const entry of entries) processDirEntry(entry, dir, state, queues);
+    for (let i = queues.subdirs.length - 1; i >= 0; i--) { const n = queues.subdirs[i]; if (n) stack.push(n); }
+    for (let i = queues.prioritySubdirs.length - 1; i >= 0; i--) { const n = queues.prioritySubdirs[i]; if (n) stack.push(n); }
+  }
+  if (truncated) state.scopeExclusions.push({ path: ".", reason: "truncated", detail: `exceeded ${MAX_FILES}-file scan ceiling` });
+
+  const languages = finalizeDiscoveredMetadata(state.files);
+  const observedArchetype = inferArchetypeFromFiles(state.files, state.allRelPaths);
   const loadedManifest = loadRungManifest(root);
   const archetype = loadedManifest.manifest?.archetype ?? observedArchetype;
-  const { signals, ci } = extractSignals(files, allRelPaths, languages, detectDefaultBranch(root));
-  return { root, files, allRelPaths, languages, archetype, observedArchetype, manifest: loadedManifest.manifest, manifestError: loadedManifest.error, scopeExclusions, signals, ci };
+  const { signals, ci } = extractSignals(state.files, state.allRelPaths, languages, detectDefaultBranch(root));
+  return { root, files: state.files, allRelPaths: state.allRelPaths, languages, archetype, observedArchetype, manifest: loadedManifest.manifest, manifestError: loadedManifest.error, scopeExclusions: state.scopeExclusions, signals, ci };
 }

@@ -82,22 +82,12 @@ export function validateDossier(dossier: GroundTruthDossier): string[] {
   return errors;
 }
 
-export function mergeDossiers(dossiers: readonly GroundTruthDossier[]): ConsensusDossier {
-  const first = dossiers[0];
-  if (!first) throw new Error("mergeDossiers requires at least one dossier");
-  const disagreements: Array<Record<string, unknown>> = [];
-  const archVote = majorityVote(dossiers.map((d) => d.archetype.value));
-  if (!archVote.unanimous) {
-    disagreements.push({ field: "archetype", values: dossiers.map((d) => ({ model: d.auditorModel ?? "unknown", value: d.archetype.value })) });
-  }
-
-  const langCounts = new Map<string, number>();
-  for (const d of dossiers) {
-    for (const l of new Set(d.languages?.primary ?? [])) langCounts.set(l, (langCounts.get(l) ?? 0) + 1);
-  }
-  const threshold = Math.ceil(dossiers.length / 2);
-  const primaryLanguages = [...langCounts.entries()].filter(([, c]) => c >= threshold).map(([l]) => l).sort();
-
+function mergeDossierWorkspaces(
+  dossiers: readonly GroundTruthDossier[],
+  threshold: number,
+  disagreements: Array<Record<string, unknown>>,
+): DossierWorkspace[] {
+  if (dossiers.length === 0) return [];
   const wsByPath = new Map<string, DossierWorkspace[]>();
   for (const d of dossiers) {
     for (const ws of d.workspaces ?? []) {
@@ -123,8 +113,14 @@ export function mergeDossiers(dossiers: readonly GroundTruthDossier[]): Consensu
       testLocations: [...new Set(items.flatMap((w) => w.testLocations ?? []))],
     });
   }
-  workspaces.sort((a, b) => a.path.localeCompare(b.path));
+  return workspaces.sort((a, b) => a.path.localeCompare(b.path));
+}
 
+function mergeDossierRungs(
+  dossiers: readonly GroundTruthDossier[],
+  disagreements: Array<Record<string, unknown>>,
+): Record<RungKey, DossierRung> {
+  if (dossiers.length === 0) throw new Error("mergeDossierRungs requires dossiers");
   const rungs = {} as Record<RungKey, DossierRung>;
   for (const r of RUNG_IDS) {
     const entries = dossiers.map((d) => d.rungs[r]).filter((e): e is DossierRung => Boolean(e));
@@ -166,7 +162,23 @@ export function mergeDossiers(dossiers: readonly GroundTruthDossier[]): Consensu
       independentDepth: depthVote.winner ?? "none",
     };
   }
+  return rungs;
+}
 
+export function mergeDossiers(dossiers: readonly GroundTruthDossier[]): ConsensusDossier {
+  const first = dossiers[0];
+  if (!first) throw new Error("mergeDossiers requires at least one dossier");
+  const disagreements: Array<Record<string, unknown>> = [];
+  const archVote = majorityVote(dossiers.map((d) => d.archetype.value));
+  if (!archVote.unanimous) {
+    disagreements.push({ field: "archetype", values: dossiers.map((d) => ({ model: d.auditorModel ?? "unknown", value: d.archetype.value })) });
+  }
+  const langCounts = new Map<string, number>();
+  for (const d of dossiers) {
+    for (const l of new Set(d.languages?.primary ?? [])) langCounts.set(l, (langCounts.get(l) ?? 0) + 1);
+  }
+  const threshold = Math.ceil(dossiers.length / 2);
+  const primaryLanguages = [...langCounts.entries()].filter(([, c]) => c >= threshold).map(([l]) => l).sort();
   return {
     repo: first.repo,
     commitSha: first.commitSha,
@@ -178,27 +190,18 @@ export function mergeDossiers(dossiers: readonly GroundTruthDossier[]): Consensu
       citations: [...new Set(dossiers.flatMap((d) => d.archetype?.citations ?? []))],
     },
     languages: { primary: primaryLanguages },
-    workspaces,
-    rungs,
+    workspaces: mergeDossierWorkspaces(dossiers, threshold, disagreements),
+    rungs: mergeDossierRungs(dossiers, disagreements),
     disagreements,
   };
 }
 
-export function diffAgainstVeristack(consensus: ConsensusDossier, scanReport: MinimalScanReport) {
-  const vArch = scanReport.archetype;
-  const gtArch = consensus.archetype.value;
-  const gtLangs = new Set(consensus.languages.primary);
-  const vLangs = new Set(scanReport.languages ?? []);
-  const phantomLanguages = [...vLangs].filter((l) => !gtLangs.has(l));
-  const missingLanguages = [...gtLangs].filter((l) => !vLangs.has(l));
-
+function diffWorkspaces(consensus: ConsensusDossier, vWorkspaces: ReadonlyArray<{ path: string; score: number }>) {
   const gtWsMap = new Map(consensus.workspaces.map((w) => [w.path, w]));
-  const vWorkspaces = scanReport.workspaces ?? [];
   const wsFalsePositives: Array<{ path: string; gtRole: string; vScore: number; triggersZeroCliff: boolean }> = [];
   const wsTestLinkFalseNegatives: Array<{ path: string; expectedTests: string[] }> = [];
   const wsTrueZeros: string[] = [];
   let wsMatchedProducts = 0;
-
   for (const vw of vWorkspaces) {
     const gt = gtWsMap.get(vw.path);
     if (gt && gt.role !== "product") {
@@ -212,13 +215,23 @@ export function diffAgainstVeristack(consensus: ConsensusDossier, scanReport: Mi
       }
     }
   }
+  return {
+    gtProductCount: consensus.workspaces.filter((w) => w.role === "product").length,
+    vCount: vWorkspaces.length,
+    wsMatchedProducts,
+    wsFalsePositives,
+    wsTestLinkFalseNegatives,
+    wsTrueZeros,
+  };
+}
 
+function diffRungs(consensus: ConsensusDossier, scanReport: MinimalScanReport) {
+  if (!consensus.rungs) throw new Error("consensus.rungs missing");
   const vRungs = new Map((scanReport.rungs ?? []).map((r) => [r.rung, r]));
   const ciFalseNegatives: Array<{ rung: RungKey; chain: string; tools: string[] }> = [];
   const ciFalsePositives: Array<{ rung: RungKey; gtExecuted: boolean; gtTrustworthy: boolean; hazard: string }> = [];
   const securityHolds: Array<{ rung: RungKey; hazard: string }> = [];
   const rungDiffs: Array<{ rung: RungKey; verdict: string; bucket: string; gtApplicable: boolean; vApplicable: boolean; gtCi: boolean; vCi: boolean; vScore: number; gtDepth: string }> = [];
-
   for (const r of RUNG_IDS) {
     const gt = consensus.rungs[r];
     const vr = vRungs.get(r);
@@ -245,24 +258,10 @@ export function diffAgainstVeristack(consensus: ConsensusDossier, scanReport: Mi
       gtCi: gtExpectedCi, vCi: vExec, vScore: vr.coverageScore, gtDepth: gt.independentDepth,
     });
   }
-
   const ciTp = rungDiffs.filter((d) => d.gtCi && d.vCi).length;
   const ciPrecision = ciTp + ciFalsePositives.length > 0 ? ciTp / (ciTp + ciFalsePositives.length) : 1;
   const ciRecall = ciTp + ciFalseNegatives.length > 0 ? ciTp / (ciTp + ciFalseNegatives.length) : 1;
-
   return {
-    repo: consensus.repo,
-    commitSha: consensus.commitSha,
-    archetype: { gt: gtArch, veristack: vArch, match: vArch === gtArch },
-    languages: { gt: [...gtLangs], veristack: [...vLangs], phantomLanguages, missingLanguages },
-    workspaces: {
-      gtProductCount: consensus.workspaces.filter((w) => w.role === "product").length,
-      vCount: vWorkspaces.length,
-      wsMatchedProducts,
-      wsFalsePositives,
-      wsTestLinkFalseNegatives,
-      wsTrueZeros,
-    },
     ci: {
       truePositives: ciTp,
       falseNegatives: ciFalseNegatives,
@@ -271,6 +270,27 @@ export function diffAgainstVeristack(consensus: ConsensusDossier, scanReport: Mi
       precision: Number(ciPrecision.toFixed(3)),
       recall: Number(ciRecall.toFixed(3)),
     },
+    rungDiffs,
+  };
+}
+
+export function diffAgainstVeristack(consensus: ConsensusDossier, scanReport: MinimalScanReport) {
+  if (!consensus.repo) throw new Error("consensus.repo is required");
+  const gtLangs = new Set(consensus.languages.primary);
+  const vLangs = new Set(scanReport.languages ?? []);
+  const { ci, rungDiffs } = diffRungs(consensus, scanReport);
+  return {
+    repo: consensus.repo,
+    commitSha: consensus.commitSha,
+    archetype: { gt: consensus.archetype.value, veristack: scanReport.archetype, match: scanReport.archetype === consensus.archetype.value },
+    languages: {
+      gt: [...gtLangs],
+      veristack: [...vLangs],
+      phantomLanguages: [...vLangs].filter((l) => !gtLangs.has(l)),
+      missingLanguages: [...gtLangs].filter((l) => !vLangs.has(l)),
+    },
+    workspaces: diffWorkspaces(consensus, scanReport.workspaces ?? []),
+    ci,
     rungDiffs,
     panelDisagreements: consensus.disagreements,
     veristackScore: scanReport.summary?.overallCoverageScore ?? 0,

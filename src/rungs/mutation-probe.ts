@@ -44,8 +44,58 @@ function seededShuffle<T>(items: readonly T[], seed: number): T[] {
   return copy;
 }
 
+function collectNodeMutant(
+  rec: Record<string, unknown>,
+  rel: string,
+  source: string,
+  addCandidate: (c: MutantCandidate) => void,
+): void {
+  const type = rec.type;
+  if (type === "BinaryExpression" || type === "LogicalExpression") {
+    const op = typeof rec.operator === "string" ? rec.operator : "";
+    const left = rec.left as Record<string, unknown> | undefined;
+    const right = rec.right as Record<string, unknown> | undefined;
+    const replacement = type === "BinaryExpression" ? BINARY_MUTATIONS[op] : LOGICAL_MUTATIONS[op];
+    if (!replacement || !left || !right || typeof left.end !== "number" || typeof right.start !== "number" || typeof rec.start !== "number" || typeof rec.end !== "number") return;
+    const opIdx = maskCommentsOnly(source.slice(left.end, right.start)).indexOf(op);
+    if (opIdx < 0) return;
+    const opStart = left.end + opIdx;
+    const opEnd = opStart + op.length;
+    addCandidate({
+      file: rel, line: lineAt(source, opStart), start: opStart, end: opEnd, replacement, operator: `${op} -> ${replacement}`,
+      original: source.slice(rec.start, Math.min(rec.end, rec.start + 60)),
+      mutated: `${source.slice(rec.start, opStart)}${replacement}${source.slice(opEnd, Math.min(rec.end, opEnd + 30))}`,
+    });
+    return;
+  }
+  if (type === "UnaryExpression" && rec.operator === "!" && typeof rec.start === "number" && typeof rec.end === "number" && rec.argument && typeof rec.argument === "object") {
+    const arg = rec.argument as Record<string, unknown>;
+    if (typeof arg.start !== "number" || typeof arg.end !== "number") return;
+    const inner = source.slice(arg.start, arg.end);
+    addCandidate({ file: rel, line: lineAt(source, rec.start), start: rec.start, end: rec.end, replacement: `(${inner})`, operator: "!x -> x", original: source.slice(rec.start, Math.min(rec.end, rec.start + 60)), mutated: `(${inner})`.slice(0, 60) });
+    return;
+  }
+  if (type !== "ReturnStatement") return;
+  const arg = rec.argument as Record<string, unknown> | undefined;
+  if (arg && arg.type === "Literal" && typeof arg.value === "boolean" && typeof arg.start === "number" && typeof arg.end === "number") {
+    const origBool = arg.value ? "true" : "false";
+    const nextBool = arg.value ? "false" : "true";
+    addCandidate({ file: rel, line: lineAt(source, arg.start), start: arg.start, end: arg.end, replacement: nextBool, operator: `${origBool} -> ${nextBool}`, original: `return ${origBool}`, mutated: `return ${nextBool}` });
+  } else if (arg && arg.type === "BinaryExpression" && (arg.operator === "+" || arg.operator === "-") && typeof arg.start === "number" && typeof arg.end === "number") {
+    const left = arg.left as Record<string, unknown> | undefined;
+    const right = arg.right as Record<string, unknown> | undefined;
+    const rep = arg.operator === "+" ? "-" : "+";
+    if (!left || !right || typeof left.end !== "number" || typeof right.start !== "number") return;
+    const opIdx = maskCommentsOnly(source.slice(left.end, right.start)).indexOf(arg.operator);
+    if (opIdx < 0) return;
+    const opStart = left.end + opIdx;
+    addCandidate({ file: rel, line: lineAt(source, opStart), start: opStart, end: opStart + 1, replacement: rep, operator: `${arg.operator} -> ${rep}`, original: source.slice(arg.start, Math.min(arg.end, arg.start + 60)), mutated: rep });
+  }
+}
+
 function collectAstMutants(rel: string, source: string, maxPerFile: number, runSeed: number): MutantCandidate[] {
   const all: MutantCandidate[] = [];
+  if (!rel) return all;
   if (!/\.[cm]?[jt]sx?$/.test(rel)) return all;
   let parsed: ReturnType<typeof parseSync>;
   try { parsed = parseSync(rel, source); } catch { return all; }
@@ -66,76 +116,17 @@ function collectAstMutants(rel: string, source: string, maxPerFile: number, runS
       if (typeof testNode.start === "number" && typeof testNode.end === "number") {
         const origTest = source.slice(testNode.start, testNode.end);
         const rep = `!(${origTest})`;
-        addCandidate({
-          file: rel, line: lineAt(source, testNode.start), start: testNode.start, end: testNode.end,
-          replacement: rep, operator: "cond -> !(cond)",
-          original: origTest.slice(0, 60), mutated: rep.slice(0, 60),
-        });
+        addCandidate({ file: rel, line: lineAt(source, testNode.start), start: testNode.start, end: testNode.end, replacement: rep, operator: "cond -> !(cond)", original: origTest.slice(0, 60), mutated: rep.slice(0, 60) });
       }
       if (rec.consequent) stack.push(rec.consequent);
       if (rec.alternate) stack.push(rec.alternate);
       continue;
     }
-    if (type === "WhileStatement" || type === "DoWhileStatement") {
+    if (type === "WhileStatement" || type === "DoWhileStatement" || type === "ForStatement") {
       if (rec.body) stack.push(rec.body);
       continue;
     }
-    if (type === "ForStatement") {
-      if (rec.body) stack.push(rec.body);
-      continue;
-    }
-    if (type === "BinaryExpression" || type === "LogicalExpression") {
-      const op = typeof rec.operator === "string" ? rec.operator : "";
-      const left = rec.left as Record<string, unknown> | undefined;
-      const right = rec.right as Record<string, unknown> | undefined;
-      const replacement = type === "BinaryExpression" ? BINARY_MUTATIONS[op] : LOGICAL_MUTATIONS[op];
-      if (replacement && left && right && typeof left.end === "number" && typeof right.start === "number" && typeof rec.start === "number" && typeof rec.end === "number") {
-        const opIdx = maskCommentsOnly(source.slice(left.end, right.start)).indexOf(op);
-        if (opIdx >= 0) {
-          const opStart = left.end + opIdx;
-          const opEnd = opStart + op.length;
-          addCandidate({
-            file: rel, line: lineAt(source, opStart), start: opStart, end: opEnd, replacement,
-            operator: `${op} -> ${replacement}`,
-            original: source.slice(rec.start, Math.min(rec.end, rec.start + 60)),
-            mutated: `${source.slice(rec.start, opStart)}${replacement}${source.slice(opEnd, Math.min(rec.end, opEnd + 30))}`,
-          });
-        }
-      }
-    } else if (type === "UnaryExpression" && rec.operator === "!" && typeof rec.start === "number" && typeof rec.end === "number" && rec.argument && typeof rec.argument === "object") {
-      const arg = rec.argument as Record<string, unknown>;
-      if (typeof arg.start === "number" && typeof arg.end === "number") {
-        const inner = source.slice(arg.start, arg.end);
-        addCandidate({
-          file: rel, line: lineAt(source, rec.start), start: rec.start, end: rec.end, replacement: `(${inner})`,
-          operator: "!x -> x", original: source.slice(rec.start, Math.min(rec.end, rec.start + 60)), mutated: `(${inner})`.slice(0, 60),
-        });
-      }
-    } else if (type === "ReturnStatement") {
-      const arg = rec.argument as Record<string, unknown> | undefined;
-      if (arg && arg.type === "Literal" && typeof arg.value === "boolean" && typeof arg.start === "number" && typeof arg.end === "number") {
-        const origBool = arg.value ? "true" : "false";
-        const nextBool = arg.value ? "false" : "true";
-        addCandidate({
-          file: rel, line: lineAt(source, arg.start), start: arg.start, end: arg.end, replacement: nextBool,
-          operator: `${origBool} -> ${nextBool}`, original: `return ${origBool}`, mutated: `return ${nextBool}`,
-        });
-      } else if (arg && arg.type === "BinaryExpression" && (arg.operator === "+" || arg.operator === "-") && typeof arg.start === "number" && typeof arg.end === "number") {
-        const left = arg.left as Record<string, unknown> | undefined;
-        const right = arg.right as Record<string, unknown> | undefined;
-        const rep = arg.operator === "+" ? "-" : "+";
-        if (left && right && typeof left.end === "number" && typeof right.start === "number") {
-          const opIdx = maskCommentsOnly(source.slice(left.end, right.start)).indexOf(arg.operator);
-          if (opIdx >= 0) {
-            const opStart = left.end + opIdx;
-            addCandidate({
-              file: rel, line: lineAt(source, opStart), start: opStart, end: opStart + 1, replacement: rep,
-              operator: `${arg.operator} -> ${rep}`, original: source.slice(arg.start, Math.min(arg.end, arg.start + 60)), mutated: rep,
-            });
-          }
-        }
-      }
-    }
+    collectNodeMutant(rec, rel, source, addCandidate);
     for (const val of Object.values(rec)) {
       if (Array.isArray(val)) for (const item of val) stack.push(item);
       else if (val && typeof val === "object") stack.push(val);
@@ -193,106 +184,104 @@ function findFnBodyOpenBrace(masked: string, startAfterParams: number, allowInli
   let angle = 0; let paren = 0; let bracket = 0;
   for (let i = startAfterParams; i < masked.length; i++) {
     const ch = masked[i] ?? "";
-    if (ch === "(") paren += 1;
-    else if (ch === ")") paren = Math.max(0, paren - 1);
-    else if (ch === "[") bracket += 1;
-    else if (ch === "]") bracket = Math.max(0, bracket - 1);
-    else if (ch === "<") angle += 1;
-    else if (ch === ">" && masked[i - 1] !== "-") angle = Math.max(0, angle - 1);
-    else if (paren === 0 && angle === 0 && bracket === 0) {
-      if (ch === ";") return -1;
-      if (ch === "=" && masked[i + 1] === ">") return -1;
-      if (ch === "{") {
-        if (allowInlineStructBrace) {
-          const before = masked.slice(Math.max(startAfterParams, i - 16), i);
-          if (/\b(?:interface|struct)\s*$/.test(before)) {
-            const close = masked.indexOf("}", i + 1);
-            if (close > i) { i = close; continue; }
-          }
-        }
-        return i;
-      }
+    if (ch === "(") { paren += 1; continue; }
+    if (ch === ")") { paren = Math.max(0, paren - 1); continue; }
+    if (ch === "[") { bracket += 1; continue; }
+    if (ch === "]") { bracket = Math.max(0, bracket - 1); continue; }
+    if (ch === "<") { angle += 1; continue; }
+    if (ch === ">" && masked[i - 1] !== "-") { angle = Math.max(0, angle - 1); continue; }
+    if (paren !== 0 || angle !== 0 || bracket !== 0) continue;
+    if (ch === ";" || (ch === "=" && masked[i + 1] === ">")) return -1;
+    if (ch !== "{") continue;
+    if (allowInlineStructBrace && /\b(?:interface|struct)\s*$/.test(masked.slice(Math.max(startAfterParams, i - 16), i))) {
+      const close = masked.indexOf("}", i + 1);
+      if (close > i) { i = close; continue; }
     }
+    return i;
   }
   return -1;
 }
 
+function insertJsSemanticNoOp(rel: string, source: string, id: string, variant: number): string {
+  const stmt = variant % 2 === 0 ? ` const ${id} = 0; void ${id}; ` : ` if (false) {} `;
+  try {
+    const parsed = parseSync(rel, source);
+    const walkFind = (fn: (rec: Record<string, unknown>) => string | null): string | null => {
+      const stack: unknown[] = [parsed.program];
+      while (stack.length > 0) {
+        const node = stack.pop();
+        if (!node || typeof node !== "object") continue;
+        const rec = node as Record<string, unknown>;
+        const hit = fn(rec);
+        if (hit !== null) return hit;
+        for (const val of Object.values(rec)) {
+          if (Array.isArray(val)) for (const item of val) stack.push(item);
+          else if (val && typeof val === "object") stack.push(val);
+        }
+      }
+      return null;
+    };
+    if (variant % 3 === 1) {
+      const wrapped = walkFind((rec) => {
+        if (rec.type !== "ReturnStatement" || !rec.argument || typeof rec.argument !== "object") return null;
+        const arg = rec.argument as Record<string, unknown>;
+        if (typeof arg.start !== "number" || typeof arg.end !== "number") return null;
+        const c = `${source.slice(0, arg.start)}(${source.slice(arg.start, arg.end)})${source.slice(arg.end)}`;
+        return parseSync(rel, c).errors.length === 0 ? c : null;
+      });
+      if (wrapped) return wrapped;
+    }
+    if (variant % 3 === 2) {
+      const boolCond = walkFind((rec) => {
+        if (rec.type !== "IfStatement" || !rec.test || typeof rec.test !== "object") return null;
+        const t = rec.test as Record<string, unknown>;
+        if (typeof t.start !== "number" || typeof t.end !== "number") return null;
+        const c = `${source.slice(0, t.start)}Boolean(${source.slice(t.start, t.end)})${source.slice(t.end)}`;
+        return parseSync(rel, c).errors.length === 0 ? c : null;
+      });
+      if (boolCond) return boolCond;
+    }
+    const inFn = walkFind((rec) => {
+      if ((rec.type === "FunctionDeclaration" || rec.type === "FunctionExpression" || rec.type === "ArrowFunctionExpression") && rec.body && typeof rec.body === "object") {
+        const body = rec.body as Record<string, unknown>;
+        if (body.type === "BlockStatement" && typeof body.start === "number") {
+          const c = `${source.slice(0, body.start + 1)}${stmt}${source.slice(body.start + 1)}`;
+          return parseSync(rel, c).errors.length === 0 ? c : null;
+        }
+      }
+      return null;
+    });
+    if (inFn) return inFn;
+  } catch { return `${source}\n${stmt}\n`; }
+  return `${source}\n${stmt}\n`;
+}
+
+function insertPySemanticNoOp(source: string, id: string, variant: number): string {
+  const lines = source.split("\n");
+  let i = 0; let inTriple: string | null = null; let inFutureParen = false; let inFutureBs = false;
+  while (i < lines.length) {
+    const l = (lines[i] ?? "").trim();
+    if (inTriple) { if (l.includes(inTriple)) inTriple = null; i += 1; continue; }
+    if (inFutureParen) { if (l.includes(")")) inFutureParen = false; i += 1; continue; }
+    if (inFutureBs) { if (!l.endsWith("\\")) inFutureBs = false; i += 1; continue; }
+    if (l === "" || l.startsWith("#")) { i += 1; continue; }
+    if (l.startsWith("from __future__ import")) {
+      if (l.includes("(") && !l.includes(")")) inFutureParen = true;
+      else if (l.endsWith("\\")) inFutureBs = true;
+      i += 1; continue;
+    }
+    const ds = /^(?:[rRbBuUfF]{0,2})("""|''')/.exec(l);
+    if (ds?.[1]) { if (!l.slice(ds[0].length).includes(ds[1])) inTriple = ds[1]; i += 1; continue; }
+    if (/^(?:[rRbBuUfF]{0,2})(?:"[^"\n]*"|'[^'\n]*')$/.test(l)) { i += 1; continue; }
+    break;
+  }
+  return [...lines.slice(0, i), variant % 2 === 0 ? "if False:\n    pass" : `_${id} = 0`, ...lines.slice(i)].join("\n");
+}
+
 export function insertSemanticNoOp(rel: string, source: string, variant: number): string {
   const id = randomLocalIdent();
-  if (/\.[cm]?[jt]sx?$/.test(rel)) {
-    const stmt = variant % 2 === 0 ? ` const ${id} = 0; void ${id}; ` : ` if (false) {} `;
-    try {
-      const parsed = parseSync(rel, source);
-      const walkFind = (fn: (rec: Record<string, unknown>) => string | null): string | null => {
-        const stack: unknown[] = [parsed.program];
-        while (stack.length > 0) {
-          const node = stack.pop();
-          if (!node || typeof node !== "object") continue;
-          const rec = node as Record<string, unknown>;
-          const hit = fn(rec);
-          if (hit !== null) return hit;
-          for (const val of Object.values(rec)) {
-            if (Array.isArray(val)) for (const item of val) stack.push(item);
-            else if (val && typeof val === "object") stack.push(val);
-          }
-        }
-        return null;
-      };
-      if (variant % 3 === 1) {
-        const wrapped = walkFind((rec) => {
-          if (rec.type !== "ReturnStatement" || !rec.argument || typeof rec.argument !== "object") return null;
-          const arg = rec.argument as Record<string, unknown>;
-          if (typeof arg.start !== "number" || typeof arg.end !== "number") return null;
-          const c = `${source.slice(0, arg.start)}(${source.slice(arg.start, arg.end)})${source.slice(arg.end)}`;
-          return parseSync(rel, c).errors.length === 0 ? c : null;
-        });
-        if (wrapped) return wrapped;
-      }
-      if (variant % 3 === 2) {
-        const boolCond = walkFind((rec) => {
-          if (rec.type !== "IfStatement" || !rec.test || typeof rec.test !== "object") return null;
-          const t = rec.test as Record<string, unknown>;
-          if (typeof t.start !== "number" || typeof t.end !== "number") return null;
-          const c = `${source.slice(0, t.start)}Boolean(${source.slice(t.start, t.end)})${source.slice(t.end)}`;
-          return parseSync(rel, c).errors.length === 0 ? c : null;
-        });
-        if (boolCond) return boolCond;
-      }
-      const inFn = walkFind((rec) => {
-        if ((rec.type === "FunctionDeclaration" || rec.type === "FunctionExpression" || rec.type === "ArrowFunctionExpression") && rec.body && typeof rec.body === "object") {
-          const body = rec.body as Record<string, unknown>;
-          if (body.type === "BlockStatement" && typeof body.start === "number") {
-            const c = `${source.slice(0, body.start + 1)}${stmt}${source.slice(body.start + 1)}`;
-            return parseSync(rel, c).errors.length === 0 ? c : null;
-          }
-        }
-        return null;
-      });
-      if (inFn) return inFn;
-    } catch { return `${source}\n${stmt}\n`; }
-    return `${source}\n${stmt}\n`;
-  }
-  if (rel.endsWith(".py")) {
-    const lines = source.split("\n");
-    let i = 0; let inTriple: string | null = null; let inFutureParen = false; let inFutureBs = false;
-    while (i < lines.length) {
-      const l = (lines[i] ?? "").trim();
-      if (inTriple) { if (l.includes(inTriple)) inTriple = null; i += 1; continue; }
-      if (inFutureParen) { if (l.includes(")")) inFutureParen = false; i += 1; continue; }
-      if (inFutureBs) { if (!l.endsWith("\\")) inFutureBs = false; i += 1; continue; }
-      if (l === "" || l.startsWith("#")) { i += 1; continue; }
-      if (l.startsWith("from __future__ import")) {
-        if (l.includes("(") && !l.includes(")")) inFutureParen = true;
-        else if (l.endsWith("\\")) inFutureBs = true;
-        i += 1; continue;
-      }
-      const ds = /^(?:[rRbBuUfF]{0,2})("""|''')/.exec(l);
-      if (ds?.[1]) { if (!l.slice(ds[0].length).includes(ds[1])) inTriple = ds[1]; i += 1; continue; }
-      if (/^(?:[rRbBuUfF]{0,2})(?:"[^"\n]*"|'[^'\n]*')$/.test(l)) { i += 1; continue; }
-      break;
-    }
-    return [...lines.slice(0, i), variant % 2 === 0 ? "if False:\n    pass" : `_${id} = 0`, ...lines.slice(i)].join("\n");
-  }
+  if (/\.[cm]?[jt]sx?$/.test(rel)) return insertJsSemanticNoOp(rel, source, id, variant);
+  if (rel.endsWith(".py")) return insertPySemanticNoOp(source, id, variant);
   const masked = maskCode(source, langForRel(rel), true);
   if (rel.endsWith(".go")) {
     for (const m of masked.matchAll(/\bfunc\s+(?:\([^)]*\)\s*)?[A-Za-z_]\w*\s*\(/g)) {
@@ -341,29 +330,40 @@ function resolveTargetFiles(options: CanaryOptions): string[] {
   return [...targets];
 }
 
+function linkSingleNodeModuleEntry(
+  entry: fs.Dirent,
+  paths: { srcDir: string; dstDir: string; absRoot: string; sandboxDir: string },
+  stack: Array<[string, string]>,
+): void {
+  const sPath = path.join(paths.srcDir, entry.name);
+  const dPath = path.join(paths.dstDir, entry.name);
+  if (entry.name.startsWith("@") && entry.isDirectory() && !entry.isSymbolicLink()) { stack.push([sPath, dPath]); return; }
+  if (entry.isSymbolicLink()) {
+    try {
+      const target = fs.realpathSync(sPath);
+      if (target === paths.absRoot || target.startsWith(`${paths.absRoot}${path.sep}`)) {
+        fs.symlinkSync(path.join(paths.sandboxDir, path.relative(paths.absRoot, target)), dPath);
+        return;
+      }
+    } catch { return; }
+  }
+  try { fs.symlinkSync(sPath, dPath); } catch { return; }
+}
+
 function linkNodeModulesIntoSandbox(absRoot: string, sandboxDir: string): void {
   const srcNm = path.join(absRoot, "node_modules");
   const dstNm = path.join(sandboxDir, "node_modules");
   if (!fs.existsSync(srcNm)) return;
-  const linkDir = (srcDir: string, dstDir: string): void => {
+  const stack: Array<[string, string]> = [[srcNm, dstNm]];
+  while (stack.length > 0) {
+    const pair = stack.pop();
+    if (!pair) continue;
+    const [srcDir, dstDir] = pair;
     fs.mkdirSync(dstDir, { recursive: true });
     for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
-      const sPath = path.join(srcDir, entry.name);
-      const dPath = path.join(dstDir, entry.name);
-      if (entry.name.startsWith("@") && entry.isDirectory() && !entry.isSymbolicLink()) { linkDir(sPath, dPath); continue; }
-      if (entry.isSymbolicLink()) {
-        try {
-          const target = fs.realpathSync(sPath);
-          if (target === absRoot || target.startsWith(`${absRoot}${path.sep}`)) {
-            fs.symlinkSync(path.join(sandboxDir, path.relative(absRoot, target)), dPath);
-            continue;
-          }
-        } catch { continue; }
-      }
-      try { fs.symlinkSync(sPath, dPath); } catch { continue; }
+      linkSingleNodeModuleEntry(entry, { srcDir, dstDir, absRoot, sandboxDir }, stack);
     }
-  };
-  linkDir(srcNm, dstNm);
+  }
 }
 
 const SANDBOX_SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "target", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "obj"]);
@@ -449,7 +449,7 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
   const baseEnv = scrubChildEnv();
   const withFresh = <T>(fn: (sb: string) => T): T => { const sb = copyRepoForIsolatedCanary(plan.absRoot); try { return fn(sb); } finally { fs.rmSync(sb, { recursive: true, force: true }); } };
   const baselineStart = performance.now();
-  const baselineRun = withFresh((sb) => withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(plan.parsedCmd.steps, sb, env, 120_000, plan.parsedCmd.stepCwds)));
+  const baselineRun = withFresh((sb) => withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(plan.parsedCmd.steps, { cwd: sb, env, timeoutMs: 120_000, stepCwds: plan.parsedCmd.stepCwds })));
   const taskTimeoutMs = Math.round(Math.max(25_000, Math.min(120_000, Math.max(500, Math.round(performance.now() - baselineStart)) * 6)));
   const baseCounts = parseRunnerTestCounts(stripAnsi(`${baselineRun.stdout}\n${baselineRun.stderr}`), plan.parsedCmd.steps);
   if (baselineRun.status !== 0 || (baseCounts.hasTestRunner && (!baseCounts.matched || baseCounts.passed <= 0 || baseCounts.failed > 0))) return plan.failReport(plan.candidates.length, plan.candidates.length, ["baseline failed"]);
@@ -458,7 +458,7 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
     if (task.kind === "noop") {
       const ok = withFresh((sb) => {
         if (!safeWriteSandboxText(sb, task.targetRel, insertSemanticNoOp(task.targetRel, fs.readFileSync(path.join(sb, task.targetRel), "utf8"), task.variant))) return false;
-        const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(plan.parsedCmd.steps, sb, env, taskTimeoutMs, plan.parsedCmd.stepCwds));
+        const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(plan.parsedCmd.steps, { cwd: sb, env, timeoutMs: taskTimeoutMs, stepCwds: plan.parsedCmd.stepCwds }));
         if (res.status !== 0) return false;
         const c = parseRunnerTestCounts(stripAnsi(`${res.stdout}\n${res.stderr}`), plan.parsedCmd.steps);
         return !c.hasTestRunner || (c.matched && c.passed > 0 && c.failed === 0);
@@ -473,7 +473,7 @@ export function runPlantedFaultCanary(options: CanaryOptions): PlantedFaultRepor
     const execMut = () => withFresh((sb) => {
       if (!safeWriteSandboxText(sb, m.file, mut)) return { outcome: "invalid" as const, diagnostic: "sandbox write failed", retryable: false };
       const t0 = performance.now();
-      const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(plan.parsedCmd.steps, sb, env, taskTimeoutMs, plan.parsedCmd.stepCwds));
+      const res = withOpaqueTmpEnv(baseEnv, sb, (env) => runArgvChain(plan.parsedCmd.steps, { cwd: sb, env, timeoutMs: taskTimeoutMs, stepCwds: plan.parsedCmd.stepCwds }));
       const elapsed = performance.now() - t0;
       const cls = classifyCanaryOutcome(res, elapsed, taskTimeoutMs, plan.parsedCmd.steps);
       const retryable = cls.outcome === "invalid" && (res.signal !== null || res.error !== undefined) && isRetryableCanarySignal(res, elapsed, taskTimeoutMs);

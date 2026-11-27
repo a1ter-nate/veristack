@@ -97,13 +97,18 @@ function snapshotReportFiles(repoRoot: string): Map<string, { mtimeMs: number; s
   return snap;
 }
 
-function parseCommandMetrics(
-  repoRoot: string,
-  rawOutput: string,
-  rung: RungId,
-  steps: readonly string[][],
-  preSnapshot: ReadonlyMap<string, { mtimeMs: number; size: number }>,
-): { metrics: RungReceipt["metrics"]; hasTestRunner: boolean } {
+interface CommandMetricsInput {
+  repoRoot: string;
+  rawOutput: string;
+  rung: RungId;
+  steps: readonly string[][];
+  preSnapshot: ReadonlyMap<string, { mtimeMs: number; size: number }>;
+}
+
+function parseCommandMetrics(input: CommandMetricsInput): { metrics: RungReceipt["metrics"]; hasTestRunner: boolean } {
+  if (!input.repoRoot) throw new Error("repoRoot is required.");
+  if (!input.rung) throw new Error("rung is required.");
+  const { repoRoot, rawOutput, rung, steps, preSnapshot } = input;
   const output = stripAnsi(rawOutput);
   const structured = parseStructuredReports(repoRoot, { rung, preSnapshot });
   const parsedCounts = parseRunnerTestCounts(output, steps);
@@ -131,9 +136,7 @@ function parseCommandMetrics(
     const h = extractToolHead(seg).head;
     return /^(?:stryker|mutmut|pitest|gremlins|go-mutesting|cargo mutants|dotnet stryker)$/.test(h);
   });
-  if (hasMutationTool && typeof structured.mutationScore === "number") {
-    metrics.mutationScore = structured.mutationScore;
-  }
+  if (hasMutationTool && typeof structured.mutationScore === "number") metrics.mutationScore = structured.mutationScore;
   if (metrics.mutationScore === undefined && rung === "R5" && hasMutationTool) {
     const mutationMatch = /mutation\s+score[:\s]+(\d+(?:\.\d+)?)%/i.exec(output);
     if (mutationMatch?.[1]) metrics.mutationScore = Number(mutationMatch[1]);
@@ -142,20 +145,25 @@ function parseCommandMetrics(
   return { metrics: Object.keys(metrics).length > 0 ? metrics : undefined, hasTestRunner: parsedCounts.hasTestRunner };
 }
 
-function finalizeAndWriteReceipt(
-  repo: DiscoveredRepo,
-  rung: RungId,
-  entry: NonNullable<RungManifest["rungs"][RungId]>,
-  commitSha: string,
-  treeHashAfter: string,
-  mutatedTree: boolean,
-  exitCode: number,
-  durationMs: number,
-  metrics: RungReceipt["metrics"],
-  hasTestRunner: boolean,
-  canary: PlantedFaultReport | undefined,
-  hmacKeyOverride?: string,
-): RungReceipt {
+interface FinalizeReceiptInput {
+  repo: DiscoveredRepo;
+  rung: RungId;
+  entry: NonNullable<RungManifest["rungs"][RungId]>;
+  commitSha: string;
+  treeHashAfter: string;
+  mutatedTree: boolean;
+  exitCode: number;
+  durationMs: number;
+  metrics: RungReceipt["metrics"];
+  hasTestRunner: boolean;
+  canary: PlantedFaultReport | undefined;
+  hmacKeyOverride?: string;
+}
+
+function finalizeAndWriteReceipt(input: FinalizeReceiptInput): RungReceipt {
+  if (!input.repo.root) throw new Error("repo.root is required.");
+  if (!input.entry.command) throw new Error("rung command is required.");
+  const { repo, rung, entry, commitSha, treeHashAfter, mutatedTree, exitCode, durationMs, metrics, hasTestRunner, canary, hmacKeyOverride } = input;
   const testsPassed = metrics?.testsPassed;
   const testsFailed = metrics?.testsFailed ?? 0;
   const requiresPositiveTests = rung === "R2" || rung === "R3" || ((rung === "R4" || rung === "R7") && hasTestRunner);
@@ -166,13 +174,7 @@ function finalizeAndWriteReceipt(
   const canaryFailed = Boolean(canary && (!canary.passed || canary.totalMutants < minCanaryMutants || canary.invalidKills > 0));
   const finalExit = mutatedTree || testCountMissing || canaryFailed ? 1 : exitCode;
   const baseReceipt: Omit<RungReceipt, "digest"> = {
-    schemaVersion: 1,
-    rung,
-    command: entry.command,
-    commitSha,
-    treeHash: treeHashAfter,
-    exitCode: finalExit,
-    durationMs,
+    schemaVersion: 1, rung, command: entry.command, commitSha, treeHash: treeHashAfter, exitCode: finalExit, durationMs,
     ...(process.env.GITHUB_RUN_ID ? { ciRunId: process.env.GITHUB_RUN_ID } : {}),
     ...(metrics ? { metrics } : {}),
     ...(canary ? { canary } : {}),
@@ -183,6 +185,13 @@ function finalizeAndWriteReceipt(
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `${rung}.json`), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
   return receipt;
+}
+
+function trimFailureTail(stdout: string, stderr: string): string {
+  const combined = stripAnsi(`${stdout}\n${stderr}`).trim();
+  if (!combined) return "";
+  const lines = combined.split(/\r?\n/);
+  return lines.slice(-30).join("\n").slice(-2400);
 }
 
 export function runRungAndWriteReceipt(
@@ -199,22 +208,19 @@ export function runRungAndWriteReceipt(
   const preSnapshot = snapshotReportFiles(repo.root);
   const commitSha = readGitHeadSha(repo.root);
   const started = performance.now();
-  const proc = runArgvChain(parsedCmd.steps, repo.root, scrubChildEnv(), 300_000, parsedCmd.stepCwds);
+  const proc = runArgvChain(parsedCmd.steps, { cwd: repo.root, env: scrubChildEnv(), timeoutMs: 300_000, stepCwds: parsedCmd.stepCwds });
   const durationMs = Math.round(performance.now() - started);
-  const { metrics, hasTestRunner } = parseCommandMetrics(repo.root, `${proc.stdout}\n${proc.stderr}`, rung, parsedCmd.steps, preSnapshot);
+  const { metrics, hasTestRunner } = parseCommandMetrics({ repoRoot: repo.root, rawOutput: `${proc.stdout}\n${proc.stderr}`, rung, steps: parsedCmd.steps, preSnapshot });
   const treeHashAfter = computeRepoTreeHash(repo);
   const mutatedTree = treeHashBefore !== treeHashAfter;
   let canary: PlantedFaultReport | undefined;
   if (proc.status === 0 && !mutatedTree && entry.canary?.enabled) {
     canary = runPlantedFaultCanary({
-      repoRoot: repo.root,
-      testCmd: entry.canary.testCommand ?? entry.command,
-      targets: entry.canary.targets,
-      maxMutants: entry.canary.maxMutants,
-      minKillRate: entry.canary.minKillRate,
+      repoRoot: repo.root, testCmd: entry.canary.testCommand ?? entry.command,
+      targets: entry.canary.targets, maxMutants: entry.canary.maxMutants, minKillRate: entry.canary.minKillRate,
     });
   }
-  return finalizeAndWriteReceipt(repo, rung, entry, commitSha, treeHashAfter, mutatedTree, proc.status, durationMs, metrics, hasTestRunner, canary, hmacKeyOverride);
+  return finalizeAndWriteReceipt({ repo, rung, entry, commitSha, treeHashAfter, mutatedTree, exitCode: proc.status, durationMs, metrics, hasTestRunner, canary, hmacKeyOverride });
 }
 
 async function runRungAndWriteReceiptAsync(
@@ -222,7 +228,7 @@ async function runRungAndWriteReceiptAsync(
   rung: RungId,
   manifest: RungManifest,
   hmacKeyOverride?: string,
-): Promise<RungReceipt> {
+): Promise<{ receipt: RungReceipt; failureOutput?: string }> {
   const entry = manifest.rungs[rung];
   if (!entry) throw new Error(`Rung ${rung} is not declared in .verification/rungs.json.`);
   const parsedCmd = parseAndValidateCommandArgv(rung, entry.command, repo.root);
@@ -231,22 +237,54 @@ async function runRungAndWriteReceiptAsync(
   const preSnapshot = snapshotReportFiles(repo.root);
   const commitSha = readGitHeadSha(repo.root);
   const started = performance.now();
-  const proc = runArgvChain(parsedCmd.steps, repo.root, scrubChildEnv(), 300_000, parsedCmd.stepCwds);
+  const proc = runArgvChain(parsedCmd.steps, { cwd: repo.root, env: scrubChildEnv(), timeoutMs: 300_000, stepCwds: parsedCmd.stepCwds });
   const durationMs = Math.round(performance.now() - started);
-  const { metrics, hasTestRunner } = parseCommandMetrics(repo.root, `${proc.stdout}\n${proc.stderr}`, rung, parsedCmd.steps, preSnapshot);
+  const { metrics, hasTestRunner } = parseCommandMetrics({ repoRoot: repo.root, rawOutput: `${proc.stdout}\n${proc.stderr}`, rung, steps: parsedCmd.steps, preSnapshot });
   const treeHashAfter = computeRepoTreeHash(repo);
   const mutatedTree = treeHashBefore !== treeHashAfter;
   let canary: PlantedFaultReport | undefined;
   if (proc.status === 0 && !mutatedTree && entry.canary?.enabled) {
     canary = await runPlantedFaultCanaryAsync({
-      repoRoot: repo.root,
-      testCmd: entry.canary.testCommand ?? entry.command,
-      targets: entry.canary.targets,
-      maxMutants: entry.canary.maxMutants,
-      minKillRate: entry.canary.minKillRate,
+      repoRoot: repo.root, testCmd: entry.canary.testCommand ?? entry.command,
+      targets: entry.canary.targets, maxMutants: entry.canary.maxMutants, minKillRate: entry.canary.minKillRate,
     });
   }
-  return finalizeAndWriteReceipt(repo, rung, entry, commitSha, treeHashAfter, mutatedTree, proc.status, durationMs, metrics, hasTestRunner, canary, hmacKeyOverride);
+  const receipt = finalizeAndWriteReceipt({ repo, rung, entry, commitSha, treeHashAfter, mutatedTree, exitCode: proc.status, durationMs, metrics, hasTestRunner, canary, hmacKeyOverride });
+  const failureOutput = receipt.exitCode !== 0 ? trimFailureTail(proc.stdout, proc.stderr) : undefined;
+  return { receipt, ...(failureOutput ? { failureOutput } : {}) };
+}
+
+function validateLoadedReceipt(ctx: {
+  raw: RungReceipt;
+  name: string;
+  repoRoot: string;
+  manifest?: RungManifest;
+  requireHmac: boolean;
+  activeKey?: string;
+  expectedTreeHash: string;
+  expectedHead: string;
+  activeCiRunId?: string;
+}): boolean {
+  const { raw, name, repoRoot, manifest, requireHmac, activeKey, expectedTreeHash, expectedHead, activeCiRunId } = ctx;
+  if (raw.schemaVersion !== 1 || !raw.rung || typeof raw.digest !== "string") return false;
+  if (name !== `${raw.rung}.json`) return false;
+  const declared = manifest?.rungs[raw.rung];
+  if (!declared || raw.command !== declared.command) return false;
+  if (requireHmac && !raw.digest.startsWith("hmac:")) return false;
+  const { digest, ...rest } = raw;
+  if (digestPayload(rest, activeKey) !== digest) return false;
+  if (raw.exitCode !== 0 || raw.treeHash !== expectedTreeHash) return false;
+  if (expectedHead !== "no-git" && raw.commitSha !== expectedHead) return false;
+  if (activeCiRunId && raw.ciRunId !== activeCiRunId) return false;
+  const needsTests = raw.rung === "R2" || raw.rung === "R3" || ((raw.rung === "R4" || raw.rung === "R7") && hasTestRunnerCommand(raw.rung, declared.command, repoRoot));
+  if (needsTests && ((raw.metrics?.testsPassed ?? 0) <= 0 || (raw.metrics?.testsFailed ?? 0) > 0)) return false;
+  if (declared.canary?.enabled) {
+    const minFloor = Math.max(0.75, declared.canary.minKillRate ?? 0.8);
+    const minMutants = Math.min(4, declared.canary.maxMutants ?? 4);
+    if (!raw.canary || !raw.canary.passed || raw.canary.killRate < minFloor || raw.canary.totalMutants < minMutants || raw.canary.invalidKills > 0) return false;
+  }
+  if (raw.canary && !raw.canary.passed) return false;
+  return true;
 }
 
 export function loadValidReceipts(
@@ -254,18 +292,14 @@ export function loadValidReceipts(
   manifest?: RungManifest,
   options?: { strict?: boolean; hmacKeyOverride?: string },
 ): { receipts: Map<RungId, RungReceipt>; findings: Finding[] } {
+  if (!repo.root) throw new Error("repo.root is required.");
   const valid = new Map<RungId, RungReceipt>();
   const findings: Finding[] = [];
 
   if (hasGitTrackedReceipts(repo.root)) {
     findings.push({
-      id: "RCPT:tracked-in-git:.verification/receipts",
-      rule: "receipt-committed-to-git",
-      category: "cheat",
-      rung: "R0",
-      severity: "error",
-      file: ".verification/receipts",
-      line: 1,
+      id: "RCPT:tracked-in-git:.verification/receipts", rule: "receipt-committed-to-git", category: "cheat", rung: "R0", severity: "error",
+      file: ".verification/receipts", line: 1,
       message: "Receipts in .verification/receipts/ are tracked by git — receipts must be generated dynamically at CI runtime, never committed.",
       fix: "Add .verification/receipts/ to .gitignore and run 'git rm -r --cached .verification/receipts'.",
     });
@@ -276,13 +310,8 @@ export function loadValidReceipts(
   const requireHmac = Boolean(options?.strict);
   if (requireHmac && (!activeKey || activeKey.length < 8)) {
     findings.push({
-      id: "RCPT:unsigned-strict:.verification/receipts",
-      rule: "receipt-unsigned-strict",
-      category: "oracle-lock",
-      rung: "R0",
-      severity: "error",
-      file: ".verification/receipts",
-      line: 1,
+      id: "RCPT:unsigned-strict:.verification/receipts", rule: "receipt-unsigned-strict", category: "oracle-lock", rung: "R0", severity: "error",
+      file: ".verification/receipts", line: 1,
       message: "Strict scan requires HMAC-authenticated receipts (unkeyed SHA-256 receipts are forgeable offline).",
       fix: "Run 'vstack verify . --strict' (ephemeral in-memory HMAC key) or set VSTACK_RECEIPT_KEY in the parent CI orchestrator.",
     });
@@ -295,33 +324,14 @@ export function loadValidReceipts(
   const expectedTreeHash = computeRepoTreeHash(repo);
   const expectedHead = readGitHeadSha(repo.root);
   const activeCiRunId = process.env.GITHUB_RUN_ID;
-
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith(".json")) continue;
     try {
       const raw = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as RungReceipt;
-      if (raw.schemaVersion !== 1 || !raw.rung || typeof raw.digest !== "string") continue;
-      if (name !== `${raw.rung}.json`) continue;
-      const declared = manifest?.rungs[raw.rung];
-      if (!declared || raw.command !== declared.command) continue;
-      if (requireHmac && !raw.digest.startsWith("hmac:")) continue;
-      const { digest, ...rest } = raw;
-      if (digestPayload(rest, activeKey) !== digest) continue;
-      if (raw.exitCode !== 0 || raw.treeHash !== expectedTreeHash) continue;
-      if (expectedHead !== "no-git" && raw.commitSha !== expectedHead) continue;
-      if (activeCiRunId && raw.ciRunId !== activeCiRunId) continue;
-      const needsTests = raw.rung === "R2" || raw.rung === "R3" || ((raw.rung === "R4" || raw.rung === "R7") && hasTestRunnerCommand(raw.rung, declared.command, repo.root));
-      if (needsTests && ((raw.metrics?.testsPassed ?? 0) <= 0 || (raw.metrics?.testsFailed ?? 0) > 0)) continue;
-      if (declared.canary?.enabled) {
-        const minFloor = Math.max(0.75, declared.canary.minKillRate ?? 0.8);
-        const minMutants = Math.min(4, declared.canary.maxMutants ?? 4);
-        if (!raw.canary || !raw.canary.passed || raw.canary.killRate < minFloor || raw.canary.totalMutants < minMutants || raw.canary.invalidKills > 0) continue;
+      if (validateLoadedReceipt({ raw, name, repoRoot: repo.root, manifest, requireHmac, activeKey, expectedTreeHash, expectedHead, activeCiRunId })) {
+        valid.set(raw.rung, raw);
       }
-      if (raw.canary && !raw.canary.passed) continue;
-      valid.set(raw.rung, raw);
-    } catch {
-      continue;
-    }
+    } catch { continue; }
   }
   return { receipts: valid, findings };
 }
@@ -348,16 +358,21 @@ export async function runAllDeclaredRungsAsync(
   repo: DiscoveredRepo,
   targetRung: RungId | "all",
   hmacKeyOverride?: string,
-): Promise<{ receipts: RungReceipt[]; passed: boolean; manifestPath: string }> {
+): Promise<{ receipts: RungReceipt[]; passed: boolean; manifestPath: string; failureOutputs?: Record<string, string> }> {
   const loaded = loadRungManifest(repo.root);
   if (!loaded.manifest) throw new Error(loaded.error ?? "Missing .verification/rungs.json manifest.");
   const rungsToRun: RungId[] = targetRung === "all" ? (Object.keys(loaded.manifest.rungs) as RungId[]) : [targetRung];
   const receipts: RungReceipt[] = [];
+  const failureOutputs: Record<string, string> = {};
   let passed = true;
   for (const r of rungsToRun) {
-    const rec = await runRungAndWriteReceiptAsync(repo, r, loaded.manifest, hmacKeyOverride);
-    receipts.push(rec);
-    if (rec.exitCode !== 0) passed = false;
+    const { receipt, failureOutput } = await runRungAndWriteReceiptAsync(repo, r, loaded.manifest, hmacKeyOverride);
+    receipts.push(receipt);
+    if (failureOutput) failureOutputs[r] = failureOutput;
+    if (receipt.exitCode !== 0) passed = false;
   }
-  return { receipts, passed, manifestPath: loaded.path ?? ".verification/rungs.json" };
+  return {
+    receipts, passed, manifestPath: loaded.path ?? ".verification/rungs.json",
+    ...(Object.keys(failureOutputs).length > 0 ? { failureOutputs } : {}),
+  };
 }

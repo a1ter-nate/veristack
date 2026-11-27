@@ -126,31 +126,67 @@ function countRuleMap(findings: readonly { rule: string }[]): Map<string, number
   return m;
 }
 
+function groupFindingsByFile(findings: readonly { file: string; rule: string }[]): Map<string, Array<{ rule: string }>> {
+  const byFile = new Map<string, Array<{ rule: string }>>();
+  for (const f of findings) {
+    const arr = byFile.get(f.file) ?? [];
+    arr.push(f);
+    byFile.set(f.file, arr);
+  }
+  return byFile;
+}
+
+function evaluateReplayPair(
+  entry: ReplayManifestEntry,
+  ctx: {
+    replayDir: string;
+    beforeByFile: Map<string, Array<{ rule: string }>>;
+    afterByFile: Map<string, Array<{ rule: string }>>;
+    caughtRuleCounts: Map<string, number>;
+    lostInvariantCounts: Map<string, number>;
+  },
+): { caught: boolean; regressionCaught: boolean; cleanAfter: boolean } {
+  if (!entry.beforeRel) throw new Error("Replay entry requires beforeRel.");
+  const bMap = countRuleMap(ctx.beforeByFile.get(entry.beforeRel) ?? []);
+  const aMap = countRuleMap(ctx.afterByFile.get(entry.afterRel) ?? []);
+  let caughtCount = 0;
+  let regressedCount = 0;
+  for (const [rule, bCnt] of bMap.entries()) {
+    if (bCnt > (aMap.get(rule) ?? 0)) {
+      caughtCount += 1;
+      ctx.caughtRuleCounts.set(rule, (ctx.caughtRuleCounts.get(rule) ?? 0) + 1);
+    }
+  }
+  for (const [rule, aCnt] of aMap.entries()) {
+    if (aCnt > (bMap.get(rule) ?? 0)) regressedCount += 1;
+  }
+  const beforeRaw = fs.readFileSync(path.join(ctx.replayDir, "before", entry.beforeRel), "utf8");
+  const afterRaw = fs.readFileSync(path.join(ctx.replayDir, "after", entry.afterRel), "utf8");
+  const revertEvents = buildSyntheticRevertEvents(entry.afterRel, afterRaw, beforeRaw);
+  const revertFindings = [
+    ...auditDiffInvariantLoss(revertEvents),
+    ...auditTsAstPredicateDrop(entry.afterRel, afterRaw, beforeRaw),
+    ...auditDiffAntiEvasion(revertEvents),
+  ];
+  for (const rf of revertFindings) {
+    const m = /removed a '([^']+)' invariant/.exec(rf.message);
+    const label = m?.[1] ?? rf.rule;
+    ctx.lostInvariantCounts.set(label, (ctx.lostInvariantCounts.get(label) ?? 0) + 1);
+  }
+  return { caught: caughtCount > 0, regressionCaught: revertFindings.length > 0, cleanAfter: regressedCount === 0 };
+}
+
 export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
+  if (!replayDir) throw new Error("replayDir is required.");
   const manifestPath = path.join(replayDir, "manifest.json");
+  if (!fs.existsSync(manifestPath)) throw new Error(`Missing replay manifest: ${manifestPath}`);
   const entries = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as ReplayManifestEntry[];
   const t0 = performance.now();
-  const beforeScan = scanRepo(path.join(replayDir, "before"));
-  const afterScan = scanRepo(path.join(replayDir, "after"));
+  const beforeByFile = groupFindingsByFile(scanRepo(path.join(replayDir, "before")).findings);
+  const afterByFile = groupFindingsByFile(scanRepo(path.join(replayDir, "after")).findings);
   const scanMs = Number((performance.now() - t0).toFixed(2));
 
-  const beforeByFile = new Map<string, Array<{ rule: string }>>();
-  for (const f of beforeScan.findings) {
-    const arr = beforeByFile.get(f.file) ?? [];
-    arr.push(f);
-    beforeByFile.set(f.file, arr);
-  }
-  const afterByFile = new Map<string, Array<{ rule: string }>>();
-  for (const f of afterScan.findings) {
-    const arr = afterByFile.get(f.file) ?? [];
-    arr.push(f);
-    afterByFile.set(f.file, arr);
-  }
-
-  let caughtPairs = 0;
-  let regressionCaughtPairs = 0;
-  let combinedCaughtPairs = 0;
-  let cleanAfterPairs = 0;
+  let caughtPairs = 0; let regressionCaughtPairs = 0; let combinedCaughtPairs = 0; let cleanAfterPairs = 0;
   const byLanguage: Record<string, { total: number; caught: number; pct: number; regressionCaught: number }> = {};
   const caughtRuleCounts = new Map<string, number>();
   const lostInvariantCounts = new Map<string, number>();
@@ -158,41 +194,11 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
   const escapedSamples: ReplayBenchReport["escapedSamples"] = [];
 
   for (const entry of entries) {
-    const bMap = countRuleMap(beforeByFile.get(entry.beforeRel) ?? []);
-    const aMap = countRuleMap(afterByFile.get(entry.afterRel) ?? []);
-    const caughtRules: string[] = [];
-    const regressedRules: string[] = [];
-
-    for (const [rule, bCnt] of bMap.entries()) {
-      if (bCnt > (aMap.get(rule) ?? 0)) {
-        caughtRules.push(rule);
-        caughtRuleCounts.set(rule, (caughtRuleCounts.get(rule) ?? 0) + 1);
-      }
-    }
-    for (const [rule, aCnt] of aMap.entries()) {
-      if (aCnt > (bMap.get(rule) ?? 0)) regressedRules.push(rule);
-    }
-
-    const beforeRaw = fs.readFileSync(path.join(replayDir, "before", entry.beforeRel), "utf8");
-    const afterRaw = fs.readFileSync(path.join(replayDir, "after", entry.afterRel), "utf8");
-    const revertEvents = buildSyntheticRevertEvents(entry.afterRel, afterRaw, beforeRaw);
-    const revertFindings = [
-      ...auditDiffInvariantLoss(revertEvents),
-      ...auditTsAstPredicateDrop(entry.afterRel, afterRaw, beforeRaw),
-      ...auditDiffAntiEvasion(revertEvents),
-    ];
-    const regressionCaught = revertFindings.length > 0;
-    for (const rf of revertFindings) {
-      const m = /removed a '([^']+)' invariant/.exec(rf.message);
-      const label = m?.[1] ?? rf.rule;
-      lostInvariantCounts.set(label, (lostInvariantCounts.get(label) ?? 0) + 1);
-    }
-
-    const caught = caughtRules.length > 0;
+    const { caught, regressionCaught, cleanAfter } = evaluateReplayPair(entry, { replayDir, beforeByFile, afterByFile, caughtRuleCounts, lostInvariantCounts });
     if (caught) caughtPairs += 1;
     if (regressionCaught) regressionCaughtPairs += 1;
     if (caught || regressionCaught) combinedCaughtPairs += 1;
-    if (regressedRules.length === 0) cleanAfterPairs += 1;
+    if (cleanAfter) cleanAfterPairs += 1;
 
     const langSlot = byLanguage[entry.lang] ?? { total: 0, caught: 0, pct: 0, regressionCaught: 0 };
     langSlot.total += 1;
@@ -201,124 +207,92 @@ export function runHistoricalReplayBench(replayDir: string): ReplayBenchReport {
     langSlot.pct = Number(((langSlot.caught / langSlot.total) * 100).toFixed(1));
     byLanguage[entry.lang] = langSlot;
 
-    const shapes = entry.shapes.length > 0 ? entry.shapes : ["unclustered"];
-    for (const sh of shapes) {
+    for (const sh of entry.shapes.length > 0 ? entry.shapes : ["unclustered"]) {
       const s = shapeStats.get(sh) ?? { escaped: 0, total: 0 };
       s.total += 1;
       if (!caught && !regressionCaught) s.escaped += 1;
       shapeStats.set(sh, s);
     }
-
     if (!caught && !regressionCaught && escapedSamples.length < 40) {
-      escapedSamples.push({
-        id: entry.id,
-        repo: entry.repo,
-        lang: entry.lang,
-        subject: entry.subject,
-        shapes: entry.shapes,
-      });
+      escapedSamples.push({ id: entry.id, repo: entry.repo, lang: entry.lang, subject: entry.subject, shapes: entry.shapes });
     }
   }
 
   return {
-    corpusDir: replayDir,
-    totalPairs: entries.length,
-    caughtPairs,
+    corpusDir: replayDir, totalPairs: entries.length, caughtPairs,
     catchRatePct: Number(((caughtPairs / Math.max(1, entries.length)) * 100).toFixed(1)),
     regressionCaughtPairs,
     regressionImmunityPct: Number(((regressionCaughtPairs / Math.max(1, entries.length)) * 100).toFixed(1)),
     combinedCaughtPairs,
     combinedRatePct: Number(((combinedCaughtPairs / Math.max(1, entries.length)) * 100).toFixed(1)),
-    cleanAfterPairs,
-    scanMs,
-    byLanguage,
-    topCaughtRules: [...caughtRuleCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 20)
-      .map(([rule, count]) => ({ rule, count })),
-    topLostInvariants: [...lostInvariantCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 12)
-      .map(([invariant, count]) => ({ invariant, count })),
-    topEscapedShapes: [...shapeStats.entries()]
-      .sort((a, b) => b[1].escaped - a[1].escaped)
-      .slice(0, 15)
-      .map(([shape, v]) => ({ shape, escaped: v.escaped, total: v.total })),
+    cleanAfterPairs, scanMs, byLanguage,
+    topCaughtRules: [...caughtRuleCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([rule, count]) => ({ rule, count })),
+    topLostInvariants: [...lostInvariantCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([invariant, count]) => ({ invariant, count })),
+    topEscapedShapes: [...shapeStats.entries()].sort((a, b) => b[1].escaped - a[1].escaped).slice(0, 15).map(([shape, v]) => ({ shape, escaped: v.escaped, total: v.total })),
     escapedSamples,
   };
 }
 
+function runLanguagePrecisionBench(examplesRoot: string, lang: string): BenchLanguageResult | null {
+  if (!lang) return null;
+  const langDir = path.join(examplesRoot, lang);
+  const manifestPath = path.join(langDir, "manifest.json");
+  if (!fs.existsSync(manifestPath)) return null;
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as ExampleManifest;
+  const caughtDir = path.join(langDir, "caught");
+  const cleanDir = path.join(langDir, "clean");
+  const t0 = performance.now();
+  const caughtScan = scanRepo(caughtDir);
+  const cleanScan = scanRepo(cleanDir);
+  const scanMs = Number((performance.now() - t0).toFixed(2));
+
+  let expectedRules = 0; let matchedRules = 0;
+  const missedRules: string[] = [];
+  for (const [relFile, expected] of Object.entries(manifest.caught)) {
+    const observed = new Set(caughtScan.findings.filter((f) => f.file === relFile).map((f) => f.rule));
+    for (const r of expected) {
+      expectedRules += 1;
+      if (observed.has(r)) matchedRules += 1;
+      else missedRules.push(`${relFile}:${r}`);
+    }
+  }
+  const cleanFalsePositives: string[] = [];
+  for (const relFile of manifest.clean) {
+    for (const f of cleanScan.findings.filter((x) => x.file === relFile)) cleanFalsePositives.push(`${relFile}:${f.rule}@${f.line}`);
+  }
+  const commentedFiles: Record<string, string> = {};
+  const stringFiles: Record<string, string> = {};
+  for (const relFile of Object.keys(manifest.caught)) {
+    if (/test|spec/i.test(relFile)) continue;
+    const content = fs.readFileSync(path.join(caughtDir, relFile), "utf8");
+    commentedFiles[relFile] = wrapInComments(content, lang);
+    const wrappedStr = wrapInStringLiteral(content, lang);
+    if (wrappedStr !== null) stringFiles[relFile] = wrappedStr;
+  }
+  const commentWrappedFps = runInTempDir(commentedFiles).findings
+    .filter((f) => f.rule !== "no-comments" && f.rule !== "suppression-audit")
+    .map((f) => `${f.file}:${f.rule}@${f.line}`);
+  const stringWrappedFps = (Object.keys(stringFiles).length > 0 ? runInTempDir(stringFiles).findings : [])
+    .filter((f) => f.rule !== "no-comments" && f.rule !== "max-file-lines")
+    .map((f) => `${f.file}:${f.rule}@${f.line}`);
+
+  return {
+    language: lang, caughtFiles: Object.keys(manifest.caught).length, cleanFiles: manifest.clean.length,
+    expectedRules, matchedRules, missedRules, cleanFalsePositives, commentWrappedFps, stringWrappedFps, scanMs,
+  };
+}
+
 export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDir?: string): BenchReport {
+  if (!repoRoot) throw new Error("repoRoot is required.");
   const examplesRoot = path.join(repoRoot, "examples");
+  if (!fs.existsSync(examplesRoot)) {
+    return { passed: false, totalExpectedRules: 0, totalMatchedRules: 0, totalCleanFps: 0, totalAdversarialFps: 0, totalScanMs: 0, languages: [] };
+  }
   const langs = ["typescript", "csharp", "rust", "python", "go", "sql", "shell"] as const;
   const languages: BenchLanguageResult[] = [];
-
   for (const lang of langs) {
-    const langDir = path.join(examplesRoot, lang);
-    const manifestPath = path.join(langDir, "manifest.json");
-    if (!fs.existsSync(manifestPath)) continue;
-
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as ExampleManifest;
-    const caughtDir = path.join(langDir, "caught");
-    const cleanDir = path.join(langDir, "clean");
-
-    const t0 = performance.now();
-    const caughtScan = scanRepo(caughtDir);
-    const cleanScan = scanRepo(cleanDir);
-    const scanMs = Number((performance.now() - t0).toFixed(2));
-
-    let expectedRules = 0;
-    let matchedRules = 0;
-    const missedRules: string[] = [];
-
-    for (const [relFile, expected] of Object.entries(manifest.caught)) {
-      const observed = new Set(caughtScan.findings.filter((f) => f.file === relFile).map((f) => f.rule));
-      for (const r of expected) {
-        expectedRules += 1;
-        if (observed.has(r)) matchedRules += 1;
-        else missedRules.push(`${relFile}:${r}`);
-      }
-    }
-
-    const cleanFalsePositives: string[] = [];
-    for (const relFile of manifest.clean) {
-      for (const f of cleanScan.findings.filter((x) => x.file === relFile)) {
-        cleanFalsePositives.push(`${relFile}:${f.rule}@${f.line}`);
-      }
-    }
-
-    const commentedFiles: Record<string, string> = {};
-    const stringFiles: Record<string, string> = {};
-    for (const relFile of Object.keys(manifest.caught)) {
-      if (/test|spec/i.test(relFile)) continue;
-      const content = fs.readFileSync(path.join(caughtDir, relFile), "utf8");
-      commentedFiles[relFile] = wrapInComments(content, lang);
-      const wrappedStr = wrapInStringLiteral(content, lang);
-      if (wrappedStr !== null) stringFiles[relFile] = wrappedStr;
-    }
-
-    const commentScan = runInTempDir(commentedFiles);
-    const commentWrappedFps = commentScan.findings
-      .filter((f) => f.rule !== "no-comments" && f.rule !== "suppression-audit")
-      .map((f) => `${f.file}:${f.rule}@${f.line}`);
-
-    const stringScan = Object.keys(stringFiles).length > 0 ? runInTempDir(stringFiles) : { findings: [] };
-    const stringWrappedFps = stringScan.findings
-      .filter((f) => f.rule !== "no-comments" && f.rule !== "max-file-lines")
-      .map((f) => `${f.file}:${f.rule}@${f.line}`);
-
-    languages.push({
-      language: lang,
-      caughtFiles: Object.keys(manifest.caught).length,
-      cleanFiles: manifest.clean.length,
-      expectedRules,
-      matchedRules,
-      missedRules,
-      cleanFalsePositives,
-      commentWrappedFps,
-      stringWrappedFps,
-      scanMs,
-    });
+    const result = runLanguagePrecisionBench(examplesRoot, lang);
+    if (result) languages.push(result);
   }
 
   let corpusFindingsPer10kLoc: number | undefined;
@@ -333,31 +307,12 @@ export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDi
   const totalCleanFps = languages.reduce((s, l) => s + l.cleanFalsePositives.length, 0);
   const totalAdversarialFps = languages.reduce((s, l) => s + l.commentWrappedFps.length + l.stringWrappedFps.length, 0);
   const totalScanMs = Number(languages.reduce((s, l) => s + l.scanMs, 0).toFixed(2));
-
-  const replay = replayDir && fs.existsSync(path.join(replayDir, "manifest.json"))
-    ? runHistoricalReplayBench(replayDir)
-    : undefined;
-
-  const replayPassed =
-    !replay ||
-    replay.totalPairs === 0 ||
-    (replay.combinedCaughtPairs > 0 && replay.cleanAfterPairs === replay.totalPairs);
+  const replay = replayDir && fs.existsSync(path.join(replayDir, "manifest.json")) ? runHistoricalReplayBench(replayDir) : undefined;
+  const replayPassed = !replay || replay.totalPairs === 0 || (replay.combinedCaughtPairs > 0 && replay.cleanAfterPairs === replay.totalPairs);
 
   return {
-    passed:
-      totalExpectedRules > 0 &&
-      totalExpectedRules === totalMatchedRules &&
-      totalCleanFps === 0 &&
-      totalAdversarialFps === 0 &&
-      replayPassed,
-    totalExpectedRules,
-    totalMatchedRules,
-    totalCleanFps,
-    totalAdversarialFps,
-    totalScanMs,
-    languages,
-    corpusFindingsPer10kLoc,
-    replay,
+    passed: totalExpectedRules > 0 && totalExpectedRules === totalMatchedRules && totalCleanFps === 0 && totalAdversarialFps === 0 && replayPassed,
+    totalExpectedRules, totalMatchedRules, totalCleanFps, totalAdversarialFps, totalScanMs, languages, corpusFindingsPer10kLoc, replay,
   };
 }
 

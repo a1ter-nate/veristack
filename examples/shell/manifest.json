@@ -6,10 +6,16 @@
       "sh-unanchored-shebang-grep",
       "sh-untrusted-path-in-sudo",
       "shell-harness-order-and-sockpath",
-      "sh-pkill-f-pattern-kill"
+      "sh-pkill-f-pattern-kill",
+      "tiger-explicit-over-implicit"
+    ],
+    "tigerstyle_shell.sh": [
+      "tiger-explicit-over-implicit",
+      "tiger-unbounded-loop"
     ]
   },
   "clean": [
-    "safe_ops.sh"
+    "safe_ops.sh",
+    "safe_tigerstyle_shell.sh"
   ]
 }

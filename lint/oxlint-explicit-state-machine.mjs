@@ -15,10 +15,17 @@ function keyName(node) {
   return null;
 }
 
+function unwrapTypeAnnotation(typeNode) {
+  let cur = typeNode;
+  for (let i = 0; i < 8 && cur && cur.type === "TSTypeAnnotation"; i++) {
+    cur = cur.typeAnnotation;
+  }
+  return cur;
+}
+
 function isBooleanTypeAnnotation(typeNode) {
-  if (!typeNode) return false;
-  if (typeNode.type === "TSTypeAnnotation") return isBooleanTypeAnnotation(typeNode.typeAnnotation);
-  return typeNode.type === "TSBooleanKeyword";
+  const cur = unwrapTypeAnnotation(typeNode);
+  return Boolean(cur && cur.type === "TSBooleanKeyword");
 }
 
 function isBooleanLiteralInit(init) {
@@ -26,12 +33,11 @@ function isBooleanLiteralInit(init) {
 }
 
 function isStringLiteralUnion(typeNode) {
-  if (!typeNode) return false;
-  if (typeNode.type === "TSTypeAnnotation") return isStringLiteralUnion(typeNode.typeAnnotation);
-  if (typeNode.type !== "TSUnionType" || !Array.isArray(typeNode.types) || typeNode.types.length < 2) {
+  const cur = unwrapTypeAnnotation(typeNode);
+  if (!cur || cur.type !== "TSUnionType" || !Array.isArray(cur.types) || cur.types.length < 2) {
     return false;
   }
-  const literalCount = typeNode.types.filter(
+  const literalCount = cur.types.filter(
     (t) => t && t.type === "TSLiteralType" && t.literal && typeof t.literal.value === "string",
   ).length;
   return literalCount >= 2;
@@ -47,26 +53,33 @@ function isStateDiscriminantExpr(node) {
   return false;
 }
 
-function containsNeverOrExhaustive(node) {
-  if (!node || typeof node !== "object") return false;
-  if (node.type === "TSNeverKeyword") return true;
-  if (node.type === "CallExpression") {
-    const calleeName = keyName(node.callee) ?? (node.callee?.type === "MemberExpression" ? keyName(node.callee.property) : null);
-    if (calleeName && EXHAUSTIVE_CALLEE.test(calleeName)) return true;
-  }
-  for (const key of Object.keys(node)) {
-    if (key === "parent" || key === "loc" || key === "range") continue;
-    const val = node[key];
-    if (Array.isArray(val)) {
-      if (val.some((child) => containsNeverOrExhaustive(child))) return true;
-    } else if (val && typeof val === "object" && val.type) {
-      if (containsNeverOrExhaustive(val)) return true;
+function containsNeverOrExhaustive(root) {
+  if (!root || typeof root !== "object") return false;
+  const stack = [root];
+  let visited = 0;
+  while (stack.length > 0 && visited < 4_000) {
+    visited += 1;
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    if (node.type === "TSNeverKeyword") return true;
+    if (node.type === "CallExpression") {
+      const calleeName = keyName(node.callee) ?? (node.callee?.type === "MemberExpression" ? keyName(node.callee.property) : null);
+      if (calleeName && EXHAUSTIVE_CALLEE.test(calleeName)) return true;
+    }
+    for (const key of Object.keys(node)) {
+      if (key === "parent" || key === "loc" || key === "range") continue;
+      const val = node[key];
+      if (Array.isArray(val)) for (const child of val) stack.push(child);
+      else if (val && typeof val === "object" && val.type) stack.push(val);
     }
   }
   return false;
 }
 
-function checkMembers(context, reportNode, kind, typeName, members, checkOptionalBag) {
+function checkMembers(context, spec) {
+  if (!spec) return;
+  if (!Array.isArray(spec.members)) return;
+  const { reportNode, kind, typeName, members, checkOptionalBag } = spec;
   const lifecycleBools = [];
   let hasDiscriminantUnion = false;
   let discriminantName = "";
@@ -126,6 +139,16 @@ function checkMembers(context, reportNode, kind, typeName, members, checkOptiona
   }
 }
 
+function resolveFnNodeName(node) {
+  if (node.id && node.id.type === "Identifier") return node.id.name;
+  if (node.parent) {
+    if (node.parent.type === "MethodDefinition") return keyName(node.parent.key);
+    if (node.parent.type === "Property") return keyName(node.parent.key);
+    if (node.parent.type === "VariableDeclarator") return keyName(node.parent.id);
+  }
+  return null;
+}
+
 function enclosingFunctionName(stack) {
   for (let i = stack.length - 1; i >= 0; i--) {
     const fn = stack[i];
@@ -156,42 +179,22 @@ const noImplicitStateMachineRule = {
   create(context) {
     const fnStack = [];
     const mutatingFns = new Map();
-
-    const pushFn = (node) => {
-      let name = null;
-      if (node.id && node.id.type === "Identifier") {
-        name = node.id.name;
-      } else if (node.parent) {
-        if (node.parent.type === "MethodDefinition") name = keyName(node.parent.key);
-        else if (node.parent.type === "Property") name = keyName(node.parent.key);
-        else if (node.parent.type === "VariableDeclarator") name = keyName(node.parent.id);
-      }
-      fnStack.push(name ?? "<anonymous>");
-    };
-
-    const popFn = () => {
-      fnStack.pop();
-    };
-
+    const pushFn = (node) => fnStack.push(resolveFnNodeName(node) ?? "<anonymous>");
+    const popFn = () => { fnStack.pop(); };
     return {
       TSInterfaceDeclaration(node) {
-        const name = node.id?.name ?? "Anonymous";
-        const body = node.body?.body ?? [];
-        checkMembers(context, node, "interface", name, body, true);
+        checkMembers(context, { reportNode: node, kind: "interface", typeName: node.id?.name ?? "Anonymous", members: node.body?.body ?? [], checkOptionalBag: true });
       },
       TSTypeAliasDeclaration(node) {
-        const name = node.id?.name ?? "Anonymous";
         if (node.typeAnnotation?.type === "TSTypeLiteral") {
-          checkMembers(context, node, "type", name, node.typeAnnotation.members ?? [], true);
+          checkMembers(context, { reportNode: node, kind: "type", typeName: node.id?.name ?? "Anonymous", members: node.typeAnnotation.members ?? [], checkOptionalBag: true });
         }
       },
       ClassDeclaration(node) {
-        const name = node.id?.name ?? "AnonymousClass";
-        checkMembers(context, node, "class", name, node.body?.body ?? [], false);
+        checkMembers(context, { reportNode: node, kind: "class", typeName: node.id?.name ?? "AnonymousClass", members: node.body?.body ?? [], checkOptionalBag: false });
       },
       ClassExpression(node) {
-        const name = node.id?.name ?? "AnonymousClass";
-        checkMembers(context, node, "class", name, node.body?.body ?? [], false);
+        checkMembers(context, { reportNode: node, kind: "class", typeName: node.id?.name ?? "AnonymousClass", members: node.body?.body ?? [], checkOptionalBag: false });
       },
       FunctionDeclaration: pushFn,
       "FunctionDeclaration:exit": popFn,
@@ -217,16 +220,12 @@ const noImplicitStateMachineRule = {
       "Program:exit"() {
         if (mutatingFns.size < 2) return;
         const entries = [...mutatingFns.entries()];
-        const firstNode = entries[0][1];
         context.report({
-          node: firstNode,
+          node: entries[0][1],
           messageId: "scatteredMutation",
           data: {
             count: String(entries.length),
-            names: entries
-              .map(([name]) => name)
-              .slice(0, 5)
-              .join(", "),
+            names: entries.map(([name]) => name).slice(0, 5).join(", "),
           },
         });
       },

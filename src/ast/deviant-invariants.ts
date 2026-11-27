@@ -29,24 +29,21 @@ interface CallSite {
   explicitNullish?: boolean;
 }
 
-function push(
-  findings: Finding[],
-  file: string,
-  line: number,
-  rule: string,
-  message: string,
-  fix: string,
-): void {
+interface DevFindingSpec {
+  file: string;
+  line: number;
+  rule: string;
+  message: string;
+  fix: string;
+}
+
+function push(findings: Finding[], spec: DevFindingSpec): void {
   findings.push({
-    id: `DEV:${rule}:${file}:${line}`,
-    rule,
+    id: `DEV:${spec.rule}:${spec.file}:${spec.line}`,
     category: "structure",
     rung: "R1",
     severity: "warn",
-    file,
-    line,
-    message,
-    fix,
+    ...spec,
   });
 }
 
@@ -92,6 +89,7 @@ function inspectVarUsageAfter(after: string, varName: string): { isGuarded: bool
 }
 
 function mineNullCheckBeliefs(files: readonly ScannedFile[], findings: Finding[]): void {
+  if (files.length === 0) return;
   const callsByFn = new Map<string, CallSite[]>();
   const assignCallRe =
     /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:[A-Za-z_$][A-Za-z0-9_$.]*\.)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^;\n]*\)/g;
@@ -122,19 +120,19 @@ function mineNullCheckBeliefs(files: readonly ScannedFile[], findings: Finding[]
     if (!guarded.some((s) => s.explicitNullish)) continue;
     if (!isStatisticallyDeviant(guarded.length, unguarded.length)) continue;
     for (const bad of unguarded) {
-      push(
-        findings,
-        bad.file,
-        bad.line,
-        "invariant-deviant-null-check",
-        `Deviant belief: '${fnName}()' is null-checked at ${guarded.length}/${sites.length} call sites in this repo, but dereferenced unchecked here.`,
-        `Check the return value of '${fnName}()' for null/undefined (or use optional chaining) consistent with sibling call sites.`,
-      );
+      push(findings, {
+        file: bad.file,
+        line: bad.line,
+        rule: "invariant-deviant-null-check",
+        message: `Deviant belief: '${fnName}()' is null-checked at ${guarded.length}/${sites.length} call sites in this repo, but dereferenced unchecked here.`,
+        fix: `Check the return value of '${fnName}()' for null/undefined (or use optional chaining) consistent with sibling call sites.`,
+      });
     }
   }
 }
 
 function minePairedCleanupBeliefs(files: readonly ScannedFile[], findings: Finding[]): void {
+  if (files.length === 0) return;
   const sitesByFn = new Map<string, CallSite[]>();
 
   for (const file of files) {
@@ -169,19 +167,19 @@ function minePairedCleanupBeliefs(files: readonly ScannedFile[], findings: Findi
     const unguarded = sites.filter((s) => !s.guarded);
     if (!isStatisticallyDeviant(guarded.length, unguarded.length)) continue;
     for (const bad of unguarded) {
-      push(
-        findings,
-        bad.file,
-        bad.line,
-        "invariant-deviant-paired-cleanup",
-        `Deviant belief: '${fnName}()' is paired with finally/defer/using cleanup at ${guarded.length}/${sites.length} call sites, but unguarded here.`,
-        `Wrap '${fnName}()' in try/finally, defer, or using/with so the acquired resource always releases on error paths.`,
-      );
+      push(findings, {
+        file: bad.file,
+        line: bad.line,
+        rule: "invariant-deviant-paired-cleanup",
+        message: `Deviant belief: '${fnName}()' is paired with finally/defer/using cleanup at ${guarded.length}/${sites.length} call sites, but unguarded here.`,
+        fix: `Wrap '${fnName}()' in try/finally, defer, or using/with so the acquired resource always releases on error paths.`,
+      });
     }
   }
 }
 
 function mineRouteAuthBeliefs(files: readonly ScannedFile[], findings: Finding[]): void {
+  if (files.length === 0) return;
   const routeGroups = new Map<string, ScannedFile[]>();
   for (const file of files) {
     const dir = path.posix.dirname(file.rel);
@@ -226,14 +224,13 @@ function mineRouteAuthBeliefs(files: readonly ScannedFile[], findings: Finding[]
     if (!isStatisticallyDeviant(anyAuthFiles.size, missing.length)) continue;
 
     for (const outlier of missing) {
-      push(
-        findings,
-        outlier.rel,
-        1,
-        "invariant-deviant-route-auth",
-        `Deviant belief: ${dominantFiles.size}/${group.length} sibling route files in '${dir}/' enforce '${dominantToken}', but '${outlier.rel}' omits it.`,
-        `Enforce '${dominantToken}' on this route handler or document/place intentionally public endpoints under a public route namespace.`,
-      );
+      push(findings, {
+        file: outlier.rel,
+        line: 1,
+        rule: "invariant-deviant-route-auth",
+        message: `Deviant belief: ${dominantFiles.size}/${group.length} sibling route files in '${dir}/' enforce '${dominantToken}', but '${outlier.rel}' omits it.`,
+        fix: `Enforce '${dominantToken}' on this route handler or document/place intentionally public endpoints under a public route namespace.`,
+      });
     }
   }
 }

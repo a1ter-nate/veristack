@@ -64,11 +64,47 @@ function extractTopLevelMembers(rawBody: string, maskedBody: string): Array<{ ra
   return members;
 }
 
+function scanBlockMembers(
+  kind: string,
+  name: string,
+  members: ReadonlyArray<{ raw: string; masked: string }>,
+): { lifecycleBools: Set<string>; hasRequiredDiscriminantUnion: boolean; discriminantName: string; optionalSiblings: Set<string> } {
+  const lifecycleBools = new Set<string>();
+  let hasRequiredDiscriminantUnion = false;
+  let discriminantName = "";
+  const optionalSiblings = new Set<string>();
+  if (members.length === 0) return { lifecycleBools, hasRequiredDiscriminantUnion, discriminantName, optionalSiblings };
+  for (const member of members) {
+    const propMatch =
+      /^(?:(?:public|private|protected|readonly|static|declare|override)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*(\?)?\s*(?::\s*([^=]+?))?(?:\s*=\s*(.+))?$/.exec(member.raw);
+    if (!propMatch) continue;
+    const propName = propMatch[1] ?? "";
+    const isOptional = propMatch[2] === "?";
+    const typePart = (propMatch[3] ?? "").trim();
+    const initPart = (propMatch[4] ?? "").trim();
+    if (propName.includes("(") || /^(?:constructor|get|set|return|if|for|while)$/.test(propName)) continue;
+    if ((/\bboolean\b/.test(typePart) || /^(?:true|false)\b/.test(initPart)) && LIFECYCLE_BOOL_NAME.test(propName)) {
+      lifecycleBools.add(propName);
+    }
+    if (kind === "class") continue;
+    if (!isOptional && STATE_DISCRIMINANT_NAME.test(propName)) {
+      const hasLiteralUnion = /(?:["'`][^"'`]+["'`]\s*\|\s*["'`][^"'`]+["'`])/.test(typePart);
+      if (hasLiteralUnion && !(propName === "mode" && CONFIG_TYPE_SUFFIX.test(name))) {
+        hasRequiredDiscriminantUnion = true;
+        discriminantName = propName;
+      }
+    } else if (isOptional) {
+      optionalSiblings.add(propName);
+    }
+  }
+  return { lifecycleBools, hasRequiredDiscriminantUnion, discriminantName, optionalSiblings };
+}
+
 function checkTypeAndClassBlocks(file: ScannedFile, masked: string): Finding[] {
+  if (!masked) return [];
   const findings: Finding[] = [];
   const declRegex =
     /\b(?:export\s+)?(?:abstract\s+)?(class|interface|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*<[^>{=]*>)?(?:\s*(?:extends|implements)\s+[^{=]+)?\s*(?:=\s*)?\{/g;
-
   for (const match of masked.matchAll(declRegex)) {
     const kind = match[1] ?? "";
     const name = match[2] ?? "";
@@ -76,80 +112,28 @@ function checkTypeAndClassBlocks(file: ScannedFile, masked: string): Finding[] {
     const openIdx = declStart + match[0].length - 1;
     const closeIdx = findMatchingBrace(masked, openIdx);
     if (closeIdx < 0) continue;
-
-    const rawBody = file.content.slice(openIdx + 1, closeIdx);
-    const maskedBody = masked.slice(openIdx + 1, closeIdx);
-    const members = extractTopLevelMembers(rawBody, maskedBody);
+    const members = extractTopLevelMembers(file.content.slice(openIdx + 1, closeIdx), masked.slice(openIdx + 1, closeIdx));
     const line = lineOf(file.content, declStart);
-
-    const lifecycleBools = new Set<string>();
-    let hasRequiredDiscriminantUnion = false;
-    let discriminantName = "";
-    const optionalSiblings = new Set<string>();
-
-    for (const member of members) {
-      const propMatch =
-        /^(?:(?:public|private|protected|readonly|static|declare|override)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*(\?)?\s*(?::\s*([^=]+?))?(?:\s*=\s*(.+))?$/.exec(
-          member.raw,
-        );
-      if (!propMatch) continue;
-      const propName = propMatch[1] ?? "";
-      const isOptional = propMatch[2] === "?";
-      const typePart = (propMatch[3] ?? "").trim();
-      const initPart = (propMatch[4] ?? "").trim();
-
-      if (propName.includes("(") || /^(?:constructor|get|set|return|if|for|while)$/.test(propName)) continue;
-
-      const isBoolType = /\bboolean\b/.test(typePart) || /^(?:true|false)\b/.test(initPart);
-      if (isBoolType && LIFECYCLE_BOOL_NAME.test(propName)) {
-        lifecycleBools.add(propName);
-      }
-
-      if (kind !== "class") {
-        if (!isOptional && STATE_DISCRIMINANT_NAME.test(propName)) {
-          const hasLiteralUnion =
-            /(?:["'`][^"'`]+["'`]\s*\|\s*["'`][^"'`]+["'`])/.test(typePart);
-          if (hasLiteralUnion && !(propName === "mode" && CONFIG_TYPE_SUFFIX.test(name))) {
-            hasRequiredDiscriminantUnion = true;
-            discriminantName = propName;
-          }
-        } else if (isOptional) {
-          optionalSiblings.add(propName);
-        }
-      }
-    }
-
+    const { lifecycleBools, hasRequiredDiscriminantUnion, discriminantName, optionalSiblings } = scanBlockMembers(kind, name, members);
     if (lifecycleBools.size >= 3) {
       const list = [...lifecycleBools].slice(0, 5).join(", ");
       findings.push({
-        id: `SM:bool-soup:${file.rel}:${line}`,
-        rule: "implicit-sm-boolean-soup",
-        category: "structure",
-        rung: "R1",
-        severity: "error",
-        file: file.rel,
-        line,
+        id: `SM:bool-soup:${file.rel}:${line}`, rule: "implicit-sm-boolean-soup", category: "structure", rung: "R1", severity: "error",
+        file: file.rel, line,
         message: `${kind} ${name} declares ${lifecycleBools.size} lifecycle boolean flags (${list}) — admitting ${2 ** lifecycleBools.size} states.`,
         fix: "Collapse lifecycle booleans into a single discriminated union ({ readonly kind: ... }) with an explicit transition table.",
       });
     }
-
     if (kind !== "class" && !WIRE_OR_DTO_SUFFIX.test(name) && hasRequiredDiscriminantUnion && optionalSiblings.size >= 2) {
       const optList = [...optionalSiblings].slice(0, 5).join(", ");
       findings.push({
-        id: `SM:optional-bag:${file.rel}:${line}`,
-        rule: "implicit-sm-optional-bag",
-        category: "structure",
-        rung: "R1",
-        severity: "error",
-        file: file.rel,
-        line,
+        id: `SM:optional-bag:${file.rel}:${line}`, rule: "implicit-sm-optional-bag", category: "structure", rung: "R1", severity: "error",
+        file: file.rel, line,
         message: `${kind} ${name} pairs literal-union "${discriminantName}" with ${optionalSiblings.size} optional payload fields (${optList}).`,
         fix: "Split into a discriminated union where each state variant holds only the fields valid in that state.",
       });
     }
   }
-
   return findings;
 }
 
@@ -229,6 +213,7 @@ function checkScatteredMutations(file: ScannedFile, masked: string): Finding[] {
 }
 
 function checkNonExhaustiveSwitches(file: ScannedFile, masked: string): Finding[] {
+  if (!masked) return [];
   const findings: Finding[] = [];
   const switchRegex = /\bswitch\s*\(\s*([^)]+?)\s*\)\s*\{/g;
 

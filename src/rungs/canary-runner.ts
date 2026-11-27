@@ -39,13 +39,16 @@ const COMPILE_OR_RUNTIME_CRASH =
 const STRICT_TEST_FAILURE =
   /(?:\b[1-9]\d*\s+fail(?:ed|ure|ures)?\b|AssertionError|AssertionFailed|Expected\s+values|assertion\s+`?left|test\s+result:\s*FAILED|---\s+FAIL:|^FAIL\s+\S|Failed!\s+-|Failed:\s*[1-9]\d*|not\s+ok\s+\d+|✗|×)/m;
 
-function spawnStepAsync(
-  bin: string,
-  args: readonly string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  timeoutMs: number,
-): Promise<CanaryRunResult> {
+interface SpawnStepSpec {
+  bin: string;
+  args: readonly string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+}
+
+function spawnStepAsync(spec: SpawnStepSpec): Promise<CanaryRunResult> {
+  const { bin, args, cwd, env, timeoutMs } = spec;
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
@@ -94,13 +97,16 @@ function spawnStepAsync(
   });
 }
 
-async function runArgvChainAsync(
-  steps: readonly string[][],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  timeoutMs: number,
-  stepCwds?: readonly string[],
-): Promise<CanaryRunResult> {
+interface ArgvChainSpec {
+  steps: readonly string[][];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  stepCwds?: readonly string[];
+}
+
+async function runArgvChainAsync(spec: ArgvChainSpec): Promise<CanaryRunResult> {
+  const { steps, cwd, env, timeoutMs, stepCwds } = spec;
   if (steps.length === 0) return { status: 1, stdout: "", stderr: "empty argv chain", signal: null };
   let stdout = "";
   let stderr = "";
@@ -111,7 +117,7 @@ async function runArgvChainAsync(
     const relSub = stepCwds?.[idx];
     const resolvedSub = relSub ? path.resolve(cwd, relSub) : cwd;
     const stepCwd = relSub && fs.existsSync(resolvedSub) ? resolvedSub : cwd;
-    const res = await spawnStepAsync(bin, argv.slice(1), stepCwd, env, timeoutMs);
+    const res = await spawnStepAsync({ bin, args: argv.slice(1), cwd: stepCwd, env, timeoutMs });
     stdout += res.stdout;
     stderr += res.stderr;
     if (res.error || res.signal || res.status !== 0) {
@@ -190,7 +196,7 @@ async function withOpaqueTmpEnvAsync<T>(
   try { return await fn(env); } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
 }
 
-export async function executeCanaryPlanAsync(params: {
+interface CanaryPlanParams {
   absRoot: string;
   minKillRate: number;
   concurrency?: number;
@@ -203,13 +209,64 @@ export async function executeCanaryPlanAsync(params: {
   safeWrite: (sb: string, rel: string, content: string) => boolean;
   insertNoOp: (rel: string, src: string, variant: number) => string;
   failReport: (total: number, invalid: number, diag?: string[]) => PlantedFaultReport;
-}): Promise<PlantedFaultReport> {
-  const withFreshAsync = async <T>(fn: (sb: string) => Promise<T>): Promise<T> => {
-    const sb = params.copySandbox(params.absRoot);
-    try { return await fn(sb); } finally { fs.rmSync(sb, { recursive: true, force: true }); }
-  };
+}
+
+async function runFreshSandboxAsync<T>(params: CanaryPlanParams, fn: (sb: string) => Promise<T>): Promise<T> {
+  const sb = params.copySandbox(params.absRoot);
+  try { return await fn(sb); } finally { fs.rmSync(sb, { recursive: true, force: true }); }
+}
+
+async function runNoOpCanaryTaskAsync(
+  params: CanaryPlanParams,
+  task: Extract<AsyncCanaryTask, { kind: "noop" }>,
+  taskTimeoutMs: number,
+): Promise<string | null> {
+  const attempt = async (): Promise<{ ok: boolean; retryable: boolean; detail: string }> =>
+    runFreshSandboxAsync(params, async (sb) => {
+      if (!params.safeWrite(sb, task.targetRel, params.insertNoOp(task.targetRel, fs.readFileSync(path.join(sb, task.targetRel), "utf8"), task.variant))) {
+        return { ok: false, retryable: false, detail: "write failed" };
+      }
+      const t0 = performance.now();
+      const res = await withOpaqueTmpEnvAsync(params.baseEnv, sb, (env) => runArgvChainAsync({ steps: params.steps, cwd: sb, env, timeoutMs: taskTimeoutMs, stepCwds: params.stepCwds }));
+      const elapsed = performance.now() - t0;
+      if (res.status !== 0) return { ok: false, retryable: isRetryableCanarySignal(res, elapsed, taskTimeoutMs), detail: `status=${res.status} sig=${res.signal ?? "none"}` };
+      const c = parseRunnerTestCounts(stripAnsi(`${res.stdout}\n${res.stderr}`), params.steps);
+      const ok = !c.hasTestRunner || (c.matched && c.passed > 0 && c.failed === 0);
+      return { ok, retryable: false, detail: ok ? "" : `counts matched=${c.matched} passed=${c.passed} failed=${c.failed}` };
+    });
+  let noopRes = await attempt();
+  if (!noopRes.ok && noopRes.retryable) noopRes = await attempt();
+  return noopRes.ok ? null : `noop failed on ${task.targetRel} (${noopRes.detail})`;
+}
+
+async function runMutantCanaryTaskAsync(
+  params: CanaryPlanParams,
+  m: AsyncCanaryTaskMutant,
+  taskTimeoutMs: number,
+): Promise<{ outcome: "killed" | "survived" | "invalid"; diagnostic?: string }> {
+  const orig = fs.readFileSync(path.join(params.absRoot, m.file), "utf8");
+  const mut = `${orig.slice(0, m.start)}${m.replacement}${orig.slice(m.end)}`;
+  if (/\.[cm]?[jt]sx?$/.test(m.file) && parseSync(m.file, mut).errors.length > 0) {
+    return { outcome: "invalid", diagnostic: "parse error" };
+  }
+  const execMut = async () => runFreshSandboxAsync(params, async (sb) => {
+    if (!params.safeWrite(sb, m.file, mut)) return { outcome: "invalid" as const, diagnostic: "sandbox write failed", retryable: false };
+    const t0 = performance.now();
+    const res = await withOpaqueTmpEnvAsync(params.baseEnv, sb, (env) => runArgvChainAsync({ steps: params.steps, cwd: sb, env, timeoutMs: taskTimeoutMs, stepCwds: params.stepCwds }));
+    const elapsed = performance.now() - t0;
+    const cls = classifyCanaryOutcome(res, elapsed, taskTimeoutMs, params.steps);
+    return { ...cls, retryable: cls.outcome === "invalid" && isRetryableCanarySignal(res, elapsed, taskTimeoutMs) };
+  });
+  let res = await execMut();
+  if (res.retryable) res = await execMut();
+  return res;
+}
+
+export async function executeCanaryPlanAsync(params: CanaryPlanParams): Promise<PlantedFaultReport> {
   const baselineStart = performance.now();
-  const baselineRun = await withFreshAsync((sb) => withOpaqueTmpEnvAsync(params.baseEnv, sb, (env) => runArgvChainAsync(params.steps, sb, env, 120_000, params.stepCwds)));
+  const baselineRun = await runFreshSandboxAsync(params, (sb) =>
+    withOpaqueTmpEnvAsync(params.baseEnv, sb, (env) => runArgvChainAsync({ steps: params.steps, cwd: sb, env, timeoutMs: 120_000, stepCwds: params.stepCwds })),
+  );
   const taskTimeoutMs = Math.round(Math.max(25_000, Math.min(120_000, Math.max(500, Math.round(performance.now() - baselineStart)) * 6)));
   const baseCounts = parseRunnerTestCounts(stripAnsi(`${baselineRun.stdout}\n${baselineRun.stderr}`), params.steps);
   if (baselineRun.status !== 0 || (baseCounts.hasTestRunner && (!baseCounts.matched || baseCounts.passed <= 0 || baseCounts.failed > 0))) {
@@ -223,44 +280,12 @@ export async function executeCanaryPlanAsync(params: {
   await runWithBoundedConcurrency(params.tasks, params.concurrency, async (task) => {
     if (noopFailed) return;
     if (task.kind === "noop") {
-      const runNoOp = async (): Promise<{ ok: boolean; retryable: boolean; detail: string }> =>
-        withFreshAsync(async (sb) => {
-          if (!params.safeWrite(sb, task.targetRel, params.insertNoOp(task.targetRel, fs.readFileSync(path.join(sb, task.targetRel), "utf8"), task.variant))) {
-            return { ok: false, retryable: false, detail: "write failed" };
-          }
-          const t0 = performance.now();
-          const res = await withOpaqueTmpEnvAsync(params.baseEnv, sb, (env) => runArgvChainAsync(params.steps, sb, env, taskTimeoutMs, params.stepCwds));
-          const elapsed = performance.now() - t0;
-          if (res.status !== 0) {
-            return { ok: false, retryable: isRetryableCanarySignal(res, elapsed, taskTimeoutMs), detail: `status=${res.status} sig=${res.signal ?? "none"}` };
-          }
-          const c = parseRunnerTestCounts(stripAnsi(`${res.stdout}\n${res.stderr}`), params.steps);
-          const ok = !c.hasTestRunner || (c.matched && c.passed > 0 && c.failed === 0);
-          return { ok, retryable: false, detail: ok ? "" : `counts matched=${c.matched} passed=${c.passed} failed=${c.failed}` };
-        });
-      let noopRes = await runNoOp();
-      if (!noopRes.ok && noopRes.retryable) noopRes = await runNoOp();
-      if (!noopRes.ok) noopFailed = `noop failed on ${task.targetRel} (${noopRes.detail})`;
+      const err = await runNoOpCanaryTaskAsync(params, task, taskTimeoutMs);
+      if (err) noopFailed = err;
       return;
     }
     const m = task.mutant;
-    const orig = fs.readFileSync(path.join(params.absRoot, m.file), "utf8");
-    const mut = `${orig.slice(0, m.start)}${m.replacement}${orig.slice(m.end)}`;
-    if (/\.[cm]?[jt]sx?$/.test(m.file) && parseSync(m.file, mut).errors.length > 0) {
-      invalidKills += 1;
-      invalidDiagnostics.push(`${m.file}:${m.line} (parse error)`);
-      return;
-    }
-    const execMut = async () => withFreshAsync(async (sb) => {
-      if (!params.safeWrite(sb, m.file, mut)) return { outcome: "invalid" as const, diagnostic: "sandbox write failed", retryable: false };
-      const t0 = performance.now();
-      const res = await withOpaqueTmpEnvAsync(params.baseEnv, sb, (env) => runArgvChainAsync(params.steps, sb, env, taskTimeoutMs, params.stepCwds));
-      const elapsed = performance.now() - t0;
-      const cls = classifyCanaryOutcome(res, elapsed, taskTimeoutMs, params.steps);
-      return { ...cls, retryable: cls.outcome === "invalid" && isRetryableCanarySignal(res, elapsed, taskTimeoutMs) };
-    });
-    let res = await execMut();
-    if (res.retryable) res = await execMut();
+    const res = await runMutantCanaryTaskAsync(params, m, taskTimeoutMs);
     if (res.outcome === "killed") killed += 1;
     else if (res.outcome === "survived") survivors.push({ file: m.file, line: m.line, operator: m.operator, original: m.original, mutated: m.mutated });
     else { invalidKills += 1; invalidDiagnostics.push(`${m.file}:${m.line} (${res.diagnostic ?? "invalid"})`); }
@@ -268,14 +293,8 @@ export async function executeCanaryPlanAsync(params: {
   if (noopFailed) return params.failReport(params.candidatesCount, params.candidatesCount, [noopFailed]);
   const killRate = Number((killed / params.candidatesCount).toFixed(4));
   return {
-    totalMutants: params.candidatesCount,
-    killedMutants: killed,
-    survivedMutants: survivors.length,
-    invalidKills,
-    killRate,
-    minKillRate: params.minKillRate,
-    passed: killed > 0 && invalidKills === 0 && killRate >= params.minKillRate,
-    survivors,
-    ...(invalidDiagnostics.length > 0 ? { invalidDiagnostics } : {}),
+    totalMutants: params.candidatesCount, killedMutants: killed, survivedMutants: survivors.length, invalidKills,
+    killRate, minKillRate: params.minKillRate, passed: killed > 0 && invalidKills === 0 && killRate >= params.minKillRate,
+    survivors, ...(invalidDiagnostics.length > 0 ? { invalidDiagnostics } : {}),
   };
 }

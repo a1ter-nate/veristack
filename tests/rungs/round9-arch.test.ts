@@ -364,7 +364,7 @@ test("round9 arch: manifest archetype inference & allowExcluded, oracle-check he
 
   withTempDir((pyDir) => {
     fs.mkdirSync(path.join(pyDir, "sub"), { recursive: true });
-    const cwdRes = runArgvChain([["bun", "-e", "console.log(process.cwd())"]], pyDir, scrubChildEnv(), 5000, ["sub"]);
+    const cwdRes = runArgvChain([["bun", "-e", "console.log(process.cwd())"]], { cwd: pyDir, env: scrubChildEnv(), timeoutMs: 5000, stepCwds: ["sub"] });
     assert.equal(cwdRes.status, 0);
     assert.equal(path.basename(cwdRes.stdout.trim()), "sub");
 

@@ -5,15 +5,18 @@ export interface SafeResponseLike {
   json(payload: unknown): void;
 }
 
-export function runSafeTitansBOps(
-  verifyJwt: (token: string, opts: { algorithms: string[] }) => unknown,
-  token: string,
-  body: string,
-  res: SafeResponseLike,
-  user: { id: string; displayName: string },
-  cache: Map<string, Promise<unknown>>,
-  url: string,
-): unknown {
+export interface SafeTitansBInput {
+  verifyJwt: (token: string, opts: { algorithms: string[] }) => unknown;
+  token: string;
+  body: string;
+  res: SafeResponseLike;
+  user: { id: string; displayName: string };
+  cache: Map<string, Promise<unknown>>;
+  url: string;
+}
+
+export function runSafeTitansBOps(input: SafeTitansBInput): unknown {
+  const { verifyJwt, token, body, res, user, cache, url } = input;
   const claims = verifyJwt(token, { algorithms: ["RS256"] });
   const existingVary = res.getHeader("Vary");
   res.setHeader("Vary", existingVary ? `${existingVary}, Origin` : "Origin");

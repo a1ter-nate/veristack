@@ -55,6 +55,7 @@ function splitTopLevel(text: string, sep: string): string[] {
 }
 
 function collectCsharpProperties(headerParams: string, bodyText: string): Array<{ type: string; name: string; nullable: boolean }> {
+  if (!headerParams && !bodyText) return [];
   const items: Array<{ type: string; name: string; nullable: boolean }> = [];
 
   if (headerParams.trim()) {
@@ -107,18 +108,62 @@ function collectCsharpProperties(headerParams: string, bodyText: string): Array<
   return items;
 }
 
+function evaluateCsharpTypeProps(
+  file: ScannedFile,
+  meta: { kind: string; name: string; line: number },
+  props: ReadonlyArray<{ type: string; name: string; nullable: boolean }>,
+  findings: Finding[],
+): void {
+  if (props.length === 0) return;
+  const lifecycleBools = new Set<string>();
+  let discriminantName = "";
+  const nullableSiblings = new Set<string>();
+  for (const prop of props) {
+    const bareName = prop.name.replace(/^_+/, "");
+    if (prop.type === "bool" && LIFECYCLE_BOOL_NAME.test(bareName)) lifecycleBools.add(prop.name);
+    if (!prop.nullable && STATE_DISCRIMINANT.test(bareName)) {
+      if (!(bareName === "Mode" && CONFIG_TYPE_SUFFIX.test(meta.name))) discriminantName = prop.name;
+    } else if (prop.nullable) {
+      nullableSiblings.add(prop.name);
+    }
+  }
+  if (lifecycleBools.size >= 2) {
+    const list = [...lifecycleBools].slice(0, 5).join(", ");
+    findings.push({
+      id: `SM:cs-bool-soup:${file.rel}:${meta.line}`,
+      rule: "implicit-sm-boolean-soup", category: "structure", rung: "R1", severity: "error",
+      file: file.rel, line: meta.line,
+      message: `C# ${meta.kind} ${meta.name} declares ${lifecycleBools.size} lifecycle bool flags (${list}) — admitting ${2 ** lifecycleBools.size} states.`,
+      fix: "Replace lifecycle booleans with a closed abstract record hierarchy (discriminated union) and an explicit Transition(state, evt) method.",
+    });
+  }
+  const isReadView = /(?:View|Projection|Summary|Response|Request)$/i.test(meta.name);
+  const isStringWireDto =
+    /(?:Dto|Result|Row|Payload|ViewModel|Contract|Message|Event|Params|Options|Config|Settings|Spec)$/i.test(meta.name) &&
+    props.some((p) => p.name === discriminantName && /^string$/i.test(p.type.trim()));
+  if (discriminantName && nullableSiblings.size >= 2 && !isStringWireDto && !isReadView) {
+    const optList = [...nullableSiblings].slice(0, 5).join(", ");
+    findings.push({
+      id: `SM:cs-optional-bag:${file.rel}:${meta.line}`,
+      rule: "implicit-sm-optional-bag", category: "structure", rung: "R1", severity: "error",
+      file: file.rel, line: meta.line,
+      message: `C# ${meta.kind} ${meta.name} pairs "${discriminantName}" with ${nullableSiblings.size} nullable payload fields (${optList}).`,
+      fix: "Split into a closed abstract record hierarchy where each sealed variant carries only the non-null fields valid in that state.",
+    });
+  }
+}
+
 function checkCsharpTypes(file: ScannedFile, masked: string): Finding[] {
+  if (!masked) return [];
   const findings: Finding[] = [];
   const typeRegex =
     /\b(?:(?:public|internal|private|protected|sealed|abstract|partial|readonly|static|file)\s+)*(record\s+struct|record\s+class|record|class|struct)\s+([A-Za-z_][A-Za-z0-9_]*)(?:<[^>{;(]*>)?/g;
-
   for (const match of masked.matchAll(typeRegex)) {
     const kind = (match[1] ?? "").replace(/\s+/g, " ");
     const name = match[2] ?? "";
     const start = match.index ?? 0;
     let cursor = start + match[0].length;
     while (cursor < masked.length && /\s/.test(masked[cursor] ?? "")) cursor += 1;
-
     let headerParams = "";
     if (masked[cursor] === "(") {
       const closeParen = findMatching(masked, cursor, "(", ")");
@@ -126,7 +171,6 @@ function checkCsharpTypes(file: ScannedFile, masked: string): Finding[] {
       headerParams = file.content.slice(cursor + 1, closeParen);
       cursor = closeParen + 1;
     }
-
     while (cursor < masked.length && masked[cursor] !== "{" && masked[cursor] !== ";") cursor += 1;
     let bodyText = "";
     if (masked[cursor] === "{") {
@@ -134,62 +178,9 @@ function checkCsharpTypes(file: ScannedFile, masked: string): Finding[] {
       if (closeBrace < 0) continue;
       bodyText = masked.slice(cursor + 1, closeBrace);
     }
-
     const props = collectCsharpProperties(headerParams, bodyText);
-    const lifecycleBools = new Set<string>();
-    let discriminantName = "";
-    const nullableSiblings = new Set<string>();
-
-    for (const prop of props) {
-      const bareName = prop.name.replace(/^_+/, "");
-      if (prop.type === "bool" && LIFECYCLE_BOOL_NAME.test(bareName)) {
-        lifecycleBools.add(prop.name);
-      }
-      if (!prop.nullable && STATE_DISCRIMINANT.test(bareName)) {
-        if (!(bareName === "Mode" && CONFIG_TYPE_SUFFIX.test(name))) {
-          discriminantName = prop.name;
-        }
-      } else if (prop.nullable) {
-        nullableSiblings.add(prop.name);
-      }
-    }
-
-    const line = lineOf(file.content, start);
-    if (lifecycleBools.size >= 2) {
-      const list = [...lifecycleBools].slice(0, 5).join(", ");
-      findings.push({
-        id: `SM:cs-bool-soup:${file.rel}:${line}`,
-        rule: "implicit-sm-boolean-soup",
-        category: "structure",
-        rung: "R1",
-        severity: "error",
-        file: file.rel,
-        line,
-        message: `C# ${kind} ${name} declares ${lifecycleBools.size} lifecycle bool flags (${list}) — admitting ${2 ** lifecycleBools.size} states.`,
-        fix: "Replace lifecycle booleans with a closed abstract record hierarchy (discriminated union) and an explicit Transition(state, evt) method.",
-      });
-    }
-
-    const isReadView = /(?:View|Projection|Summary|Response|Request)$/i.test(name);
-    const isStringWireDto =
-      /(?:Dto|Result|Row|Payload|ViewModel|Contract|Message|Event|Params|Options|Config|Settings|Spec)$/i.test(name) &&
-      props.some((p) => p.name === discriminantName && /^string$/i.test(p.type.trim()));
-    if (discriminantName && nullableSiblings.size >= 2 && !isStringWireDto && !isReadView) {
-      const optList = [...nullableSiblings].slice(0, 5).join(", ");
-      findings.push({
-        id: `SM:cs-optional-bag:${file.rel}:${line}`,
-        rule: "implicit-sm-optional-bag",
-        category: "structure",
-        rung: "R1",
-        severity: "error",
-        file: file.rel,
-        line,
-        message: `C# ${kind} ${name} pairs "${discriminantName}" with ${nullableSiblings.size} nullable payload fields (${optList}).`,
-        fix: "Split into a closed abstract record hierarchy where each sealed variant carries only the non-null fields valid in that state.",
-      });
-    }
+    evaluateCsharpTypeProps(file, { kind, name, line: lineOf(file.content, start) }, props, findings);
   }
-
   return findings;
 }
 
@@ -257,6 +248,7 @@ function checkCsharpScatteredMutations(file: ScannedFile, masked: string): Findi
 }
 
 function checkCsharpSwitches(file: ScannedFile, masked: string): Finding[] {
+  if (!masked) return [];
   const findings: Finding[] = [];
 
   const stmtRegex = /\bswitch\s*\(\s*([^)]+?)\s*\)\s*\{/g;

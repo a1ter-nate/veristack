@@ -1,15 +1,18 @@
-export async function runSafeBlackHoleOps(
-  opts: { maxAge?: number },
-  signal: AbortSignal,
-  headers: Record<string, string>,
-  parsedUrl: URL,
-  session: { execute: (sql: string) => Promise<void> },
-  stack: string[],
-  step: () => void,
-  decodeItem: (x: unknown) => unknown,
-  items: unknown[],
-  title: string,
-): Promise<string> {
+export interface SafeBlackHoleInput {
+  opts: { maxAge?: number };
+  signal: AbortSignal;
+  headers: Record<string, string>;
+  parsedUrl: URL;
+  session: { execute: (sql: string) => Promise<void> };
+  stack: string[];
+  step: () => void;
+  decodeItem: (x: unknown) => unknown;
+  items: unknown[];
+  title: string;
+}
+
+export async function runSafeBlackHoleOps(input: SafeBlackHoleInput): Promise<string> {
+  const { opts, signal, headers, parsedUrl, session, stack, step, decodeItem, items, title } = input;
   if (opts.maxAge != null) {
     opts.maxAge = opts.maxAge / 1000;
   }

@@ -61,10 +61,32 @@ function findHeaderOpenBrace(masked: string, fromIdx: number, stopOnParenAtZero:
   return -1;
 }
 
+function parseRustStructFields(name: string, body: string) {
+  const fields = body.split(",").map((s) => s.trim()).filter(Boolean);
+  const lifecycleBools = new Set<string>();
+  let discriminantName = "";
+  const optionSiblings = new Set<string>();
+  for (const rawField of fields) {
+    const cleaned = rawField.replace(/(?:#\[[^\]]*\]\s*)+/g, "").trim();
+    const fieldMatch = /^(?:pub(?:\([^)]*\))?\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([\s\S]+)$/.exec(cleaned);
+    if (!fieldMatch) continue;
+    const fieldName = fieldMatch[1] ?? "";
+    const fieldType = (fieldMatch[2] ?? "").trim();
+    if (fieldType === "bool" && LIFECYCLE_BOOL_NAME.test(toCamel(fieldName))) lifecycleBools.add(fieldName);
+    const isOption = /^(?:(?:std|core)::option::)?Option\s*</.test(fieldType);
+    if (!isOption && STATE_DISCRIMINANT.test(fieldName)) {
+      if (!(fieldName === "mode" && CONFIG_TYPE_SUFFIX.test(name))) discriminantName = fieldName;
+    } else if (isOption) {
+      optionSiblings.add(fieldName);
+    }
+  }
+  return { lifecycleBools, discriminantName, optionSiblings };
+}
+
 function checkRustStructs(file: ScannedFile, prodMasked: string): Finding[] {
+  if (!prodMasked) return [];
   const findings: Finding[] = [];
   const structRegex = /\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
-
   for (const match of prodMasked.matchAll(structRegex)) {
     const name = match[1] ?? "";
     const start = match.index ?? 0;
@@ -72,75 +94,33 @@ function checkRustStructs(file: ScannedFile, prodMasked: string): Finding[] {
     if (openIdx < 0) continue;
     const closeIdx = findMatchingBrace(prodMasked, openIdx);
     if (closeIdx < 0) continue;
-
-    const body = prodMasked.slice(openIdx + 1, closeIdx);
-    const fields = body.split(",").map((s) => s.trim()).filter(Boolean);
-    const lifecycleBools = new Set<string>();
-    let discriminantName = "";
-    const optionSiblings = new Set<string>();
-
-    for (const rawField of fields) {
-      const cleaned = rawField.replace(/(?:#\[[^\]]*\]\s*)+/g, "").trim();
-      const fieldMatch = /^(?:pub(?:\([^)]*\))?\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([\s\S]+)$/.exec(cleaned);
-      if (!fieldMatch) continue;
-      const fieldName = fieldMatch[1] ?? "";
-      const fieldType = (fieldMatch[2] ?? "").trim();
-
-      if (fieldType === "bool" && LIFECYCLE_BOOL_NAME.test(toCamel(fieldName))) {
-        lifecycleBools.add(fieldName);
-      }
-
-      const isOption = /^(?:(?:std|core)::option::)?Option\s*</.test(fieldType);
-      if (!isOption && STATE_DISCRIMINANT.test(fieldName)) {
-        if (!(fieldName === "mode" && CONFIG_TYPE_SUFFIX.test(name))) {
-          discriminantName = fieldName;
-        }
-      } else if (isOption) {
-        optionSiblings.add(fieldName);
-      }
-    }
-
+    const { lifecycleBools, discriminantName, optionSiblings } = parseRustStructFields(name, prodMasked.slice(openIdx + 1, closeIdx));
     const line = lineOf(file.content, start);
     if (lifecycleBools.size >= 2) {
       const list = [...lifecycleBools].slice(0, 5).join(", ");
       findings.push({
-        id: `SM:rs-bool-soup:${file.rel}:${line}`,
-        rule: "implicit-sm-boolean-soup",
-        category: "structure",
-        rung: "R1",
-        severity: "error",
-        file: file.rel,
-        line,
+        id: `SM:rs-bool-soup:${file.rel}:${line}`, rule: "implicit-sm-boolean-soup", category: "structure", rung: "R1", severity: "error",
+        file: file.rel, line,
         message: `Rust struct ${name} declares ${lifecycleBools.size} lifecycle bool fields (${list}) — admitting ${2 ** lifecycleBools.size} states.`,
         fix: "Replace lifecycle booleans with a Rust enum where each variant owns its state data and transitions live in one transition() function.",
       });
     }
-
     const rawBody = file.content.slice(openIdx + 1, closeIdx);
     const attrWindow = file.content.slice(Math.max(0, start - 360), start);
     const lastDelimiter = Math.max(attrWindow.lastIndexOf("}"), attrWindow.lastIndexOf(";"));
     const headerAttrs = lastDelimiter >= 0 ? attrWindow.slice(lastDelimiter + 1) : attrWindow;
     const isWireOrRowStruct =
-      WIRE_OR_ROW_TYPE_NAME.test(name) ||
-      WIRE_ATTR_MARKER.test(headerAttrs) ||
-      /#\[(?:serde|sqlx|clap)\(/.test(rawBody);
-
+      WIRE_OR_ROW_TYPE_NAME.test(name) || WIRE_ATTR_MARKER.test(headerAttrs) || /#\[(?:serde|sqlx|clap)\(/.test(rawBody);
     if (discriminantName && optionSiblings.size >= 2 && !isWireOrRowStruct) {
       const optList = [...optionSiblings].slice(0, 5).join(", ");
       findings.push({
-        id: `SM:rs-optional-bag:${file.rel}:${line}`,
-        rule: "implicit-sm-optional-bag",
-        category: "structure",
-        rung: "R1",
-        severity: "error",
-        file: file.rel,
-        line,
+        id: `SM:rs-optional-bag:${file.rel}:${line}`, rule: "implicit-sm-optional-bag", category: "structure", rung: "R1", severity: "error",
+        file: file.rel, line,
         message: `Rust struct ${name} pairs "${discriminantName}" with ${optionSiblings.size} Option<T> payload fields (${optList}).`,
         fix: "Split into a Rust enum where each variant holds only the non-Option fields valid in that state.",
       });
     }
   }
-
   return findings;
 }
 
@@ -193,6 +173,7 @@ function checkRustScatteredMutations(file: ScannedFile, prodMasked: string): Fin
 const NON_DOMAIN_ENUM_PREFIX = /^(?:StatusCode|KeyCode|ErrorKind|EventKind|TokenKind|SyntaxKind|Tag|HttpStatus)::/;
 
 function checkRustWildcardStateMatches(file: ScannedFile, prodMasked: string): Finding[] {
+  if (!prodMasked) return [];
   const findings: Finding[] = [];
   const seenLines = new Set<number>();
   const matchRegex = /\bmatch\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s*\{/g;

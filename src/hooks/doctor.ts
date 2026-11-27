@@ -40,6 +40,153 @@ const HOOK_MANIFESTS = [
   ".verification/hooks.json",
 ];
 
+function auditHooksConfigFile(
+  repoRoot: string,
+  hookStatus: ReturnType<typeof manageHooks>,
+  findings: DoctorFinding[],
+): void {
+  if (!repoRoot) return;
+  if (process.env.VSTACK_HOOK_DISABLED === "1") {
+    findings.push({
+      id: "DOC:hooks-env-disabled", level: "mention", artifact: "env",
+      summary: "VSTACK_HOOK_DISABLED=1 disables Veristack agent hooks globally.",
+      fix: "Unset VSTACK_HOOK_DISABLED so agent hooks run.",
+    });
+  }
+  const hookCfgAbs = path.join(repoRoot, ".verification", "hooks.json");
+  if (!fs.existsSync(hookCfgAbs)) {
+    if (runGitClean(repoRoot, ["cat-file", "-e", "HEAD:.verification/hooks.json"]).status === 0) {
+      findings.push({
+        id: "DOC:hooks-deleted:.verification/hooks.json", level: "mention", artifact: ".verification/hooks.json",
+        summary: ".verification/hooks.json existed at HEAD and was deleted in the working tree.",
+        fix: "Restore .verification/hooks.json or run 'vstack hooks on'.",
+      });
+    }
+    return;
+  }
+  try {
+    const hc = JSON.parse(fs.readFileSync(hookCfgAbs, "utf8")) as Record<string, unknown>;
+    if (hc.enabled === false) {
+      findings.push({
+        id: "DOC:hooks-paused:.verification/hooks.json", level: "mention", artifact: ".verification/hooks.json",
+        summary: ".verification/hooks.json sets enabled: false, pausing Veristack agent hooks.",
+        fix: "Run 'vstack hooks on' or set enabled: true.",
+      });
+    }
+    const declared = Array.isArray(hc.harnesses) ? hc.harnesses.filter((h): h is string => typeof h === "string") : [];
+    const missing = hc.enabled !== false ? declared.filter((h) => !hookStatus.harnesses.includes(h as never)) : [];
+    if (missing.length > 0) {
+      findings.push({
+        id: "DOC:hooks-incomplete:.verification/hooks.json", level: "mention", artifact: ".verification/hooks.json",
+        summary: `Declared hook harness(es) [${missing.join(", ")}] are missing, tampered, or lack active PreToolUse/PostToolUse/Stop wiring.`,
+        fix: "Run 'vstack hooks on' to reinstall valid fail-closed hook manifests.",
+      });
+    }
+  } catch {
+    findings.push({
+      id: "DOC:malformed-hook:.verification/hooks.json", level: "auto", artifact: ".verification/hooks.json",
+      summary: "Hook config .verification/hooks.json contains invalid JSON.",
+      fix: "Repair or rerun 'vstack hooks on'.",
+    });
+  }
+}
+
+function collectManifestCommands(hooksObj: Record<string, unknown>): string[] {
+  const cmds: string[] = [];
+  for (const bucket of Object.values(hooksObj)) {
+    if (!Array.isArray(bucket)) continue;
+    for (const item of bucket) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      if (typeof rec.command === "string") cmds.push(rec.command);
+      if (!Array.isArray(rec.hooks)) continue;
+      for (const sub of rec.hooks) {
+        if (sub && typeof sub === "object" && typeof (sub as Record<string, unknown>).command === "string") {
+          cmds.push((sub as Record<string, unknown>).command as string);
+        }
+      }
+    }
+  }
+  return cmds;
+}
+
+function probePreEditCommand(repoRoot: string, preCmd: string, probedCmds: Map<string, boolean>): boolean {
+  const cached = probedCmds.get(preCmd);
+  if (cached !== undefined) return cached;
+  const probeCwd = fs.existsSync(path.join(repoRoot, "src")) ? path.join(repoRoot, "src") : repoRoot;
+  const shMatch = /^sh\s+-c\s+'(.+)'$/.exec(preCmd.trim());
+  const bin = shMatch ? "sh" : (preCmd.trim().split(/\s+/)[0] ?? "");
+  const args = shMatch ? ["-c", shMatch[1] ?? ""] : preCmd.trim().split(/\s+/).slice(1);
+  const runProbe = (payloadObj: object): boolean => {
+    const p = spawnSync(bin, args, { cwd: probeCwd, input: JSON.stringify(payloadObj), encoding: "utf8", timeout: 5_000, shell: false });
+    return !p.error && p.status === 2;
+  };
+  const cpOk = runProbe({ cwd: probeCwd, tool_name: "Write", tool_input: { file_path: path.join(repoRoot, ".verification", "rungs.json"), content: "{}" } });
+  const slopOk = runProbe({ cwd: probeCwd, tool_name: "Write", tool_input: { file_path: path.join(repoRoot, "src", "__probe__.ts"), content: "export const x = (1 as any);\n" } });
+  const passed = cpOk && slopOk;
+  probedCmds.set(preCmd, passed);
+  return passed;
+}
+
+function auditHookManifestFile(ctx: {
+  repoRoot: string;
+  rel: string;
+  hooksEnabled: boolean;
+  probedCmds: Map<string, boolean>;
+  findings: DoctorFinding[];
+}): void {
+  const { repoRoot, rel, hooksEnabled, probedCmds, findings } = ctx;
+  const abs = path.join(repoRoot, rel);
+  if (!fs.existsSync(abs)) return;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(fs.readFileSync(abs, "utf8")) as Record<string, unknown>;
+  } catch {
+    findings.push({ id: `DOC:malformed-hook:${rel}`, level: "auto", artifact: rel, summary: `Hook manifest ${rel} contains invalid JSON.`, fix: "Repair or rerun 'vstack hooks on' to regenerate valid hook manifests." });
+    return;
+  }
+  if (!parsed || typeof parsed !== "object") return;
+  if (parsed.disableAllHooks === true) {
+    findings.push({ id: `DOC:hooks-disabled:${rel}`, level: "mention", artifact: rel, summary: `${rel} sets disableAllHooks: true, silently disabling Veristack agent hooks.`, fix: "Remove disableAllHooks: true so per-edit and stop hooks execute." });
+  }
+  if (typeof parsed.env === "object" && parsed.env !== null && (parsed.env as Record<string, unknown>).VSTACK_HOOK_DISABLED === "1") {
+    findings.push({ id: `DOC:hooks-env-disabled:${rel}`, level: "mention", artifact: rel, summary: `${rel} sets env.VSTACK_HOOK_DISABLED=1, disabling Veristack hooks.`, fix: "Remove VSTACK_HOOK_DISABLED from settings env." });
+  }
+  if (typeof parsed.hooks !== "object" || parsed.hooks === null) return;
+  const cmds = collectManifestCommands(parsed.hooks as Record<string, unknown>);
+  const badCmd = cmds.find((c) => /\bvstack\b/i.test(c) && /\|\|\s*(?:true|:)|;\s*true\b|(?:^|[^2])>\/dev\/null/i.test(c));
+  const preCmd = cmds.find((c) => /\bhook\s+pre-edit\b/.test(c));
+  if (badCmd) {
+    findings.push({ id: `DOC:hook-swallowed:${rel}`, level: "mention", artifact: rel, summary: `${rel} wraps a Veristack hook command in a failure-swallowing shell suffix ('${badCmd.slice(0, 80)}').`, fix: "Remove '|| true' / redirection wrappers so hook denials propagate cleanly." });
+  }
+  if (hooksEnabled && preCmd && !badCmd && !probePreEditCommand(repoRoot, preCmd, probedCmds)) {
+    findings.push({ id: `DOC:hook-probe-failed:${rel}`, level: "mention", artifact: rel, summary: `Live subdirectory pre-edit probe of '${preCmd}' in ${rel} failed to exit 2 on synthetic control-plane and slop writes.`, fix: "Reinstall root-anchored fail-closed hooks via 'vstack hooks on'." });
+  }
+}
+
+function auditDoctorConfigAndArtifacts(repo: ReturnType<typeof discoverRepo>, findings: DoctorFinding[]): void {
+  if (!repo.root) throw new Error("Repo root is required.");
+  const cfg = loadRepoConfig(repo.root);
+  if (cfg.configPath) {
+    const weakened = Object.entries(cfg.rules).filter(([, sev]) => sev === "off" || sev === "info" || sev === "warn").map(([rule, sev]) => `${rule}=${sev}`);
+    if (weakened.length > 0) {
+      findings.push({ id: `DOC:disabled-rules:${cfg.configPath}`, level: "mention", artifact: cfg.configPath, summary: `${cfg.configPath} disables or downgrades ${weakened.length} Veristack rule(s): ${weakened.join(", ")}.`, fix: "Re-enable disabled/downgraded rules to run Veristack at full rigidity (--strict)." });
+    }
+    if (cfg.ignore.length > 0) {
+      findings.push({ id: `DOC:config-ignore:${cfg.configPath}`, level: "mention", artifact: cfg.configPath, summary: `${cfg.configPath} ignores ${cfg.ignore.length} path pattern(s): ${cfg.ignore.join(", ")}.`, fix: "Remove config ignore exclusions so all source/test paths remain verified." });
+    }
+  }
+  for (const f of auditFormalSync(repo)) {
+    findings.push({ id: `DOC:${f.rule}:${f.file}`, level: "route", artifact: f.file, summary: f.message, fix: f.fix });
+  }
+  for (const f of auditZeroDefectArtifacts(repo)) {
+    if (!f.rule.startsWith("formal-sync-")) findings.push({ id: `DOC:${f.rule}:${f.file}`, level: "mention", artifact: f.file, summary: f.message, fix: f.fix });
+  }
+  for (const f of auditAgentDocs(repo)) {
+    if (f.severity !== "info") findings.push({ id: `DOC:${f.rule}:${f.file}:${f.line}`, level: "mention", artifact: f.file, summary: f.message, fix: f.fix });
+  }
+}
+
 export function runDoctor(repoPath: string): DoctorReport {
   const absTarget = path.resolve(repoPath);
   if (!fs.existsSync(absTarget) || !fs.statSync(absTarget).isDirectory()) {
@@ -48,61 +195,8 @@ export function runDoctor(repoPath: string): DoctorReport {
   const repo = discoverRepo(repoPath);
   const findings: DoctorFinding[] = [];
   const hookStatus = manageHooks(repo.root, "status");
+  auditHooksConfigFile(repo.root, hookStatus, findings);
 
-  if (process.env.VSTACK_HOOK_DISABLED === "1") {
-    findings.push({
-      id: "DOC:hooks-env-disabled",
-      level: "mention",
-      artifact: "env",
-      summary: "VSTACK_HOOK_DISABLED=1 disables Veristack agent hooks globally.",
-      fix: "Unset VSTACK_HOOK_DISABLED so agent hooks run.",
-    });
-  }
-  const hookCfgAbs = path.join(repo.root, ".verification", "hooks.json");
-  if (!fs.existsSync(hookCfgAbs) && runGitClean(repo.root, ["cat-file", "-e", "HEAD:.verification/hooks.json"]).status === 0) {
-    findings.push({
-      id: "DOC:hooks-deleted:.verification/hooks.json",
-      level: "mention",
-      artifact: ".verification/hooks.json",
-      summary: ".verification/hooks.json existed at HEAD and was deleted in the working tree.",
-      fix: "Restore .verification/hooks.json or run 'vstack hooks on'.",
-    });
-  }
-  if (fs.existsSync(hookCfgAbs)) {
-    try {
-      const hc = JSON.parse(fs.readFileSync(hookCfgAbs, "utf8")) as Record<string, unknown>;
-      if (hc.enabled === false) {
-        findings.push({
-          id: "DOC:hooks-paused:.verification/hooks.json",
-          level: "mention",
-          artifact: ".verification/hooks.json",
-          summary: ".verification/hooks.json sets enabled: false, pausing Veristack agent hooks.",
-          fix: "Run 'vstack hooks on' or set enabled: true.",
-        });
-      }
-      const declaredHarnesses = Array.isArray(hc.harnesses) ? hc.harnesses.filter((h): h is string => typeof h === "string") : [];
-      if (hc.enabled !== false && declaredHarnesses.length > 0) {
-        const missingActive = declaredHarnesses.filter((h) => !hookStatus.harnesses.includes(h as never));
-        if (missingActive.length > 0) {
-          findings.push({
-            id: "DOC:hooks-incomplete:.verification/hooks.json",
-            level: "mention",
-            artifact: ".verification/hooks.json",
-            summary: `Declared hook harness(es) [${missingActive.join(", ")}] are missing, tampered, or lack active PreToolUse/PostToolUse/Stop wiring.`,
-            fix: "Run 'vstack hooks on' to reinstall valid fail-closed hook manifests.",
-          });
-        }
-      }
-    } catch {
-      findings.push({
-        id: "DOC:malformed-hook:.verification/hooks.json",
-        level: "auto",
-        artifact: ".verification/hooks.json",
-        summary: "Hook config .verification/hooks.json contains invalid JSON.",
-        fix: "Repair or rerun 'vstack hooks on'.",
-      });
-    }
-  }
   const allowPatterns = repo.manifest?.allowExcluded ?? [];
   const unallowlistedExclusions = repo.scopeExclusions.filter((ex) => {
     const norm = ex.path.replace(/\\/g, "/");
@@ -110,9 +204,7 @@ export function runDoctor(repoPath: string): DoctorReport {
   });
   if (unallowlistedExclusions.length > 0) {
     findings.push({
-      id: "DOC:scope-exclusions:.vstackignore",
-      level: "mention",
-      artifact: ".vstackignore",
+      id: "DOC:scope-exclusions:.vstackignore", level: "mention", artifact: ".vstackignore",
       summary: `${unallowlistedExclusions.length} unallowlisted path(s) excluded from scan scope via .vstackignore or ignore rules.`,
       fix: "Remove broad .vstackignore exclusions so all production and test files stay verified.",
     });
@@ -120,156 +212,9 @@ export function runDoctor(repoPath: string): DoctorReport {
 
   const probedCmds = new Map<string, boolean>();
   for (const rel of HOOK_MANIFESTS) {
-    const abs = path.join(repo.root, rel);
-    if (!fs.existsSync(abs)) continue;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(abs, "utf8")) as Record<string, unknown>;
-      if (parsed && typeof parsed === "object" && parsed.disableAllHooks === true) {
-        findings.push({
-          id: `DOC:hooks-disabled:${rel}`,
-          level: "mention",
-          artifact: rel,
-          summary: `${rel} sets disableAllHooks: true, silently disabling Veristack agent hooks.`,
-          fix: "Remove disableAllHooks: true so per-edit and stop hooks execute.",
-        });
-      }
-      if (parsed && typeof parsed === "object" && typeof parsed.env === "object" && parsed.env !== null && (parsed.env as Record<string, unknown>).VSTACK_HOOK_DISABLED === "1") {
-        findings.push({
-          id: `DOC:hooks-env-disabled:${rel}`,
-          level: "mention",
-          artifact: rel,
-          summary: `${rel} sets env.VSTACK_HOOK_DISABLED=1, disabling Veristack hooks.`,
-          fix: "Remove VSTACK_HOOK_DISABLED from settings env.",
-        });
-      }
-      if (parsed && typeof parsed === "object" && typeof parsed.hooks === "object" && parsed.hooks !== null) {
-        const hooksObj = parsed.hooks as Record<string, unknown>;
-        const cmds: string[] = [];
-        const collectCmds = (bucket: unknown): void => {
-          if (!Array.isArray(bucket)) return;
-          for (const item of bucket) {
-            if (!item || typeof item !== "object") continue;
-            const rec = item as Record<string, unknown>;
-            if (typeof rec.command === "string") cmds.push(rec.command);
-            if (Array.isArray(rec.hooks)) {
-              for (const sub of rec.hooks) {
-                if (sub && typeof sub === "object" && typeof (sub as Record<string, unknown>).command === "string") {
-                  cmds.push((sub as Record<string, unknown>).command as string);
-                }
-              }
-            }
-          }
-        };
-        for (const b of Object.values(hooksObj)) collectCmds(b);
-        let badCmd: string | undefined;
-        let preCmd: string | undefined;
-        for (const c of cmds) {
-          if (!badCmd && /\bvstack\b/i.test(c) && /\|\|\s*(?:true|:)|;\s*true\b|(?:^|[^2])>\/dev\/null/i.test(c)) badCmd = c;
-          if (!preCmd && /\bhook\s+pre-edit\b/.test(c)) preCmd = c;
-        }
-        if (badCmd) {
-          findings.push({
-            id: `DOC:hook-swallowed:${rel}`,
-            level: "mention",
-            artifact: rel,
-            summary: `${rel} wraps a Veristack hook command in a failure-swallowing shell suffix ('${badCmd.slice(0, 80)}').`,
-            fix: "Remove '|| true' / redirection wrappers so hook denials propagate cleanly.",
-          });
-        }
-        if (hookStatus.enabled && preCmd && !badCmd) {
-          let probePassed = probedCmds.get(preCmd);
-          if (probePassed === undefined) {
-            const probeCwd = fs.existsSync(path.join(repo.root, "src")) ? path.join(repo.root, "src") : repo.root;
-            const shMatch = /^sh\s+-c\s+'(.+)'$/.exec(preCmd.trim());
-            const bin = shMatch ? "sh" : (preCmd.trim().split(/\s+/)[0] ?? "");
-            const args = shMatch ? ["-c", shMatch[1] ?? ""] : preCmd.trim().split(/\s+/).slice(1);
-            const runProbe = (payloadObj: object): boolean => {
-              const p = spawnSync(bin, args, { cwd: probeCwd, input: JSON.stringify(payloadObj), encoding: "utf8", timeout: 5_000, shell: false });
-              return !p.error && p.status === 2;
-            };
-            const cpOk = runProbe({ cwd: probeCwd, tool_name: "Write", tool_input: { file_path: path.join(repo.root, ".verification", "rungs.json"), content: "{}" } });
-            const slopOk = runProbe({ cwd: probeCwd, tool_name: "Write", tool_input: { file_path: path.join(repo.root, "src", "__probe__.ts"), content: "export const x = (1 as any);\n" } });
-            probePassed = cpOk && slopOk;
-            probedCmds.set(preCmd, probePassed);
-          }
-          if (!probePassed) {
-            findings.push({
-              id: `DOC:hook-probe-failed:${rel}`,
-              level: "mention",
-              artifact: rel,
-              summary: `Live subdirectory pre-edit probe of '${preCmd}' in ${rel} failed to exit 2 on synthetic control-plane and slop writes.`,
-              fix: "Reinstall root-anchored fail-closed hooks via 'vstack hooks on'.",
-            });
-          }
-        }
-      }
-    } catch {
-      findings.push({
-        id: `DOC:malformed-hook:${rel}`,
-        level: "auto",
-        artifact: rel,
-        summary: `Hook manifest ${rel} contains invalid JSON.`,
-        fix: "Repair or rerun 'vstack hooks on' to regenerate valid hook manifests.",
-      });
-    }
+    auditHookManifestFile({ repoRoot: repo.root, rel, hooksEnabled: hookStatus.enabled, probedCmds, findings });
   }
-
-  const cfg = loadRepoConfig(repo.root);
-  if (cfg.configPath) {
-    const weakened = Object.entries(cfg.rules)
-      .filter(([, sev]) => sev === "off" || sev === "info" || sev === "warn")
-      .map(([rule, sev]) => `${rule}=${sev}`);
-    if (weakened.length > 0) {
-      findings.push({
-        id: `DOC:disabled-rules:${cfg.configPath}`,
-        level: "mention",
-        artifact: cfg.configPath,
-        summary: `${cfg.configPath} disables or downgrades ${weakened.length} Veristack rule(s): ${weakened.join(", ")}.`,
-        fix: "Re-enable disabled/downgraded rules to run Veristack at full rigidity (--strict).",
-      });
-    }
-    if (cfg.ignore.length > 0) {
-      findings.push({
-        id: `DOC:config-ignore:${cfg.configPath}`,
-        level: "mention",
-        artifact: cfg.configPath,
-        summary: `${cfg.configPath} ignores ${cfg.ignore.length} path pattern(s): ${cfg.ignore.join(", ")}.`,
-        fix: "Remove config ignore exclusions so all source/test paths remain verified.",
-      });
-    }
-  }
-
-  for (const f of auditFormalSync(repo)) {
-    findings.push({
-      id: `DOC:${f.rule}:${f.file}`,
-      level: "route",
-      artifact: f.file,
-      summary: f.message,
-      fix: f.fix,
-    });
-  }
-
-  for (const f of auditZeroDefectArtifacts(repo)) {
-    if (f.rule.startsWith("formal-sync-")) continue;
-    findings.push({
-      id: `DOC:${f.rule}:${f.file}`,
-      level: "mention",
-      artifact: f.file,
-      summary: f.message,
-      fix: f.fix,
-    });
-  }
-
-  for (const f of auditAgentDocs(repo)) {
-    if (f.severity === "info") continue;
-    findings.push({
-      id: `DOC:${f.rule}:${f.file}:${f.line}`,
-      level: "mention",
-      artifact: f.file,
-      summary: f.message,
-      fix: f.fix,
-    });
-  }
+  auditDoctorConfigAndArtifacts(repo, findings);
 
   const codexCfg = path.join(os.homedir(), ".codex", "config.toml");
   let codexUntrusted = false;
@@ -281,14 +226,7 @@ export function runDoctor(repoPath: string): DoctorReport {
     } catch { codexUntrusted = false; }
   }
   const installedHarnesses = hookStatus.harnesses.map((h) => (h === "codex" && codexUntrusted ? "codex (installed; untrusted)" : h));
-  return {
-    schemaVersion: 1,
-    repo: repo.root,
-    healthy: findings.length === 0,
-    hooksEnabled: hookStatus.enabled,
-    installedHarnesses,
-    findings,
-  };
+  return { schemaVersion: 1, repo: repo.root, healthy: findings.length === 0, hooksEnabled: hookStatus.enabled, installedHarnesses, findings };
 }
 
 export function formatDoctorReport(report: DoctorReport): string {

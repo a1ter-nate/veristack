@@ -9,7 +9,7 @@ import { classifyCanaryOutcome, isRetryableCanarySignal } from "../../src/rungs/
 import { parseAndValidateCommandArgv } from "../../src/rungs/command-audit.ts";
 import { auditRunnerConfigs, runGitClean } from "../../src/rungs/config-audit.ts";
 import { discoverWorkspaces } from "../../src/rungs/manifest.ts";
-import { runPlantedFaultCanary, runPlantedFaultCanaryAsync } from "../../src/rungs/mutation-probe.ts";
+import { insertSemanticNoOp, runPlantedFaultCanary, runPlantedFaultCanaryAsync } from "../../src/rungs/mutation-probe.ts";
 import { runTwoSidedOracleCheck } from "../../src/rungs/oracle-check.ts";
 import { computeRepoTreeHash, runRungAndWriteReceipt } from "../../src/rungs/receipts.ts";
 import { evaluateCrapForCoverageFile, parseStructuredReports, reportParsers } from "../../src/rungs/reports.ts";
@@ -89,6 +89,8 @@ test("hooks runtime pins: empty/non-object/malformed payloads across pre-edit/po
     assert.equal(cfg.tier, "all");
     assert.equal(cfg.auditLog, "audit.jsonl");
     assert.deepEqual(cfg.harnesses, ["claude"]);
+    executeHookEvent("post-edit", JSON.stringify({ cwd: dir, tool_input: { file_path: path.join(dir, "src.ts") } }), { repoRoot: dir, harness: "claude" });
+    assert.equal(fs.existsSync(path.join(dir, "audit.jsonl")), true);
   });
 });
 
@@ -206,9 +208,10 @@ test("reports pins: self-closing JUnit suites, TRX counters, invalid attrs, maxM
         "}",
       ].join("\n"),
     );
-    fs.writeFileSync(path.join(dir, "lcov.info"), "SF:src/nested.ts\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nDA:5,1\nDA:99,0\nend_of_record\n");
+    fs.writeFileSync(path.join(dir, "lcov.info"), `SF:${path.join(dir, "src", "nested.ts")}\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nDA:5,1\nDA:99,0\nend_of_record\n`);
     const rep = evaluateCrapForCoverageFile(dir, "lcov.info", 30);
     assert.equal(rep.passed, true);
+    assert.equal(rep.evaluatedFiles, 1);
 
     fs.writeFileSync(
       path.join(dir, "src", "nested.ts"),
@@ -241,7 +244,7 @@ test("receipts & manifest pins: git-tracked binary asset hash, JUnit failure fal
     fs.writeFileSync(path.join(dir, "assets", "blob.bin"), Buffer.from([1, 2, 3, 4]));
     fs.writeFileSync(
       path.join(dir, "tests", "dot.test.mjs"),
-      'import fs from "node:fs"; import test from "node:test"; test("dot", () => { fs.writeFileSync("junit.xml", \'<testsuite tests="3" failures="1"/>\\n\'); });\n',
+      'import fs from "node:fs"; import test from "node:test"; test("dot", () => { console.log("Mutation score: 88%"); fs.writeFileSync("junit.xml", \'<testsuite tests="3" failures="1"/>\\n\'); });\n',
     );
     runGitClean(dir, ["add", "."]);
     runGitClean(dir, ["commit", "-q", "-m", "init"]);
@@ -269,6 +272,7 @@ test("receipts & manifest pins: git-tracked binary asset hash, JUnit failure fal
     );
     assert.equal(rec.exitCode, 1);
     assert.equal(rec.metrics?.testsFailed, 1);
+    assert.equal(rec.metrics?.mutationScore, undefined);
   });
 });
 
@@ -385,5 +389,12 @@ test("mutation-probe & canary-runner pins: AST loop/return/arithmetic operators,
     assert.equal(asyncRep.passed, true);
     assert.equal(asyncRep.killedMutants, 5);
     assert.equal(asyncRep.invalidKills, 0);
+
+    const pyNoOp = insertSemanticNoOp("a.py", "# header\n\nfrom __future__ import annotations\nx = 1\n", 1);
+    assert.ok(pyNoOp.indexOf("from __future__ import annotations") < pyNoOp.indexOf("_"));
+
+    fs.writeFileSync(path.join(dir, "src", "lib.rs"), "pub fn f(x: &&str) -> bool { let c = || true; c() }\n");
+    const rsSkip = runPlantedFaultCanary({ repoRoot: dir, testCmd: "bun test ./tests/ops.test.ts", targets: ["src/lib.rs"], maxMutants: 4, minKillRate: 0.75 });
+    assert.equal(rsSkip.totalMutants, 0);
   });
 });

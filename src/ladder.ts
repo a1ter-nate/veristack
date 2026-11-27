@@ -7,6 +7,7 @@ import { auditDeclaredArchetype } from "./rungs/manifest.ts";
 import { loadValidReceipts } from "./rungs/receipts.ts";
 import { analyzeStructure } from "./structure.ts";
 import { analyzeTests } from "./test-analyzer.ts";
+import { analyzeTigerStyle, buildTigerStyleReport } from "./tigerstyle/index.ts";
 import type { Finding, ScanReport, ScopeExclusion } from "./types.ts";
 import { applyRepoConfig, isRuleDisabled, loadRepoConfig } from "./zero-defect/repo-config.ts";
 
@@ -65,11 +66,13 @@ function recommendMissingLinters(repo: DiscoveredRepo): ScanReport["missingLinte
   return missing;
 }
 
-export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanReport {
-  const repo = discoverRepo(repoPath);
-  const config = loadRepoConfig(repo.root, options.configPath);
+function collectRawRepoFindings(
+  repo: DiscoveredRepo,
+  config: ReturnType<typeof loadRepoConfig>,
+  options: ScanOptions,
+): { rawFindings: Finding[]; testResult: ReturnType<typeof analyzeTests>; receipts: ReturnType<typeof loadValidReceipts>["receipts"] } {
+  if (!repo.root) throw new Error("Discovered repo root is required.");
   const rawFindings: Finding[] = [];
-
   if (repo.manifestError) {
     rawFindings.push({
       id: "RUNG:manifest-invalid:.verification/rungs.json",
@@ -84,12 +87,9 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
     });
   }
   rawFindings.push(...auditDeclaredArchetype(repo.manifest, repo.observedArchetype, repo));
-
   if (!isRuleDisabled("no-comments", config, options.disableRules)) {
     for (const file of repo.files) {
-      if (file.language && !file.isStub) {
-        rawFindings.push(...lintNoComments(file.rel, file.content, file.language));
-      }
+      if (file.language && !file.isStub) rawFindings.push(...lintNoComments(file.rel, file.content, file.language));
     }
   }
   const hookCfgFile = repo.files.find((f) => f.rel === ".verification/hooks.json");
@@ -111,19 +111,11 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
       }
     } catch { void 0; }
   }
-
-  rawFindings.push(...analyzeStructure(repo));
-  rawFindings.push(...auditAgentDocs(repo));
+  rawFindings.push(...analyzeStructure(repo), ...analyzeTigerStyle(repo), ...auditAgentDocs(repo));
   const testResult = analyzeTests(repo);
-  rawFindings.push(...testResult.findings);
-  rawFindings.push(...auditCiWorkflows(repo));
-
-  const receiptBundle = loadValidReceipts(repo, repo.manifest, {
-    strict: options.strict,
-    hmacKeyOverride: options.receiptHmacKey,
-  });
+  rawFindings.push(...testResult.findings, ...auditCiWorkflows(repo));
+  const receiptBundle = loadValidReceipts(repo, repo.manifest, { strict: options.strict, hmacKeyOverride: options.receiptHmacKey });
   rawFindings.push(...receiptBundle.findings);
-
   if (options.strict && repo.manifest?.rungs.R2 && !repo.manifest.rungs.R2.canary?.enabled) {
     rawFindings.push({
       id: "RUNG:r2-canary-required:.verification/rungs.json",
@@ -137,51 +129,82 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
       fix: "Enable rungs.R2.canary in .verification/rungs.json.",
     });
   }
+  return { rawFindings, testResult, receipts: receiptBundle.receipts };
+}
 
-  const applied = applyRepoConfig(rawFindings, config, options.disableRules);
-  const findings = applied.findings;
-
-  const receipts = receiptBundle.receipts;
-  const requireReceipts = Boolean(options.strict) || Boolean(repo.manifest);
-  const rungs = buildRungStatuses(repo, testResult.inventory, { receipts, requireReceipts });
-  const workspaces = buildWorkspaceLadders(repo, testResult.inventory, findings);
-  const missingLinters = recommendMissingLinters(repo);
-
-  const allowExcluded = repo.manifest?.allowExcluded ?? [];
-  const scopeExclusions = filterUnallowlistedExclusions(repo.scopeExclusions, allowExcluded);
-
+function computeScanSummary(input: {
+  repo: DiscoveredRepo;
+  findings: readonly Finding[];
+  rungs: ScanReport["rungs"];
+  workspaces: NonNullable<ScanReport["workspaces"]>;
+  testResult: ReturnType<typeof analyzeTests>;
+  scopeExclusions: readonly ScopeExclusion[];
+}): ScanReport["summary"] {
+  const { repo, findings, rungs, workspaces, testResult, scopeExclusions } = input;
+  if (!repo.root) throw new Error("Discovered repo root is required.");
   const sourceFiles = repo.files.filter((f) => f.language && !f.isTest);
   const testFiles = repo.files.filter((f) => f.language && f.isTest);
   const prodLines = sourceFiles.reduce((sum, f) => sum + f.lines, 0);
   const testLines = testFiles.reduce((sum, f) => sum + f.lines, 0);
   const e2eFiles = testResult.inventory.filter((t) => t.rung === "R7");
   const e2eTestCases = e2eFiles.reduce((sum, t) => sum + Math.max(1, t.testCaseCount), 0);
-  const hasActiveConfig =
-    Boolean(config.configPath) || applied.disabledRules.length > 0 || config.ignore.length > 0;
 
   const applicableRungs = rungs.filter((r) => r.coverageGrade !== "not-applicable");
   const wellCoveredCount = applicableRungs.filter((r) => r.coverageGrade === "well-covered").length;
   const poorlyCoveredCount = applicableRungs.filter((r) => r.coverageGrade === "poorly-covered").length;
-  const holeCount = applicableRungs.filter(
-    (r) => r.coverageGrade === "not-covered" || r.coverageGrade === "over-budget",
-  ).length;
-  const unexecutedRungCount = applicableRungs.filter((r) => !r.executedInCi).length;
-  const receiptVerifiedCount = applicableRungs.filter((r) => r.receiptVerified).length;
-
+  const holeCount = applicableRungs.filter((r) => r.coverageGrade === "not-covered" || r.coverageGrade === "over-budget").length;
   let overallCoverageScore =
     applicableRungs.length > 0
       ? Math.round(applicableRungs.reduce((sum, r) => sum + r.coverageScore, 0) / applicableRungs.length)
       : 100;
-
   if (workspaces.length > 0) {
     const minWs = Math.min(...workspaces.map((w) => w.score));
-    if (minWs === 0) {
-      overallCoverageScore = 0;
-    } else {
+    if (minWs === 0) overallCoverageScore = 0;
+    else {
       const avgWs = Math.round(workspaces.reduce((sum, w) => sum + w.score, 0) / workspaces.length);
       overallCoverageScore = Math.min(overallCoverageScore, Math.round((overallCoverageScore + avgWs) / 2));
     }
   }
+  return {
+    sourceFiles: sourceFiles.length,
+    testFiles: testFiles.length,
+    prodLines,
+    testLines,
+    testToProdRatio: prodLines > 0 ? Number((testLines / prodLines).toFixed(2)) : 0,
+    e2eFiles: e2eFiles.length,
+    e2eTestCases,
+    totalFindings: findings.length,
+    errorCount: findings.filter((f) => f.severity === "error").length,
+    warnCount: findings.filter((f) => f.severity === "warn").length,
+    cheatCount: findings.filter((f) => f.category === "cheat").length,
+    noCommentCount: findings.filter((f) => f.category === "no-comments").length,
+    pushDownCount: testResult.pushDownOpportunities.length,
+    holeCount,
+    poorlyCoveredCount,
+    wellCoveredCount,
+    applicableRungCount: applicableRungs.length,
+    unexecutedRungCount: applicableRungs.filter((r) => !r.executedInCi).length,
+    receiptVerifiedCount: applicableRungs.filter((r) => r.receiptVerified).length,
+    excludedCount: scopeExclusions.length,
+    overallCoverageScore,
+  };
+}
+
+export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanReport {
+  if (!repoPath) throw new Error("Repository path is required.");
+  const repo = discoverRepo(repoPath);
+  const config = loadRepoConfig(repo.root, options.configPath);
+  const { rawFindings, testResult, receipts } = collectRawRepoFindings(repo, config, options);
+  const applied = applyRepoConfig(rawFindings, config, options.disableRules);
+  const findings = applied.findings;
+  const requireReceipts = Boolean(options.strict) || Boolean(repo.manifest);
+  const rungs = buildRungStatuses(repo, testResult.inventory, { receipts, requireReceipts });
+  const tigerStyle = buildTigerStyleReport(repo, findings, rungs);
+  const workspaces = buildWorkspaceLadders(repo, testResult.inventory, findings);
+  const missingLinters = recommendMissingLinters(repo);
+  const scopeExclusions = filterUnallowlistedExclusions(repo.scopeExclusions, repo.manifest?.allowExcluded ?? []);
+  const hasActiveConfig = Boolean(config.configPath) || applied.disabledRules.length > 0 || config.ignore.length > 0;
+  const summary = computeScanSummary({ repo, findings, rungs, workspaces, testResult, scopeExclusions });
 
   return {
     schemaVersion: 1,
@@ -190,38 +213,11 @@ export function scanRepo(repoPath: string, options: ScanOptions = {}): ScanRepor
     ...(repo.manifest ? { declaredArchetype: repo.manifest.archetype } : {}),
     languages: repo.languages,
     ...(hasActiveConfig
-      ? {
-          config: {
-            path: config.configPath,
-            disabledRules: applied.disabledRules,
-            suppressedCount: applied.suppressedCount,
-          },
-        }
+      ? { config: { path: config.configPath, disabledRules: applied.disabledRules, suppressedCount: applied.suppressedCount } }
       : {}),
-    summary: {
-      sourceFiles: sourceFiles.length,
-      testFiles: testFiles.length,
-      prodLines,
-      testLines,
-      testToProdRatio: prodLines > 0 ? Number((testLines / prodLines).toFixed(2)) : 0,
-      e2eFiles: e2eFiles.length,
-      e2eTestCases,
-      totalFindings: findings.length,
-      errorCount: findings.filter((f) => f.severity === "error").length,
-      warnCount: findings.filter((f) => f.severity === "warn").length,
-      cheatCount: findings.filter((f) => f.category === "cheat").length,
-      noCommentCount: findings.filter((f) => f.category === "no-comments").length,
-      pushDownCount: testResult.pushDownOpportunities.length,
-      holeCount,
-      poorlyCoveredCount,
-      wellCoveredCount,
-      applicableRungCount: applicableRungs.length,
-      unexecutedRungCount,
-      receiptVerifiedCount,
-      excludedCount: scopeExclusions.length,
-      overallCoverageScore,
-    },
+    summary,
     rungs,
+    tigerStyle,
     ...(workspaces.length > 0 ? { workspaces } : {}),
     scopeExclusions,
     pushDownOpportunities: testResult.pushDownOpportunities,

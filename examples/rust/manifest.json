@@ -40,6 +40,12 @@
       "rust-env-args-or-var-utf8-panic",
       "condvar-wait-without-loop",
       "atomic-check-then-mutate-toctou"
+    ],
+    "tigerstyle_rust.rs": [
+      "tiger-fixed-width-types",
+      "tiger-unbounded-queue",
+      "tiger-hot-path-allocation",
+      "tiger-explicit-over-implicit"
     ]
   },
   "clean": [
@@ -48,6 +54,7 @@
     "clean_perf_and_jidoka.rs",
     "safe_oss_async_and_serde.rs",
     "safe_titans_b_rust.rs",
-    "safe_titans_a_rust.rs"
+    "safe_titans_a_rust.rs",
+    "safe_tigerstyle_rust.rs"
   ]
 }

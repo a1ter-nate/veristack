@@ -35,214 +35,86 @@ function parseWorkflowJobs(content: string): JobSpan[] {
   return jobs;
 }
 
-export function auditExtendedCiRules(file: ScannedFile): Finding[] {
-  const findings: Finding[] = [];
+function auditCiLineRules(file: ScannedFile, findings: Finding[]): void {
+  if (!file.content) return;
   const lines = file.content.split(/\r?\n/);
-
   for (let idx = 0; idx < lines.length; idx++) {
     const raw = lines[idx] ?? "";
     const stripped = raw.replace(/\s+#.*$/, "");
     if (!stripped.trim() || /^\s*#/.test(raw)) continue;
-
     if (TWO_DOT_PR_DIFF.test(stripped) && !stripped.includes("...")) {
-      findings.push({
-        id: `CI:two-dot-diff:${file.rel}:${idx + 1}`,
-        rule: "ci-two-dot-pr-diff",
-        category: "ci-hygiene",
-        rung: "R0",
-        severity: "warn",
-        file: file.rel,
-        line: idx + 1,
-        message: "Two-dot 'git diff BASE HEAD' compares branch tips and flags unrelated base-branch commits in PRs.",
-        fix: "Use three-dot merge-base syntax ('git diff BASE...HEAD') for PR changed-file checks.",
-      });
+      findings.push({ id: `CI:two-dot-diff:${file.rel}:${idx + 1}`, rule: "ci-two-dot-pr-diff", category: "ci-hygiene", rung: "R0", severity: "warn", file: file.rel, line: idx + 1, message: "Two-dot 'git diff BASE HEAD' compares branch tips and flags unrelated base-branch commits in PRs.", fix: "Use three-dot merge-base syntax ('git diff BASE...HEAD') for PR changed-file checks." });
     }
-
     if (UNBOUNDED_BG_WORKERS.test(stripped)) {
-      findings.push({
-        id: `CI:unbounded-workers:${file.rel}:${idx + 1}`,
-        rule: "ci-unbounded-test-workers",
-        category: "ci-hygiene",
-        rung: "R6",
-        severity: "warn",
-        file: file.rel,
-        line: idx + 1,
-        message: "CI step oversubscribes test workers (backgrounded vitest/jest or --maxWorkers >= 8), causing event-loop timeout flakes.",
-        fix: "Cap --maxWorkers to runner vCPUs (e.g. 2-4) and avoid parallel background test runners on shared slots.",
-      });
+      findings.push({ id: `CI:unbounded-workers:${file.rel}:${idx + 1}`, rule: "ci-unbounded-test-workers", category: "ci-hygiene", rung: "R6", severity: "warn", file: file.rel, line: idx + 1, message: "CI step oversubscribes test workers (backgrounded vitest/jest or --maxWorkers >= 8), causing event-loop timeout flakes.", fix: "Cap --maxWorkers to runner vCPUs (e.g. 2-4) and avoid parallel background test runners on shared slots." });
     }
-
     if (HARDCODED_LOCAL_PORT.test(stripped) && !/\$\{?[A-Za-z_]*PORT/.test(stripped)) {
-      findings.push({
-        id: `CI:static-port:${file.rel}:${idx + 1}`,
-        rule: "ci-hardcoded-service-port",
-        category: "ci-hygiene",
-        rung: "R4",
-        severity: "warn",
-        file: file.rel,
-        line: idx + 1,
-        message: "Hardcoded localhost service/emulator port in CI risks cross-slot port collisions on shared runners.",
-        fix: "Allocate ports dynamically or parameterize via an environment variable with a per-slot offset.",
-      });
+      findings.push({ id: `CI:static-port:${file.rel}:${idx + 1}`, rule: "ci-hardcoded-service-port", category: "ci-hygiene", rung: "R4", severity: "warn", file: file.rel, line: idx + 1, message: "Hardcoded localhost service/emulator port in CI risks cross-slot port collisions on shared runners.", fix: "Allocate ports dynamically or parameterize via an environment variable with a per-slot offset." });
     }
-
     if (COMBINED_BUILD_TEST.test(stripped)) {
-      findings.push({
-        id: `CI:build-test-wave:${file.rel}:${idx + 1}`,
-        rule: "ci-combined-build-test-wave",
-        category: "ci-hygiene",
-        rung: "R6",
-        severity: "warn",
-        file: file.rel,
-        line: idx + 1,
-        message: "Running monorepo build and test concurrently in one command starves runner CPU/RAM and causes timeout flakes.",
-        fix: "Separate build and test into sequential steps or cap task concurrency explicitly.",
-      });
+      findings.push({ id: `CI:build-test-wave:${file.rel}:${idx + 1}`, rule: "ci-combined-build-test-wave", category: "ci-hygiene", rung: "R6", severity: "warn", file: file.rel, line: idx + 1, message: "Running monorepo build and test concurrently in one command starves runner CPU/RAM and causes timeout flakes.", fix: "Separate build and test into sequential steps or cap task concurrency explicitly." });
     }
   }
+}
 
-  if (file.rel.startsWith(".github/workflows/")) {
-    const cacheKeyRe = /uses:\s*actions\/cache@[^\n]+[\s\S]{0,400}?\bkey:\s*([^\n]+)/g;
-    for (const m of file.content.matchAll(cacheKeyRe)) {
-      const keyExpr = m[1] ?? "";
-      if (!/hashFiles\s*\(/i.test(keyExpr)) {
-        const line = file.content.slice(0, m.index ?? 0).split(/\r?\n/).length;
-        findings.push({
-          id: `CI:cache-hash:${file.rel}:${line}`,
-          rule: "ci-cache-key-missing-hash",
-          category: "ci-hygiene",
-          rung: "R6",
-          severity: "warn",
-          file: file.rel,
-          line,
-          message: "actions/cache key omits hashFiles(...), risking stale dependency/tool cache collisions across updates.",
-          fix: "Include hashFiles('**/lockfile...') or a tool-manifest hash in the cache key.",
-        });
-      }
-    }
-
-    const cacheSaveRe = /uses:\s*actions\/cache\/save@[^\n]+/g;
-    for (const m of file.content.matchAll(cacheSaveRe)) {
+function auditGithubActionsAndCaches(file: ScannedFile, findings: Finding[]): void {
+  if (!file.content) return;
+  for (const m of file.content.matchAll(/uses:\s*actions\/cache@[^\n]+[\s\S]{0,400}?\bkey:\s*([^\n]+)/g)) {
+    if (/hashFiles\s*\(/i.test(m[1] ?? "")) continue;
+    const line = file.content.slice(0, m.index ?? 0).split(/\r?\n/).length;
+    findings.push({ id: `CI:cache-hash:${file.rel}:${line}`, rule: "ci-cache-key-missing-hash", category: "ci-hygiene", rung: "R6", severity: "warn", file: file.rel, line, message: "actions/cache key omits hashFiles(...), risking stale dependency/tool cache collisions across updates.", fix: "Include hashFiles('**/lockfile...') or a tool-manifest hash in the cache key." });
+  }
+  for (const m of file.content.matchAll(/uses:\s*actions\/cache\/save@[^\n]+/g)) {
+    const idx = m.index ?? 0;
+    if (/^\s*if\s*:/m.test(file.content.slice(Math.max(0, idx - 220), idx))) continue;
+    const line = file.content.slice(0, idx).split(/\r?\n/).length;
+    findings.push({ id: `CI:cache-save-unscoped:${file.rel}:${line}`, rule: "ci-cache-save-unscoped-branch", category: "ci-hygiene", rung: "R6", severity: "warn", file: file.rel, line, message: "Unconditional actions/cache/save lets feature branches overwrite shared caches.", fix: "Gate actions/cache/save with an if: condition scoped to the default branch or unique ref." });
+  }
+  if (!/permissions:\s*\r?\n\s*contents:\s*read\b/.test(file.content)) {
+    for (const m of file.content.matchAll(/uses:\s*actions\/checkout@[^\n]+/g)) {
       const idx = m.index ?? 0;
-      const before = file.content.slice(Math.max(0, idx - 220), idx);
-      if (!/^\s*if\s*:/m.test(before)) {
-        const line = file.content.slice(0, idx).split(/\r?\n/).length;
-        findings.push({
-          id: `CI:cache-save-unscoped:${file.rel}:${line}`,
-          rule: "ci-cache-save-unscoped-branch",
-          category: "ci-hygiene",
-          rung: "R6",
-          severity: "warn",
-          file: file.rel,
-          line,
-          message: "Unconditional actions/cache/save lets feature branches overwrite shared caches.",
-          fix: "Gate actions/cache/save with an if: condition scoped to the default branch or unique ref.",
-        });
-      }
-    }
-
-    if (!/permissions:\s*\r?\n\s*contents:\s*read\b/.test(file.content)) {
-      const checkoutRe = /uses:\s*actions\/checkout@[^\n]+/g;
-      for (const m of file.content.matchAll(checkoutRe)) {
-        const idx = m.index ?? 0;
-        const after = file.content.slice(idx, idx + 220);
-        if (!/\bpersist-credentials\s*:\s*false\b/.test(after)) {
-          const line = file.content.slice(0, idx).split(/\r?\n/).length;
-          findings.push({
-            id: `CI:checkout-creds:${file.rel}:${line}`,
-            rule: "ci-checkout-persist-credentials",
-            category: "ci-hygiene",
-            rung: "R0",
-            severity: "warn",
-            file: file.rel,
-            line,
-            message: "actions/checkout persists GITHUB_TOKEN credentials in .git/config without read-only permissions.",
-            fix: "Set 'permissions: { contents: read }' and 'persist-credentials: false' unless pushing with GITHUB_TOKEN.",
-          });
-        }
-      }
-    }
-
-    const unpinnedActionRe = /^\s*-?\s*uses:\s*([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)@(?:main|master|HEAD)\b/gm;
-    for (const m of file.content.matchAll(unpinnedActionRe)) {
-      const line = file.content.slice(0, m.index ?? 0).split(/\r?\n/).length;
-      findings.push({
-        id: `CI:unpinned-action:${file.rel}:${line}`,
-        rule: "ci-unpinned-action-ref",
-        category: "ci-hygiene",
-        rung: "R0",
-        severity: "warn",
-        file: file.rel,
-        line,
-        message: `Workflow action '${m[1]}' tracks a mutable branch (@main/@master/@HEAD) instead of a pinned SHA or release tag.`,
-        fix: "Pin GitHub Actions to an immutable commit SHA (or major version tag for trusted first-party actions).",
-      });
-    }
-
-    for (const job of parseWorkflowJobs(file.content)) {
-      const hasAlways = /^\s*if:\s*.*always\(\)/m.test(job.body);
-      const hasNeeds = /^\s*needs:/m.test(job.body);
-      const checksNeedsResult = /\bneeds\.[A-Za-z0-9_-]+\.result\b/.test(job.body);
-      if (hasAlways && hasNeeds && !checksNeedsResult) {
-        findings.push({
-          id: `CI:always-gate:${file.rel}:${job.startLine}`,
-          rule: "ci-always-without-gate-check",
-          category: "cheat",
-          rung: "R0",
-          severity: "error",
-          file: file.rel,
-          line: job.startLine,
-          message: `Job '${job.name}' uses if: always() with needs: but never inspects needs.<id>.result.`,
-          fix: "Explicitly verify upstream needs.<id>.result == 'success' (and guard against 'skipped'/'failure') before passing or publishing.",
-        });
-      }
-
-      const runsBrowser = /\b(?:playwright\s+test|vite\s+preview)\b/i.test(job.body);
-      const hasBuildOrDownload = /\b(?:build|download-artifact|playwright-prebuilt|PREBUILT=1)\b/i.test(job.body);
-      if (runsBrowser && !hasNeeds && !hasBuildOrDownload) {
-        findings.push({
-          id: `CI:unbuilt-browser:${file.rel}:${job.startLine}`,
-          rule: "ci-unbuilt-browser-consumer",
-          category: "ci-hygiene",
-          rung: "R4",
-          severity: "warn",
-          file: file.rel,
-          line: job.startLine,
-          message: `Browser job '${job.name}' runs Playwright/preview without an upstream build dependency or build step.`,
-          fix: "Run the app build step in this job or depend on a build-artifact producer via needs: + download-artifact.",
-        });
-      }
-
-      if (/\b(?:linkcheck|lychee|markdown-link-check)\b/i.test(job.body) && /^\s*pull_request\s*:/m.test(file.content) && !/^\s*schedule\s*:/m.test(file.content)) {
-        findings.push({
-          id: `CI:ext-linkcheck:${file.rel}:${job.startLine}`,
-          rule: "ci-blocking-external-linkcheck",
-          category: "ci-hygiene",
-          rung: "R6",
-          severity: "warn",
-          file: file.rel,
-          line: job.startLine,
-          message: `Job '${job.name}' runs live external link-checking on pull_request — transient third-party 429/5xx errors flake unrelated PRs.`,
-          fix: "Move external link-checking to a scheduled nightly workflow or make it advisory on pull_request.",
-        });
-      }
-
-      if (/\bstrategy:\s*\r?\n\s*matrix:/m.test(job.body) && /\b(?:playwright|android|ios|webkit|firefox|emulator)\b/i.test(job.body) && !/upload-artifact/i.test(job.body)) {
-        findings.push({
-          id: `CI:matrix-artifacts:${file.rel}:${job.startLine}`,
-          rule: "ci-matrix-missing-failure-artifacts",
-          category: "ci-hygiene",
-          rung: "R6",
-          severity: "warn",
-          file: file.rel,
-          line: job.startLine,
-          message: `Cross-platform browser/emulator matrix job '${job.name}' does not upload traces/crash logs on failure.`,
-          fix: "Add an 'if: failure()' actions/upload-artifact step capturing Playwright traces, screenshots, or crash logs.",
-        });
-      }
+      if (/\bpersist-credentials\s*:\s*false\b/.test(file.content.slice(idx, idx + 220))) continue;
+      const line = file.content.slice(0, idx).split(/\r?\n/).length;
+      findings.push({ id: `CI:checkout-creds:${file.rel}:${line}`, rule: "ci-checkout-persist-credentials", category: "ci-hygiene", rung: "R0", severity: "warn", file: file.rel, line, message: "actions/checkout persists GITHUB_TOKEN credentials in .git/config without read-only permissions.", fix: "Set 'permissions: { contents: read }' and 'persist-credentials: false' unless pushing with GITHUB_TOKEN." });
     }
   }
+  for (const m of file.content.matchAll(/^\s*-?\s*uses:\s*([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)@(?:main|master|HEAD)\b/gm)) {
+    const line = file.content.slice(0, m.index ?? 0).split(/\r?\n/).length;
+    findings.push({ id: `CI:unpinned-action:${file.rel}:${line}`, rule: "ci-unpinned-action-ref", category: "ci-hygiene", rung: "R0", severity: "warn", file: file.rel, line, message: `Workflow action '${m[1]}' tracks a mutable branch (@main/@master/@HEAD) instead of a pinned SHA or release tag.`, fix: "Pin GitHub Actions to an immutable commit SHA (or major version tag for trusted first-party actions)." });
+  }
+}
 
+function auditGithubWorkflowJobs(file: ScannedFile, findings: Finding[]): void {
+  if (!file.content) return;
+  for (const job of parseWorkflowJobs(file.content)) {
+    const hasAlways = /^\s*if:\s*.*always\(\)/m.test(job.body);
+    const hasNeeds = /^\s*needs:/m.test(job.body);
+    const checksNeedsResult = /\bneeds\.[A-Za-z0-9_-]+\.result\b/.test(job.body);
+    if (hasAlways && hasNeeds && !checksNeedsResult) {
+      findings.push({ id: `CI:always-gate:${file.rel}:${job.startLine}`, rule: "ci-always-without-gate-check", category: "cheat", rung: "R0", severity: "error", file: file.rel, line: job.startLine, message: `Job '${job.name}' uses if: always() with needs: but never inspects needs.<id>.result.`, fix: "Explicitly verify upstream needs.<id>.result == 'success' (and guard against 'skipped'/'failure') before passing or publishing." });
+    }
+    const runsBrowser = /\b(?:playwright\s+test|vite\s+preview)\b/i.test(job.body);
+    const hasBuildOrDownload = /\b(?:build|download-artifact|playwright-prebuilt|PREBUILT=1)\b/i.test(job.body);
+    if (runsBrowser && !hasNeeds && !hasBuildOrDownload) {
+      findings.push({ id: `CI:unbuilt-browser:${file.rel}:${job.startLine}`, rule: "ci-unbuilt-browser-consumer", category: "ci-hygiene", rung: "R4", severity: "warn", file: file.rel, line: job.startLine, message: `Browser job '${job.name}' runs Playwright/preview without an upstream build dependency or build step.`, fix: "Run the app build step in this job or depend on a build-artifact producer via needs: + download-artifact." });
+    }
+    if (/\b(?:linkcheck|lychee|markdown-link-check)\b/i.test(job.body) && /^\s*pull_request\s*:/m.test(file.content) && !/^\s*schedule\s*:/m.test(file.content)) {
+      findings.push({ id: `CI:ext-linkcheck:${file.rel}:${job.startLine}`, rule: "ci-blocking-external-linkcheck", category: "ci-hygiene", rung: "R6", severity: "warn", file: file.rel, line: job.startLine, message: `Job '${job.name}' runs live external link-checking on pull_request — transient third-party 429/5xx errors flake unrelated PRs.`, fix: "Move external link-checking to a scheduled nightly workflow or make it advisory on pull_request." });
+    }
+    if (/\bstrategy:\s*\r?\n\s*matrix:/m.test(job.body) && /\b(?:playwright|android|ios|webkit|firefox|emulator)\b/i.test(job.body) && !/upload-artifact/i.test(job.body)) {
+      findings.push({ id: `CI:matrix-artifacts:${file.rel}:${job.startLine}`, rule: "ci-matrix-missing-failure-artifacts", category: "ci-hygiene", rung: "R6", severity: "warn", file: file.rel, line: job.startLine, message: `Cross-platform browser/emulator matrix job '${job.name}' does not upload traces/crash logs on failure.`, fix: "Add an 'if: failure()' actions/upload-artifact step capturing Playwright traces, screenshots, or crash logs." });
+    }
+  }
+}
+
+export function auditExtendedCiRules(file: ScannedFile): Finding[] {
+  if (!file.content) return [];
+  const findings: Finding[] = [];
+  auditCiLineRules(file, findings);
+  if (file.rel.startsWith(".github/workflows/")) {
+    auditGithubActionsAndCaches(file, findings);
+    auditGithubWorkflowJobs(file, findings);
+  }
   return findings;
 }
 

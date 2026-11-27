@@ -47,8 +47,10 @@ function extractBraceLoopSpans(masked: string, language: ScannedFile["language"]
 }
 
 function extractPythonLoopSpans(masked: string): LoopSpan[] {
+  if (!masked) return [];
   const spans: LoopSpan[] = [];
   const lines = masked.split(/\r?\n/);
+  if (lines.length === 0) return spans;
   const offsets: number[] = [];
   let cursor = 0;
   for (const l of lines) {
@@ -78,96 +80,71 @@ function extractPythonLoopSpans(masked: string): LoopSpan[] {
   return spans;
 }
 
+function selectLoopPatterns(language: ScannedFile["language"]): { quadPattern?: RegExp; nplus1Pattern?: RegExp; compileCopyPattern?: RegExp } {
+  if (language === "typescript" || language === "javascript") {
+    return {
+      quadPattern: /\.\s*(?:shift|unshift)\s*\(\s*\)|\.\s*splice\s*\(\s*0\b|\.\s*(?:find|findIndex)\s*\(/g,
+      nplus1Pattern: /\bawait\s+(?:fetch\s*\(|(?:db|pool|client|prisma|tx|knex)\s*\.[a-zA-Z0-9_.]+\s*\()/g,
+      compileCopyPattern: /\bnew\s+RegExp\s*\(|\bJSON\.parse\s*\(\s*JSON\.stringify\s*\(/g,
+    };
+  }
+  if (language === "python") {
+    return {
+      quadPattern: /\.\s*pop\s*\(\s*0\s*\)|\.\s*insert\s*\(\s*0\s*,/g,
+      nplus1Pattern: /\b(?:cursor|conn|session)\s*\.\s*execute\s*\(|\b(?:requests|httpx)\s*\.\s*(?:get|post|put|delete)\s*\(/g,
+      compileCopyPattern: /\bre\.compile\s*\(|\bcopy\.deepcopy\s*\(/g,
+    };
+  }
+  if (language === "csharp") {
+    return {
+      quadPattern: /\.\s*RemoveAt\s*\(\s*0\s*\)|\.\s*Insert\s*\(\s*0\s*,|\.\s*(?:FirstOrDefault|SingleOrDefault)\s*\(/g,
+      nplus1Pattern: /\bawait\s+[A-Za-z0-9_.]+\.(?:SingleAsync|SingleOrDefaultAsync|FirstAsync|FirstOrDefaultAsync|ExecuteReaderAsync|GetAsync|SendAsync)\s*\(/g,
+      compileCopyPattern: /\bnew\s+Regex\s*\(/g,
+    };
+  }
+  if (language === "rust") {
+    return {
+      quadPattern: /\.\s*remove\s*\(\s*0\s*\)|\.\s*insert\s*\(\s*0\s*,|\.\s*iter\s*\(\s*\)\s*\.\s*(?:find|position)\s*\(/g,
+      nplus1Pattern: /\bsqlx::query(?:_as)?!?\s*\(|\.\s*(?:fetch_one|fetch_all|fetch_optional)\s*\(|\breqwest::(?:get|Client::new)\s*\(/g,
+      compileCopyPattern: /\bRegex::new\s*\(/g,
+    };
+  }
+  return {};
+}
+
 function checkLoopRules(file: ScannedFile, raw: string, masked: string): Finding[] {
+  if (!masked) return [];
   const findings: Finding[] = [];
   const seenLines = new Set<string>();
-  const spans =
-    file.language === "python" ? extractPythonLoopSpans(masked) : extractBraceLoopSpans(masked, file.language);
+  const spans = file.language === "python" ? extractPythonLoopSpans(masked) : extractBraceLoopSpans(masked, file.language);
+  if (spans.length === 0) return findings;
 
   const pushOnce = (rule: string, offset: number, message: string, fix: string): void => {
     const line = lineOf(raw, offset);
     const key = `${rule}:${line}`;
     if (seenLines.has(key)) return;
     seenLines.add(key);
-    findings.push({
-      id: `PF:${rule}:${file.rel}:${line}`,
-      rule,
-      category: "structure",
-      rung: "R1",
-      severity: "warn",
-      file: file.rel,
-      line,
-      message,
-      fix,
-    });
+    findings.push({ id: `PF:${rule}:${file.rel}:${line}`, rule, category: "structure", rung: "R1", severity: "warn", file: file.rel, line, message, fix });
   };
 
-  const quadPattern =
-    file.language === "typescript" || file.language === "javascript"
-      ? /\.\s*(?:shift|unshift)\s*\(\s*\)|\.\s*splice\s*\(\s*0\b|\.\s*(?:find|findIndex)\s*\(/g
-      : file.language === "python"
-        ? /\.\s*pop\s*\(\s*0\s*\)|\.\s*insert\s*\(\s*0\s*,/g
-        : file.language === "csharp"
-          ? /\.\s*RemoveAt\s*\(\s*0\s*\)|\.\s*Insert\s*\(\s*0\s*,|\.\s*(?:FirstOrDefault|SingleOrDefault)\s*\(/g
-          : file.language === "rust"
-            ? /\.\s*remove\s*\(\s*0\s*\)|\.\s*insert\s*\(\s*0\s*,|\.\s*iter\s*\(\s*\)\s*\.\s*(?:find|position)\s*\(/g
-            : undefined;
-
-  const nplus1Pattern =
-    file.language === "typescript" || file.language === "javascript"
-      ? /\bawait\s+(?:fetch\s*\(|(?:db|pool|client|prisma|tx|knex)\s*\.[a-zA-Z0-9_.]+\s*\()/g
-      : file.language === "python"
-        ? /\b(?:cursor|conn|session)\s*\.\s*execute\s*\(|\b(?:requests|httpx)\s*\.\s*(?:get|post|put|delete)\s*\(/g
-        : file.language === "csharp"
-          ? /\bawait\s+[A-Za-z0-9_.]+\.(?:SingleAsync|SingleOrDefaultAsync|FirstAsync|FirstOrDefaultAsync|ExecuteReaderAsync|GetAsync|SendAsync)\s*\(/g
-          : file.language === "rust"
-            ? /\bsqlx::query(?:_as)?!?\s*\(|\.\s*(?:fetch_one|fetch_all|fetch_optional)\s*\(|\breqwest::(?:get|Client::new)\s*\(/g
-            : undefined;
-
-  const compileCopyPattern =
-    file.language === "typescript" || file.language === "javascript"
-      ? /\bnew\s+RegExp\s*\(|\bJSON\.parse\s*\(\s*JSON\.stringify\s*\(/g
-      : file.language === "python"
-        ? /\bre\.compile\s*\(|\bcopy\.deepcopy\s*\(/g
-        : file.language === "csharp"
-          ? /\bnew\s+Regex\s*\(/g
-          : file.language === "rust"
-            ? /\bRegex::new\s*\(/g
-            : undefined;
-
+  const { quadPattern, nplus1Pattern, compileCopyPattern } = selectLoopPatterns(file.language);
   for (const span of spans) {
     if (quadPattern) {
       for (const m of span.body.matchAll(quadPattern)) {
-        pushOnce(
-          "perf-quadratic-loop-scan",
-          span.start + (m.index ?? 0),
-          `Potential O(N^2) collection operation inside loop (${m[0].trim()}).`,
-          "Index lookups with a Set/HashSet/Map/dict or use an O(1) deque/ring-buffer instead of scanning or shifting inside a loop.",
-        );
+        pushOnce("perf-quadratic-loop-scan", span.start + (m.index ?? 0), `Potential O(N^2) collection operation inside loop (${m[0].trim()}).`, "Index lookups with a Set/HashSet/Map/dict or use an O(1) deque/ring-buffer instead of scanning or shifting inside a loop.");
       }
     }
     if (nplus1Pattern) {
       for (const m of span.body.matchAll(nplus1Pattern)) {
-        pushOnce(
-          "perf-nplus1-io-in-loop",
-          span.start + (m.index ?? 0),
-          `Potential N+1 database/network I/O call inside loop (${m[0].trim()}).`,
-          "Batch queries with IN (...)/JOIN or bounded concurrent batching outside the loop.",
-        );
+        pushOnce("perf-nplus1-io-in-loop", span.start + (m.index ?? 0), `Potential N+1 database/network I/O call inside loop (${m[0].trim()}).`, "Batch queries with IN (...)/JOIN or bounded concurrent batching outside the loop.");
       }
     }
     if (compileCopyPattern) {
       for (const m of span.body.matchAll(compileCopyPattern)) {
-        pushOnce(
-          "perf-loop-compile-or-deepcopy",
-          span.start + (m.index ?? 0),
-          `Repeated regex compilation or deep copy inside loop (${m[0].trim()}).`,
-          "Hoist compiled regular expressions to module/static scope and avoid per-iteration deep clones.",
-        );
+        pushOnce("perf-loop-compile-or-deepcopy", span.start + (m.index ?? 0), `Repeated regex compilation or deep copy inside loop (${m[0].trim()}).`, "Hoist compiled regular expressions to module/static scope and avoid per-iteration deep clones.");
       }
     }
   }
-
   return findings;
 }
 

@@ -62,22 +62,57 @@ export function classifyExponent(alpha: number): string {
   return "O(n^3+)";
 }
 
+function checkTailAndInterceptScaling(
+  ordered: readonly ScalingSample[],
+  maxTimeExponent: number,
+  reasons: string[],
+): void {
+  if (ordered.length < 4) return;
+  const tail = ordered.slice(Math.min(Math.floor(ordered.length / 2), ordered.length - 3));
+  const tailMinN = tail[0]?.n ?? 1;
+  const tailMaxN = tail[tail.length - 1]?.n ?? 1;
+  if (tail.length >= 3 && tailMaxN / tailMinN >= 2) {
+    const tailFit = fitLogLogSlope(tail.map((s) => s.n), tail.map((s) => s.timeMs));
+    if (tailFit.r2 >= 0.65 && tailFit.slope > maxTimeExponent + 0.2) {
+      reasons.push(`Upper-half tail scaling exponent ${tailFit.slope} (${classifyExponent(tailFit.slope)}) exceeds budget <= ${maxTimeExponent} (padded small-n tail).`);
+    }
+  }
+  const prev = ordered[ordered.length - 2];
+  const last = ordered[ordered.length - 1];
+  if (prev && last && last.n > prev.n && last.timeMs > prev.timeMs) {
+    const finalStepSlope = Math.log(last.timeMs / prev.timeMs) / Math.log(last.n / prev.n);
+    if (finalStepSlope > maxTimeExponent + 0.5) {
+      reasons.push(`Final scaling step exponent ${finalStepSlope.toFixed(3)} exceeds budget <= ${maxTimeExponent} (sudden super-linear jump at largest n).`);
+    }
+  }
+  const first = ordered[0];
+  if (!first || !last || last.timeMs - first.timeMs <= 0.5) return;
+  const mids: number[] = [];
+  const marginals: number[] = [];
+  for (let i = 0; i < ordered.length - 1; i++) {
+    const a = ordered[i]; const b = ordered[i + 1];
+    if (!a || !b || b.n <= a.n) continue;
+    const dt = b.timeMs - a.timeMs;
+    if (dt <= 0) { mids.length = 0; break; }
+    mids.push((a.n + b.n) / 2);
+    marginals.push(dt / (b.n - a.n));
+  }
+  if (mids.length >= 3) {
+    const marginalFit = fitLogLogSlope(mids, marginals);
+    const inferredExp = Number((1 + marginalFit.slope).toFixed(3));
+    if (marginalFit.r2 >= 0.85 && inferredExp > maxTimeExponent + 0.25) {
+      reasons.push(`Intercept-adjusted time scaling exponent ${inferredExp} (${classifyExponent(inferredExp)}) exceeds budget <= ${maxTimeExponent} (constant overhead masking super-linear growth).`);
+    }
+  }
+}
+
 export function fitEmpiricalBigO(
   samples: readonly ScalingSample[],
   thresholds: BigOThresholds = { maxTimeExponent: 1.45 },
 ): EmpiricalBigOResult {
   const fail = (timeClass: string, reasons: string[]): EmpiricalBigOResult => ({
-    sampleCount: samples.length,
-    timeExponent: 0,
-    timeR2: 0,
-    timeClass,
-    spaceExponent: null,
-    spaceR2: null,
-    spaceClass: null,
-    passed: false,
-    reasons,
+    sampleCount: samples.length, timeExponent: 0, timeR2: 0, timeClass, spaceExponent: null, spaceR2: null, spaceClass: null, passed: false, reasons,
   });
-
   if (!Number.isFinite(thresholds.maxTimeExponent) || thresholds.maxTimeExponent <= 0 || thresholds.maxTimeExponent > 2.5) {
     return fail("invalid_threshold", [`Invalid maxTimeExponent (${String(thresholds.maxTimeExponent)}); must be in (0, 2.5].`]);
   }
@@ -87,116 +122,36 @@ export function fitEmpiricalBigO(
   if (!Array.isArray(samples) || samples.length < 3) {
     return fail("insufficient_samples", ["At least 3 scaling sizes (e.g., N, 2N, 4N, 8N) are required to fit empirical Big-O."]);
   }
-  const invalidSample = samples.some(
-    (s) => !s || typeof s.n !== "number" || typeof s.timeMs !== "number" || !Number.isFinite(s.n) || !Number.isFinite(s.timeMs) || s.n <= 0 || s.timeMs <= 0,
-  );
-  if (invalidSample) {
+  if (samples.some((s) => !s || typeof s.n !== "number" || typeof s.timeMs !== "number" || !Number.isFinite(s.n) || !Number.isFinite(s.timeMs) || s.n <= 0 || s.timeMs <= 0)) {
     return fail("invalid_samples", ["All scaling samples must have finite positive n and timeMs > 0."]);
   }
   const distinctN = new Set(samples.map((s) => s.n));
-  if (distinctN.size < 3) {
-    return fail("degenerate_samples", [`At least 3 distinct input sizes n are required (found ${distinctN.size}).`]);
-  }
+  if (distinctN.size < 3) return fail("degenerate_samples", [`At least 3 distinct input sizes n are required (found ${distinctN.size}).`]);
 
   const ordered = [...samples].sort((a, b) => a.n - b.n);
-  const minN = ordered[0]?.n ?? 1;
-  const maxN = ordered[ordered.length - 1]?.n ?? 1;
-  if (maxN / minN < 2) {
-    return fail("degenerate_samples", [`Input size span max(n)/min(n) = ${(maxN / minN).toFixed(2)} is < 2x (need at least 2x scaling range).`]);
-  }
-  const ns = ordered.map((s) => s.n);
-  const times = ordered.map((s) => s.timeMs);
-  const timeFit = fitLogLogSlope(ns, times);
-  const timeClass = classifyExponent(timeFit.slope);
-  const minT = Math.min(...times);
-  const maxT = Math.max(...times);
-  const trulyFlatConstant = maxT / Math.max(minT, 1e-9) <= 1.25;
+  const minN = ordered[0]?.n ?? 1; const maxN = ordered[ordered.length - 1]?.n ?? 1;
+  if (maxN / minN < 2) return fail("degenerate_samples", [`Input size span max(n)/min(n) = ${(maxN / minN).toFixed(2)} is < 2x (need at least 2x scaling range).`]);
 
+  const times = ordered.map((s) => s.timeMs);
+  const timeFit = fitLogLogSlope(ordered.map((s) => s.n), times);
+  const timeClass = classifyExponent(timeFit.slope);
+  const trulyFlatConstant = Math.max(...times) / Math.max(Math.min(...times), 1e-9) <= 1.25;
   const memPairs = ordered.filter((s) => typeof s.memoryBytes === "number" && Number.isFinite(s.memoryBytes) && s.memoryBytes > 0);
-  const spaceFit =
-    memPairs.length >= 3 && new Set(memPairs.map((s) => s.n)).size >= 3
-      ? fitLogLogSlope(
-          memPairs.map((s) => s.n),
-          memPairs.map((s) => s.memoryBytes ?? 0),
-        )
-      : null;
+  const spaceFit = memPairs.length >= 3 && new Set(memPairs.map((s) => s.n)).size >= 3 ? fitLogLogSlope(memPairs.map((s) => s.n), memPairs.map((s) => s.memoryBytes ?? 0)) : null;
   const spaceClass = spaceFit ? classifyExponent(spaceFit.slope) : null;
 
   const reasons: string[] = [];
-  if (!trulyFlatConstant && timeFit.r2 < 0.5) {
-    reasons.push(`Log-log fit R2=${timeFit.r2} is below 0.5 reliability floor (noisy or non-monotonic timings).`);
-  }
-  if (timeFit.slope > thresholds.maxTimeExponent) {
-    reasons.push(
-      `Time scaling exponent ${timeFit.slope} (${timeClass}) exceeds budget <= ${thresholds.maxTimeExponent}.`,
-    );
-  }
-  if (ordered.length >= 4) {
-    const tail = ordered.slice(Math.min(Math.floor(ordered.length / 2), ordered.length - 3));
-    const tailMinN = tail[0]?.n ?? 1;
-    const tailMaxN = tail[tail.length - 1]?.n ?? 1;
-    if (tail.length >= 3 && tailMaxN / tailMinN >= 2) {
-      const tailFit = fitLogLogSlope(tail.map((s) => s.n), tail.map((s) => s.timeMs));
-      if (tailFit.r2 >= 0.65 && tailFit.slope > thresholds.maxTimeExponent + 0.2) {
-        reasons.push(
-          `Upper-half tail scaling exponent ${tailFit.slope} (${classifyExponent(tailFit.slope)}) exceeds budget <= ${thresholds.maxTimeExponent} (padded small-n tail).`,
-        );
-      }
-    }
-    const prev = ordered[ordered.length - 2];
-    const last = ordered[ordered.length - 1];
-    if (prev && last && last.n > prev.n && last.timeMs > prev.timeMs) {
-      const finalStepSlope = Math.log(last.timeMs / prev.timeMs) / Math.log(last.n / prev.n);
-      if (finalStepSlope > thresholds.maxTimeExponent + 0.5) {
-        reasons.push(
-          `Final scaling step exponent ${finalStepSlope.toFixed(3)} exceeds budget <= ${thresholds.maxTimeExponent} (sudden super-linear jump at largest n).`,
-        );
-      }
-    }
-    const first = ordered[0];
-    if (first && last && last.timeMs - first.timeMs > 0.5 && ordered.length >= 4) {
-      const mids: number[] = [];
-      const marginals: number[] = [];
-      for (let i = 0; i < ordered.length - 1; i++) {
-        const a = ordered[i];
-        const b = ordered[i + 1];
-        if (!a || !b || b.n <= a.n) continue;
-        const dt = b.timeMs - a.timeMs;
-        if (dt <= 0) { mids.length = 0; break; }
-        mids.push((a.n + b.n) / 2);
-        marginals.push(dt / (b.n - a.n));
-      }
-      if (mids.length >= 3) {
-        const marginalFit = fitLogLogSlope(mids, marginals);
-        const inferredExp = Number((1 + marginalFit.slope).toFixed(3));
-        if (marginalFit.r2 >= 0.85 && inferredExp > thresholds.maxTimeExponent + 0.25) {
-          reasons.push(
-            `Intercept-adjusted time scaling exponent ${inferredExp} (${classifyExponent(inferredExp)}) exceeds budget <= ${thresholds.maxTimeExponent} (constant overhead masking super-linear growth).`,
-          );
-        }
-      }
-    }
-  }
-  if (
-    typeof thresholds.maxSpaceExponent === "number" &&
-    spaceFit !== null &&
-    spaceFit.slope > thresholds.maxSpaceExponent
-  ) {
-    reasons.push(
-      `Space scaling exponent ${spaceFit.slope} (${spaceClass}) exceeds budget <= ${thresholds.maxSpaceExponent}.`,
-    );
+  if (!trulyFlatConstant && timeFit.r2 < 0.5) reasons.push(`Log-log fit R2=${timeFit.r2} is below 0.5 reliability floor (noisy or non-monotonic timings).`);
+  if (timeFit.slope > thresholds.maxTimeExponent) reasons.push(`Time scaling exponent ${timeFit.slope} (${timeClass}) exceeds budget <= ${thresholds.maxTimeExponent}.`);
+  checkTailAndInterceptScaling(ordered, thresholds.maxTimeExponent, reasons);
+  if (typeof thresholds.maxSpaceExponent === "number" && spaceFit !== null && spaceFit.slope > thresholds.maxSpaceExponent) {
+    reasons.push(`Space scaling exponent ${spaceFit.slope} (${spaceClass}) exceeds budget <= ${thresholds.maxSpaceExponent}.`);
   }
 
   return {
-    sampleCount: ordered.length,
-    timeExponent: timeFit.slope,
-    timeR2: timeFit.r2,
-    timeClass,
-    spaceExponent: spaceFit ? spaceFit.slope : null,
-    spaceR2: spaceFit ? spaceFit.r2 : null,
-    spaceClass,
-    passed: reasons.length === 0,
-    reasons,
+    sampleCount: ordered.length, timeExponent: timeFit.slope, timeR2: timeFit.r2, timeClass,
+    spaceExponent: spaceFit ? spaceFit.slope : null, spaceR2: spaceFit ? spaceFit.r2 : null, spaceClass,
+    passed: reasons.length === 0, reasons,
   };
 }
 
@@ -206,10 +161,10 @@ export function measureEmpiricalBigO<TInput>(
   scales: readonly number[],
   options: { repeats?: number; maxTimeExponent?: number } = {},
 ): { samples: ScalingSample[]; result: EmpiricalBigOResult } {
+  if (!Array.isArray(scales)) throw new Error("scales must be an array.");
   const repeats = Math.max(1, options.repeats ?? 3);
-  if (scales.length > 0) {
-    run(buildInput(scales[0] ?? 16, 0));
-  }
+  if (repeats < 1) throw new Error("repeats must be positive.");
+  if (scales.length > 0) run(buildInput(scales[0] ?? 16, 0));
 
   const samples: ScalingSample[] = [];
   for (const n of scales) {
@@ -229,8 +184,6 @@ export function measureEmpiricalBigO<TInput>(
     samples.push({ n, timeMs: Number(median.toFixed(4)) });
   }
 
-  const result = fitEmpiricalBigO(samples, {
-    maxTimeExponent: options.maxTimeExponent ?? 1.45,
-  });
+  const result = fitEmpiricalBigO(samples, { maxTimeExponent: options.maxTimeExponent ?? 1.45 });
   return { samples, result };
 }

@@ -89,248 +89,103 @@ function parseFormalChecks(repo: DiscoveredRepo): { planRel: string; entries: Fo
   }
 }
 
+interface FormalAuditCtx {
+  planRel: string;
+  repo: DiscoveredRepo;
+  allPathSet: ReadonlySet<string>;
+  findings: Finding[];
+}
+
+function validateFormalEntryStructure(entry: FormalCheckEntry, ctx: FormalAuditCtx): boolean {
+  const isContract = entry.kind === "contract";
+  const label = isContract ? "Contract check" : "Formal check";
+  if (!entry.specFile || !ctx.allPathSet.has(entry.specFile)) {
+    ctx.findings.push({ id: `FS:missing:${entry.id}`, rule: isContract ? "contract-artifact-missing" : "formal-spec-missing", category: "oracle-lock", rung: isContract ? "R3" : "R5", severity: "error", file: ctx.planRel, line: 1, message: `${label} '${entry.id}' references missing artifact '${entry.specFile}'.`, fix: isContract ? "Regenerate the contract/OpenAPI/index baseline or update contractChecks[].artifactFile in the control plan." : "Restore the formal spec or update formalChecks[].specFile in the control plan." });
+    return false;
+  }
+  if (!entry.syncCommit || entry.syncCommit.startsWith("-") || !/^[0-9a-fA-F]{7,40}$/.test(entry.syncCommit)) {
+    ctx.findings.push({ id: `FS:bad-commit:${entry.id}`, rule: "formal-sync-invalid-commit", category: "oracle-lock", rung: "R5", severity: "error", file: ctx.planRel, line: 1, message: `Formal check '${entry.id}' has invalid syncCommit '${entry.syncCommit}'.`, fix: "Record the exact 7-40 char git commit SHA where the formal model was last verified against covered code." });
+    return false;
+  }
+  if (entry.coveredPaths.length === 0) {
+    ctx.findings.push({ id: `FS:empty-covered:${entry.id}`, rule: "formal-sync-empty-covered-paths", category: "oracle-lock", rung: isContract ? "R3" : "R5", severity: "error", file: ctx.planRel, line: 1, message: `${label} '${entry.id}' declares empty coveredPaths, which disables drift detection.`, fix: "List all production paths governed by this formal/contract spec in coveredPaths." });
+    return false;
+  }
+  const missingCovered = entry.coveredPaths.filter((p) => !ctx.allPathSet.has(p));
+  if (missingCovered.length > 0) {
+    ctx.findings.push({ id: `FS:missing-covered:${entry.id}`, rule: "formal-covered-path-missing", category: "oracle-lock", rung: isContract ? "R3" : "R5", severity: "error", file: ctx.planRel, line: 1, message: `${label} '${entry.id}' references missing covered path(s): ${missingCovered.join(", ")}.`, fix: "Restore the covered paths or update coveredPaths in the control plan and re-verify." });
+    return false;
+  }
+  const specAbs = path.resolve(ctx.repo.root, entry.specFile);
+  const specText = fs.existsSync(specAbs) && fs.statSync(specAbs).isFile() ? fs.readFileSync(specAbs, "utf8") : "";
+  if (!specText.trim()) {
+    ctx.findings.push({ id: `FS:empty-spec:${entry.id}`, rule: "formal-spec-missing", category: "oracle-lock", rung: isContract ? "R3" : "R5", severity: "error", file: entry.specFile, line: 1, message: `${label} '${entry.id}' spec file '${entry.specFile}' is empty.`, fix: `Populate '${entry.specFile}' with real formal/contract specifications.` });
+    return false;
+  }
+  return true;
+}
+
+function auditFormalEntryGitDrift(entry: FormalCheckEntry, ctx: FormalAuditCtx): void {
+  if (!entry.syncCommit) return;
+  const isContract = entry.kind === "contract";
+  const label = isContract ? "Contract check" : "Formal check";
+  const runGit = (args: readonly string[]) => runGitClean(ctx.repo.root, args);
+  const topRes = runGit(["rev-parse", "--show-toplevel"]);
+  const realRoot = (() => { try { return fs.realpathSync(ctx.repo.root); } catch { return path.resolve(ctx.repo.root); } })();
+  const realTop = topRes.status === 0 && topRes.stdout.trim() ? (() => { try { return fs.realpathSync(topRes.stdout.trim()); } catch { return path.resolve(topRes.stdout.trim()); } })() : "";
+  if (topRes.status !== 0 || realTop !== realRoot) {
+    ctx.findings.push({ id: `FS:no-git:${entry.id}`, rule: "formal-sync-unknown-commit", category: "oracle-lock", rung: "R5", severity: "error", file: ctx.planRel, line: 1, message: `Formal check '${entry.id}' cannot verify syncCommit '${entry.syncCommit}': target directory is not a git repository root.`, fix: "Run formal-sync inside a real git checkout with commit history available." });
+    return;
+  }
+  if (runGit(["merge-base", "--is-ancestor", entry.syncCommit, "HEAD"]).status !== 0) {
+    const isShallow = (runGit(["rev-parse", "--is-shallow-repository"]).stdout ?? "").trim() === "true";
+    ctx.findings.push({ id: `FS:unknown-commit:${entry.id}`, rule: "formal-sync-unknown-commit", category: "oracle-lock", rung: "R5", severity: "error", file: ctx.planRel, line: 1, message: isShallow ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history — failing closed.` : `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' is not an ancestor of HEAD.`, fix: "Re-verify the formal model against HEAD and advance syncCommit to a commit on the current branch." });
+    return;
+  }
+  if (entry.contentHash) {
+    const actualHash = computeFormalContentHash(ctx.repo.root, entry.specFile, entry.coveredPaths);
+    if (actualHash !== entry.contentHash) {
+      ctx.findings.push({ id: `FS:hash-drift:${entry.id}`, rule: isContract ? "contract-artifact-stale" : "formal-spec-stale", category: "oracle-lock", rung: isContract ? "R3" : "R5", severity: "error", file: entry.specFile, line: 1, message: `${label} '${entry.id}' contentHash mismatch (spec or covered code changed since last verified hash).`, fix: `Re-run the formal/contract verifier and update contentHash to '${actualHash}'.` });
+    }
+    return;
+  }
+  const watchedPaths = [...new Set([entry.specFile, ...entry.coveredPaths])];
+  const dirtyRes = runGit(["status", "--porcelain", "--", ...watchedPaths]);
+  if (dirtyRes.status !== 0) {
+    ctx.findings.push({ id: `FS:git-status-fail:${entry.id}`, rule: "formal-sync-unknown-commit", category: "oracle-lock", rung: "R5", severity: "error", file: ctx.planRel, line: 1, message: `Formal check '${entry.id}' failed running git status — failing closed.`, fix: "Ensure git repository metadata is intact and readable." });
+    return;
+  }
+  const dirtyLines = (dirtyRes.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (dirtyLines.length > 0) {
+    ctx.findings.push({ id: `FS:dirty:${entry.id}`, rule: isContract ? "contract-artifact-stale" : "formal-spec-stale", category: "oracle-lock", rung: isContract ? "R3" : "R5", severity: "error", file: entry.specFile, line: 1, message: `${label} '${entry.id}' has uncommitted edits on covered path(s): ${dirtyLines.join(", ")}.`, fix: "Re-verify covered code, commit or update contentHash, and advance syncCommit." });
+    return;
+  }
+  const logRes = runGit(["log", "--oneline", `${entry.syncCommit}..HEAD`, "--", ...watchedPaths]);
+  if (logRes.status !== 0) {
+    ctx.findings.push({ id: `FS:git-log-fail:${entry.id}`, rule: "formal-sync-unknown-commit", category: "oracle-lock", rung: "R5", severity: "error", file: ctx.planRel, line: 1, message: `Formal check '${entry.id}' failed running git log — failing closed.`, fix: "Ensure git history is intact and readable." });
+    return;
+  }
+  const commits = (logRes.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (commits.length > 0) {
+    ctx.findings.push({ id: `FS:stale:${entry.id}`, rule: isContract ? "contract-artifact-stale" : "formal-spec-stale", category: "oracle-lock", rung: isContract ? "R3" : "R5", severity: "error", file: entry.specFile, line: 1, message: `${label} '${entry.id}' is stale: ${commits.length} commit(s) modified covered code since ${entry.syncCommit.slice(0, 7)} (${commits[0]}).`, fix: isContract ? "Regenerate/verify the OpenAPI baseline, consumer manifest, or DB index file against HEAD and advance syncCommit." : "Re-audit covered paths against the formal spec, rerun the verifier, prove a scratch break fails, and advance syncCommit." });
+  }
+}
+
 export function auditFormalSync(repo: DiscoveredRepo): Finding[] {
   if (!fs.existsSync(repo.root)) {
-    return [{
-      id: `FS:missing-root:${repo.root}`,
-      rule: "formal-plan-malformed",
-      category: "oracle-lock",
-      rung: "R5",
-      severity: "error",
-      file: repo.root,
-      line: 1,
-      message: `Target repository directory '${repo.root}' does not exist.`,
-      fix: "Pass an existing repository root directory to formal-sync.",
-    }];
+    return [{ id: `FS:missing-root:${repo.root}`, rule: "formal-plan-malformed", category: "oracle-lock", rung: "R5", severity: "error", file: repo.root, line: 1, message: `Target repository directory '${repo.root}' does not exist.`, fix: "Pass an existing repository root directory to formal-sync." }];
   }
   const parsed = parseFormalChecks(repo);
   if (!parsed) return [];
   if (parsed.error) {
-    return [
-      {
-        id: `FS:malformed:${parsed.planRel}`,
-        rule: "formal-plan-malformed",
-        category: "oracle-lock",
-        rung: "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: parsed.error,
-        fix: `Fix JSON syntax in ${parsed.planRel}; formal sync fails closed on unreadable control plans.`,
-      },
-    ];
+    return [{ id: `FS:malformed:${parsed.planRel}`, rule: "formal-plan-malformed", category: "oracle-lock", rung: "R5", severity: "error", file: parsed.planRel, line: 1, message: parsed.error, fix: `Fix JSON syntax in ${parsed.planRel}; formal sync fails closed on unreadable control plans.` }];
   }
   if (parsed.entries.length === 0) return [];
-
   const findings: Finding[] = [];
-  const allPathSet = new Set(repo.allRelPaths);
-
+  const ctx: FormalAuditCtx = { planRel: parsed.planRel, repo, allPathSet: new Set(repo.allRelPaths), findings };
   for (const entry of parsed.entries) {
-    const isContract = entry.kind === "contract";
-    const label = isContract ? "Contract check" : "Formal check";
-    if (!entry.specFile || !allPathSet.has(entry.specFile)) {
-      findings.push({
-        id: `FS:missing:${entry.id}`,
-        rule: isContract ? "contract-artifact-missing" : "formal-spec-missing",
-        category: "oracle-lock",
-        rung: isContract ? "R3" : "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: `${label} '${entry.id}' references missing artifact '${entry.specFile}'.`,
-        fix: isContract
-          ? "Regenerate the contract/OpenAPI/index baseline or update contractChecks[].artifactFile in the control plan."
-          : "Restore the formal spec or update formalChecks[].specFile in the control plan.",
-      });
-      continue;
-    }
-
-    if (!entry.syncCommit || entry.syncCommit.startsWith("-") || !/^[0-9a-fA-F]{7,40}$/.test(entry.syncCommit)) {
-      findings.push({
-        id: `FS:bad-commit:${entry.id}`,
-        rule: "formal-sync-invalid-commit",
-        category: "oracle-lock",
-        rung: "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: `Formal check '${entry.id}' has invalid syncCommit '${entry.syncCommit}'.`,
-        fix: "Record the exact 7-40 char git commit SHA where the formal model was last verified against covered code.",
-      });
-      continue;
-    }
-
-    if (entry.coveredPaths.length === 0) {
-      findings.push({
-        id: `FS:empty-covered:${entry.id}`,
-        rule: "formal-sync-empty-covered-paths",
-        category: "oracle-lock",
-        rung: isContract ? "R3" : "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: `${label} '${entry.id}' declares empty coveredPaths, which disables drift detection.`,
-        fix: "List all production paths governed by this formal/contract spec in coveredPaths.",
-      });
-      continue;
-    }
-
-    const missingCovered = entry.coveredPaths.filter((p) => !allPathSet.has(p));
-    if (missingCovered.length > 0) {
-      findings.push({
-        id: `FS:missing-covered:${entry.id}`,
-        rule: "formal-covered-path-missing",
-        category: "oracle-lock",
-        rung: isContract ? "R3" : "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: `${label} '${entry.id}' references missing covered path(s): ${missingCovered.join(", ")}.`,
-        fix: "Restore the covered paths or update coveredPaths in the control plan and re-verify.",
-      });
-      continue;
-    }
-
-    const runGit = (args: readonly string[]) => runGitClean(repo.root, args);
-    const specAbs = path.resolve(repo.root, entry.specFile);
-    const specText = fs.existsSync(specAbs) && fs.statSync(specAbs).isFile() ? fs.readFileSync(specAbs, "utf8") : "";
-    if (!specText.trim()) {
-      findings.push({
-        id: `FS:empty-spec:${entry.id}`,
-        rule: "formal-spec-missing",
-        category: "oracle-lock",
-        rung: isContract ? "R3" : "R5",
-        severity: "error",
-        file: entry.specFile,
-        line: 1,
-        message: `${label} '${entry.id}' spec file '${entry.specFile}' is empty.`,
-        fix: `Populate '${entry.specFile}' with real formal/contract specifications.`,
-      });
-      continue;
-    }
-    const topRes = runGit(["rev-parse", "--show-toplevel"]);
-    const realRoot = (() => { try { return fs.realpathSync(repo.root); } catch { return path.resolve(repo.root); } })();
-    const realTop = topRes.status === 0 && topRes.stdout.trim() ? (() => { try { return fs.realpathSync(topRes.stdout.trim()); } catch { return path.resolve(topRes.stdout.trim()); } })() : "";
-    const isGitRepo = topRes.status === 0 && realTop === realRoot;
-    if (!isGitRepo) {
-      findings.push({
-        id: `FS:no-git:${entry.id}`,
-        rule: "formal-sync-unknown-commit",
-        category: "oracle-lock",
-        rung: "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: `Formal check '${entry.id}' cannot verify syncCommit '${entry.syncCommit}': target directory is not a git repository root.`,
-        fix: "Run formal-sync inside a real git checkout with commit history available.",
-      });
-      continue;
-    }
-    const ancestor = runGit(["merge-base", "--is-ancestor", entry.syncCommit, "HEAD"]);
-    if (ancestor.status !== 0) {
-      const isShallow = (runGit(["rev-parse", "--is-shallow-repository"]).stdout ?? "").trim() === "true";
-      findings.push({
-        id: `FS:unknown-commit:${entry.id}`,
-        rule: "formal-sync-unknown-commit",
-        category: "oracle-lock",
-        rung: "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: isShallow
-          ? `Formal check '${entry.id}' syncCommit '${entry.syncCommit.slice(0, 7)}' is outside shallow clone history — failing closed.`
-          : `Formal check '${entry.id}' syncCommit '${entry.syncCommit}' is not an ancestor of HEAD.`,
-        fix: "Re-verify the formal model against HEAD and advance syncCommit to a commit on the current branch.",
-      });
-      continue;
-    }
-
-    if (entry.contentHash) {
-      const actualHash = computeFormalContentHash(repo.root, entry.specFile, entry.coveredPaths);
-      if (actualHash !== entry.contentHash) {
-        findings.push({
-          id: `FS:hash-drift:${entry.id}`,
-          rule: isContract ? "contract-artifact-stale" : "formal-spec-stale",
-          category: "oracle-lock",
-          rung: isContract ? "R3" : "R5",
-          severity: "error",
-          file: entry.specFile,
-          line: 1,
-          message: `${label} '${entry.id}' contentHash mismatch (spec or covered code changed since last verified hash).`,
-          fix: `Re-run the formal/contract verifier and update contentHash to '${actualHash}'.`,
-        });
-      }
-      continue;
-    }
-
-    const watchedPaths = [...new Set([entry.specFile, ...entry.coveredPaths])];
-    const dirtyRes = runGit(["status", "--porcelain", "--", ...watchedPaths]);
-    if (dirtyRes.status !== 0) {
-      findings.push({
-        id: `FS:git-status-fail:${entry.id}`,
-        rule: "formal-sync-unknown-commit",
-        category: "oracle-lock",
-        rung: "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: `Formal check '${entry.id}' failed running git status — failing closed.`,
-        fix: "Ensure git repository metadata is intact and readable.",
-      });
-      continue;
-    }
-    const dirtyLines = (dirtyRes.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    if (dirtyLines.length > 0) {
-      findings.push({
-        id: `FS:dirty:${entry.id}`,
-        rule: isContract ? "contract-artifact-stale" : "formal-spec-stale",
-        category: "oracle-lock",
-        rung: isContract ? "R3" : "R5",
-        severity: "error",
-        file: entry.specFile,
-        line: 1,
-        message: `${label} '${entry.id}' has uncommitted edits on covered path(s): ${dirtyLines.join(", ")}.`,
-        fix: "Re-verify covered code, commit or update contentHash, and advance syncCommit.",
-      });
-      continue;
-    }
-    const logRes = runGit(["log", "--oneline", `${entry.syncCommit}..HEAD`, "--", ...watchedPaths]);
-    if (logRes.status !== 0) {
-      findings.push({
-        id: `FS:git-log-fail:${entry.id}`,
-        rule: "formal-sync-unknown-commit",
-        category: "oracle-lock",
-        rung: "R5",
-        severity: "error",
-        file: parsed.planRel,
-        line: 1,
-        message: `Formal check '${entry.id}' failed running git log — failing closed.`,
-        fix: "Ensure git history is intact and readable.",
-      });
-      continue;
-    }
-    const commits = (logRes.stdout ?? "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (commits.length > 0) {
-      findings.push({
-        id: `FS:stale:${entry.id}`,
-        rule: isContract ? "contract-artifact-stale" : "formal-spec-stale",
-        category: "oracle-lock",
-        rung: isContract ? "R3" : "R5",
-        severity: "error",
-        file: entry.specFile,
-        line: 1,
-        message: `${label} '${entry.id}' is stale: ${commits.length} commit(s) modified covered code since ${entry.syncCommit.slice(0, 7)} (${commits[0]}).`,
-        fix: isContract
-          ? "Regenerate/verify the OpenAPI baseline, consumer manifest, or DB index file against HEAD and advance syncCommit."
-          : "Re-audit covered paths against the formal spec, rerun the verifier, prove a scratch break fails, and advance syncCommit.",
-      });
-    }
+    if (validateFormalEntryStructure(entry, ctx)) auditFormalEntryGitDrift(entry, ctx);
   }
-
   return findings;
 }
 

@@ -11,15 +11,18 @@ interface SessionLike {
   close(): Promise<void>;
 }
 
-export async function runSafeWebOps(
-  page: PageLike,
-  table: TableLike,
-  session: SessionLike,
-  rawToken: string,
-  cacheControl: string,
-  minFloor: number,
-  requested: number,
-): Promise<unknown> {
+export interface SafeWebOpsInput {
+  page: PageLike;
+  table: TableLike;
+  session: SessionLike;
+  rawToken: string;
+  cacheControl: string;
+  minFloor: number;
+  requested: number;
+}
+
+export async function runSafeWebOps(input: SafeWebOpsInput): Promise<unknown> {
+  const { page, table, session, rawToken, cacheControl, minFloor, requested } = input;
   await page.addInitScript(`window.token = ${JSON.stringify(rawToken)}`);
   const dict = Object.create(null) as Record<string, string>;
   await table.deleteMany({ where: { tenantId: "tenant-1" } });

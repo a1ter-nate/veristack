@@ -69,6 +69,8 @@ function auditBendLawFile(
   pairedProof: ScannedFile | undefined,
   findings: Finding[],
 ): number {
+  if (!file.content) return 0;
+  if (!Array.isArray(findings)) throw new Error("Findings array is required.");
   const declared: Array<{ name: string; offset: number }> = [];
   for (const m of file.content.matchAll(BEND_LAW_DECL)) {
     if (m[1]) declared.push({ name: m[1], offset: m.index ?? 0 });
@@ -120,6 +122,8 @@ function runBendVerdict(
   findings: Finding[],
   verifiedBackends: LawCheckResult["verifiedBackends"],
 ): void {
+  if (!repoRoot) throw new Error("repoRoot is required for Bend verdict.");
+  if (!relPath) throw new Error("relPath is required for Bend verdict.");
   const bendBin = resolveBendBinary();
   const absFile = path.join(repoRoot, relPath);
   const useKernel = Boolean(process.env.BENDTT);
@@ -164,163 +168,128 @@ function runBendVerdict(
   }
 }
 
-function auditJsonLawFile(
-  file: ScannedFile,
-  repo: DiscoveredRepo,
+interface JsonLawEntry {
+  id?: string;
+  witnessRef?: string;
+  invariant?: string;
+  verifyArgs?: string[];
+}
+
+interface JsonLawAuditCtx {
+  findings: Finding[];
+  verifiedBackends: LawCheckResult["verifiedBackends"];
+  verify: boolean;
+}
+
+function resolveLawCommand(
+  law: JsonLawEntry,
+  meta: { ref: string; fileRel: string; id: string; repoRoot: string },
   findings: Finding[],
-  verifiedBackends: LawCheckResult["verifiedBackends"],
-  verify: boolean,
-): number {
-  try {
-    const parsed = JSON.parse(file.content) as {
-      laws?: Array<{ id?: string; witnessRef?: string; invariant?: string; verifyArgs?: string[] }>;
-    };
-    const laws = Array.isArray(parsed.laws) ? parsed.laws : [];
-    const allPaths = new Set(repo.allRelPaths);
-    for (const law of laws) {
-      const id = law.id ?? "unnamed";
-      if (!law.witnessRef || !allPaths.has(law.witnessRef)) {
-        findings.push({
-          id: `LAW:json-witness:${file.rel}:${id}`,
-          rule: "laws-missing-witness",
-          category: "oracle-lock",
-          rung: "R3",
-          severity: "error",
-          file: file.rel,
-          line: 1,
-          message: `Executable law '${id}' in ${file.rel} references missing witness '${law.witnessRef ?? ""}'.`,
-          fix: "Point witnessRef to an existing Bend 2 proof, Quint spec, Kani harness, or PBT/MBT test file.",
-        });
-        continue;
+): [string, string[], string] | "invalid" | null {
+  if (!meta.ref) return null;
+  if (Array.isArray(law.verifyArgs) && law.verifyArgs.length > 0 && typeof law.verifyArgs[0] === "string") {
+    const rawCmd = law.verifyArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
+    const validated = parseAndValidateCommandArgv("canary", rawCmd, meta.repoRoot);
+    const normRef = meta.ref.replace(/\\/g, "/").replace(/^\.\//, "");
+    const refDir = path.posix.dirname(normRef);
+    const isSingleFileTest = /\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.py$|(?:^|\/)test_[^/]+\.py$/i.test(normRef);
+    const mentionsWitness = law.verifyArgs.some((a) => {
+      const normA = a.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+      if (!normA || normA.startsWith("-")) return false;
+      if (normA === normRef) return true;
+      if (isSingleFileTest) return false;
+      if (refDir !== "." && normA === refDir) return true;
+      if (/(?:Cargo\.toml|\.csproj|\.slnx|pyproject\.toml)$/i.test(normA)) {
+        const manifestDir = path.posix.dirname(normA);
+        if (manifestDir !== "." && normRef.startsWith(`${manifestDir}/`)) return true;
       }
-      if (verify) {
-        const ref = law.witnessRef;
-        if (ref.endsWith(".bend")) {
-          runBendVerdict(repo.root, ref, findings, verifiedBackends);
-          continue;
-        }
-        let cmdArgs: [string, string[], string] | null = null;
-        if (Array.isArray(law.verifyArgs) && law.verifyArgs.length > 0 && typeof law.verifyArgs[0] === "string") {
-          const rawCmd = law.verifyArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
-          const validated = parseAndValidateCommandArgv("canary", rawCmd, repo.root);
-          const normRef = ref.replace(/\\/g, "/").replace(/^\.\//, "");
-          const refDir = path.posix.dirname(normRef);
-          const isSingleFileTest = /\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.py$|(?:^|\/)test_[^/]+\.py$/i.test(normRef);
-          const mentionsWitness = law.verifyArgs.some((a) => {
-            const normA = a.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
-            if (!normA || normA.startsWith("-")) return false;
-            if (normA === normRef) return true;
-            if (isSingleFileTest) return false;
-            if (refDir !== "." && normA === refDir) return true;
-            if (/(?:Cargo\.toml|\.csproj|\.slnx|pyproject\.toml)$/i.test(normA)) {
-              const manifestDir = path.posix.dirname(normA);
-              if (manifestDir !== "." && normRef.startsWith(`${manifestDir}/`)) return true;
-            }
-            if (normA !== "." && !/\.[A-Za-z0-9]+$/.test(normA) && normRef.startsWith(`${normA}/`)) return true;
-            return false;
-          });
-          if (validated.error || validated.steps.length !== 1 || !mentionsWitness) {
-            findings.push({
-              id: `LAW:invalid-runner:${file.rel}:${id}`,
-              rule: "laws-invalid-verifier",
-              category: "oracle-lock",
-              rung: "R3",
-              severity: "error",
-              file: file.rel,
-              line: 1,
-              message: `Executable law '${id}' declares disallowed verifyArgs ('${law.verifyArgs.join(" ")}'): ${validated.error ?? `must reference witness '${ref}'`}.`,
-              fix: "Use a bare allowlisted test/formal verifier referencing the witness path with safe flags only.",
-            });
-            continue;
-          }
-          cmdArgs = [law.verifyArgs[0], law.verifyArgs.slice(1), repo.root];
-        } else if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(ref)) {
-          cmdArgs = ["bun", ["test", path.join(repo.root, ref)], repo.root];
-        } else if (/(?:^|\/)test_[^/]+\.py$|_test\.py$/.test(ref)) {
-          cmdArgs = ["pytest", [path.join(repo.root, ref)], repo.root];
-        } else if (ref.endsWith("_test.go")) {
-          cmdArgs = ["go", ["test", "-count=1", "-v", "."], path.dirname(path.join(repo.root, ref))];
-        }
-        if (!cmdArgs) {
-          verifiedBackends.push({ file: ref, backend: "none", status: "failed", detail: "no executable witness runner" });
-          findings.push({
-            id: `LAW:unverifiable:${file.rel}:${id}`,
-            rule: "laws-unverifiable-witness",
-            category: "oracle-lock",
-            rung: "R3",
-            severity: "error",
-            file: file.rel,
-            line: 1,
-            message: `Executable law '${id}' witness '${ref}' has no runnable verifier backend under --verify.`,
-            fix: "Point witnessRef to a .bend/.test.*/test_*.py/*_test.go witness or specify allowlisted verifyArgs.",
-          });
-          continue;
-        }
-        const run = spawnSync(cmdArgs[0], cmdArgs[1], { cwd: cmdArgs[2], shell: false, encoding: "utf8", timeout: 45_000 });
-        const out = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
-        const cargoPassedSum = [...out.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/gi)].reduce((acc, m) => acc + Number(m[1] ?? 0), 0);
-        const dotnetPassedSum = [...out.matchAll(/\bPassed:\s*(\d+)/gi)].reduce((acc, m) => acc + Number(m[1] ?? 0), 0);
-        const hasPositivePass =
-          cargoPassedSum > 0 ||
-          dotnetPassedSum > 0 ||
-          /^\s*[1-9]\d*\s+pass\b|\b[1-9]\d*\s+passed\b|^---\s+PASS:|^\s*(?:ℹ|#)\s*pass\s+[1-9]\d*/im.test(out);
-        const zeroTests =
-          !hasPositivePass &&
-          (/(?:\b0\s+pass\b|\b0\s+passed\b|\bcollected\s+0\s+items\b|\[no\s+tests\s+to\s+run\]|\bno\s+tests\s+found\b|\b0\s+tests?\s+ran\b)/i.test(out) ||
-            /^\s*$/.test(out) ||
-            /^(?:bun|node|pytest|vitest|jest|cargo|dotnet|go)$/i.test(cmdArgs[0]));
-        if (run.error) {
-          verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "failed", detail: `${cmdArgs[0]} not on PATH` });
-          findings.push({
-            id: `LAW:verifier-missing:${file.rel}:${id}`,
-            rule: "laws-verifier-missing",
-            category: "oracle-lock",
-            rung: "R3",
-            severity: "error",
-            file: ref,
-            line: 1,
-            message: `Executable law '${id}' could not be verified: runner '${cmdArgs[0]}' not found on PATH.`,
-            fix: `Install '${cmdArgs[0]}' in CI so --verify executes every law witness without fail-open skips.`,
-          });
-        } else if (run.status === 0 && !zeroTests) {
-          verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "passed", detail: `law '${id}' witness passed` });
-        } else {
-          const detail = zeroTests
-            ? `witness executed 0 tests (${out.trim().slice(0, 120) || "empty output"})`
-            : (run.stderr || run.stdout || "witness failed").trim().slice(0, 200);
-          verifiedBackends.push({ file: ref, backend: cmdArgs[0], status: "failed", detail });
-          findings.push({
-            id: `LAW:witness-fail:${file.rel}:${id}`,
-            rule: zeroTests ? "laws-witness-zero-tests" : "laws-witness-execution-failed",
-            category: "oracle-lock",
-            rung: "R3",
-            severity: "error",
-            file: ref,
-            line: 1,
-            message: `Executable law '${id}' failed mechanical verification via ${cmdArgs[0]}: ${detail}`,
-            fix: `Fix the implementation or witness ${ref} until the law executes >0 tests and passes deterministically.`,
-          });
-        }
-      }
-    }
-    return laws.length;
-  } catch {
-    findings.push({
-      id: `LAW:invalid-json:${file.rel}`,
-      rule: "laws-invalid-json",
-      category: "oracle-lock",
-      rung: "R1",
-      severity: "error",
-      file: file.rel,
-      line: 1,
-      message: `Law manifest ${file.rel} is not valid JSON.`,
-      fix: "Fix JSON syntax with { laws: [{ id, invariant, witnessRef }] }.",
+      return normA !== "." && !/\.[A-Za-z0-9]+$/.test(normA) && normRef.startsWith(`${normA}/`);
     });
+    if (validated.error || validated.steps.length !== 1 || !mentionsWitness) {
+      findings.push({
+        id: `LAW:invalid-runner:${meta.fileRel}:${meta.id}`, rule: "laws-invalid-verifier", category: "oracle-lock", rung: "R3", severity: "error",
+        file: meta.fileRel, line: 1,
+        message: `Executable law '${meta.id}' declares disallowed verifyArgs ('${law.verifyArgs.join(" ")}'): ${validated.error ?? `must reference witness '${meta.ref}'`}.`,
+        fix: "Use a bare allowlisted test/formal verifier referencing the witness path with safe flags only.",
+      });
+      return "invalid";
+    }
+    return [law.verifyArgs[0], law.verifyArgs.slice(1), meta.repoRoot];
+  }
+  if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(meta.ref)) return ["bun", ["test", path.join(meta.repoRoot, meta.ref)], meta.repoRoot];
+  if (/(?:^|\/)test_[^/]+\.py$|_test\.py$/.test(meta.ref)) return ["pytest", [path.join(meta.repoRoot, meta.ref)], meta.repoRoot];
+  if (meta.ref.endsWith("_test.go")) return ["go", ["test", "-count=1", "-v", "."], path.dirname(path.join(meta.repoRoot, meta.ref))];
+  return null;
+}
+
+function executeLawWitness(
+  cmdArgs: [string, string[], string],
+  meta: { ref: string; fileRel: string; id: string },
+  ctx: JsonLawAuditCtx,
+): void {
+  if (!cmdArgs[0]) throw new Error("Missing law verifier executable.");
+  const run = spawnSync(cmdArgs[0], cmdArgs[1], { cwd: cmdArgs[2], shell: false, encoding: "utf8", timeout: 45_000 });
+  const out = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
+  const cargoPassedSum = [...out.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/gi)].reduce((acc, m) => acc + Number(m[1] ?? 0), 0);
+  const dotnetPassedSum = [...out.matchAll(/\bPassed:\s*(\d+)/gi)].reduce((acc, m) => acc + Number(m[1] ?? 0), 0);
+  const hasPositivePass = cargoPassedSum > 0 || dotnetPassedSum > 0 || /^\s*[1-9]\d*\s+pass\b|\b[1-9]\d*\s+passed\b|^---\s+PASS:|^\s*(?:ℹ|#)\s*pass\s+[1-9]\d*/im.test(out);
+  const zeroTests = !hasPositivePass && (/(?:\b0\s+pass\b|\b0\s+passed\b|\bcollected\s+0\s+items\b|\[no\s+tests\s+to\s+run\]|\bno\s+tests\s+found\b|\b0\s+tests?\s+ran\b)/i.test(out) || /^\s*$/.test(out) || /^(?:bun|node|pytest|vitest|jest|cargo|dotnet|go)$/i.test(cmdArgs[0]));
+  if (run.error) {
+    ctx.verifiedBackends.push({ file: meta.ref, backend: cmdArgs[0], status: "failed", detail: `${cmdArgs[0]} not on PATH` });
+    ctx.findings.push({
+      id: `LAW:verifier-missing:${meta.fileRel}:${meta.id}`, rule: "laws-verifier-missing", category: "oracle-lock", rung: "R3", severity: "error",
+      file: meta.ref, line: 1,
+      message: `Executable law '${meta.id}' could not be verified: runner '${cmdArgs[0]}' not found on PATH.`,
+      fix: `Install '${cmdArgs[0]}' in CI so --verify executes every law witness without fail-open skips.`,
+    });
+    return;
+  }
+  if (run.status === 0 && !zeroTests) {
+    ctx.verifiedBackends.push({ file: meta.ref, backend: cmdArgs[0], status: "passed", detail: `law '${meta.id}' witness passed` });
+    return;
+  }
+  const detail = zeroTests ? `witness executed 0 tests (${out.trim().slice(0, 120) || "empty output"})` : (run.stderr || run.stdout || "witness failed").trim().slice(0, 200);
+  ctx.verifiedBackends.push({ file: meta.ref, backend: cmdArgs[0], status: "failed", detail });
+  ctx.findings.push({
+    id: `LAW:witness-fail:${meta.fileRel}:${meta.id}`, rule: zeroTests ? "laws-witness-zero-tests" : "laws-witness-execution-failed", category: "oracle-lock", rung: "R3", severity: "error",
+    file: meta.ref, line: 1,
+    message: `Executable law '${meta.id}' failed mechanical verification via ${cmdArgs[0]}: ${detail}`,
+    fix: `Fix the implementation or witness ${meta.ref} until the law executes >0 tests and passes deterministically.`,
+  });
+}
+
+function auditJsonLawFile(file: ScannedFile, repo: DiscoveredRepo, ctx: JsonLawAuditCtx): number {
+  let parsed: { laws?: JsonLawEntry[] };
+  try { parsed = JSON.parse(file.content) as { laws?: JsonLawEntry[] }; } catch {
+    ctx.findings.push({ id: `LAW:invalid-json:${file.rel}`, rule: "laws-invalid-json", category: "oracle-lock", rung: "R1", severity: "error", file: file.rel, line: 1, message: `Law manifest ${file.rel} is not valid JSON.`, fix: "Fix JSON syntax with { laws: [{ id, invariant, witnessRef }] }." });
     return 0;
   }
+  const laws = Array.isArray(parsed.laws) ? parsed.laws : [];
+  const allPaths = new Set(repo.allRelPaths);
+  for (const law of laws) {
+    const id = law.id ?? "unnamed";
+    if (!law.witnessRef || !allPaths.has(law.witnessRef)) {
+      ctx.findings.push({ id: `LAW:json-witness:${file.rel}:${id}`, rule: "laws-missing-witness", category: "oracle-lock", rung: "R3", severity: "error", file: file.rel, line: 1, message: `Executable law '${id}' in ${file.rel} references missing witness '${law.witnessRef ?? ""}'.`, fix: "Point witnessRef to an existing Bend 2 proof, Quint spec, Kani harness, or PBT/MBT test file." });
+      continue;
+    }
+    if (!ctx.verify) continue;
+    const ref = law.witnessRef;
+    if (ref.endsWith(".bend")) { runBendVerdict(repo.root, ref, ctx.findings, ctx.verifiedBackends); continue; }
+    const cmdArgs = resolveLawCommand(law, { ref, fileRel: file.rel, id, repoRoot: repo.root }, ctx.findings);
+    if (cmdArgs === "invalid") continue;
+    if (!cmdArgs) {
+      ctx.verifiedBackends.push({ file: ref, backend: "none", status: "failed", detail: "no executable witness runner" });
+      ctx.findings.push({ id: `LAW:unverifiable:${file.rel}:${id}`, rule: "laws-unverifiable-witness", category: "oracle-lock", rung: "R3", severity: "error", file: file.rel, line: 1, message: `Executable law '${id}' witness '${ref}' has no runnable verifier backend under --verify.`, fix: "Point witnessRef to a .bend/.test.*/test_*.py/*_test.go witness or specify allowlisted verifyArgs." });
+      continue;
+    }
+    executeLawWitness(cmdArgs, { ref, fileRel: file.rel, id }, ctx);
+  }
+  return laws.length;
 }
 
 export function auditLaws(repo: DiscoveredRepo, options?: { verify?: boolean }): LawCheckResult {
+  if (!repo.root) throw new Error("repo.root is required to audit laws.");
+  if (!Array.isArray(repo.files)) throw new Error("repo.files must be an array.");
   const findings: Finding[] = [];
   const lawFiles: string[] = [];
   const verifiedBackends: LawCheckResult["verifiedBackends"] = [];
@@ -335,21 +304,13 @@ export function auditLaws(repo: DiscoveredRepo, options?: { verify?: boolean }):
     const base = path.posix.basename(file.rel);
     const dir = path.posix.dirname(file.rel);
     const siblingLaws = dir === "." ? "LAWS.bend" : `${dir}/LAWS.bend`;
-    if (base === "PROOF.bend" && filesByRel.has(siblingLaws)) {
-      continue;
-    }
+    if (base === "PROOF.bend" && filesByRel.has(siblingLaws)) continue;
 
     lawFiles.push(file.rel);
-
     if ((hasCodeowners || options?.verify) && !hasCodeownersCoverage(repo, file.rel)) {
       findings.push({
-        id: `LAW:unowned:${file.rel}`,
-        rule: "laws-unowned-by-codeowners",
-        category: "oracle-lock",
-        rung: "R0",
-        severity: "error",
-        file: file.rel,
-        line: 1,
+        id: `LAW:unowned:${file.rel}`, rule: "laws-unowned-by-codeowners", category: "oracle-lock", rung: "R0", severity: "error",
+        file: file.rel, line: 1,
         message: `Law file ${file.rel} is not protected by CODEOWNERS — implementing agents could weaken invariants.`,
         fix: `Lock ${file.rel} (or .verification/laws/ / LAWS.bend) in CODEOWNERS so only human reviewers can modify laws.`,
       });
@@ -359,24 +320,16 @@ export function auditLaws(repo: DiscoveredRepo, options?: { verify?: boolean }):
       const siblingProofRel = dir === "." ? "PROOF.bend" : `${dir}/PROOF.bend`;
       const pairedProof = base === "LAWS.bend" ? filesByRel.get(siblingProofRel) : undefined;
       declaredLaws += auditBendLawFile(file, pairedProof, findings);
-      if (options?.verify) {
-        const targetRel = pairedProof ? pairedProof.rel : file.rel;
-        runBendVerdict(repo.root, targetRel, findings, verifiedBackends);
-      }
+      if (options?.verify) runBendVerdict(repo.root, pairedProof ? pairedProof.rel : file.rel, findings, verifiedBackends);
     } else if (file.rel.endsWith(".laws.json")) {
-      declaredLaws += auditJsonLawFile(file, repo, findings, verifiedBackends, Boolean(options?.verify));
+      declaredLaws += auditJsonLawFile(file, repo, { findings, verifiedBackends, verify: Boolean(options?.verify) });
     }
   }
 
   if (options?.verify && declaredLaws === 0) {
     findings.push({
-      id: "LAW:empty:.verification/laws",
-      rule: "laws-empty",
-      category: "oracle-lock",
-      rung: "R3",
-      severity: "error",
-      file: ".verification/laws",
-      line: 1,
+      id: "LAW:empty:.verification/laws", rule: "laws-empty", category: "oracle-lock", rung: "R3", severity: "error",
+      file: ".verification/laws", line: 1,
       message: "vstack laws --verify found 0 declared laws to verify — failing closed.",
       fix: "Declare executable laws in .verification/laws/*.laws.json or LAWS.bend before running laws --verify.",
     });

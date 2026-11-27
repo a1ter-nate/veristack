@@ -118,12 +118,17 @@ export function resolveThreeBandDecision(input: ThreeBandResolutionInput): Resol
   };
 }
 
-export async function runCircuit<TInput, TFacts>(
-  circuit: CircuitDefinition<TInput, TFacts>,
-  inputs: readonly TInput[],
-  engine: System1DecisionEngine,
-): Promise<CircuitRunReport> {
-  const circuitHash = createHash("sha256")
+interface StagedItem<TFacts> {
+  itemId: string;
+  subject: string;
+  facts: TFacts;
+  staticSummary: string;
+  shortDecision: ShortCircuitDecision | null;
+  requestId?: string;
+}
+
+function hashCircuitDefinition<TInput, TFacts>(circuit: CircuitDefinition<TInput, TFacts>): string {
+  return createHash("sha256")
     .update(
       JSON.stringify({
         id: circuit.id,
@@ -135,38 +140,13 @@ export async function runCircuit<TInput, TFacts>(
     )
     .digest("hex")
     .slice(0, 16);
+}
 
-  interface StagedItem {
-    itemId: string;
-    subject: string;
-    facts: TFacts;
-    staticSummary: string;
-    shortDecision: ShortCircuitDecision | null;
-    requestId?: string;
-  }
-
-  const staged: StagedItem[] = [];
-  const pendingRequests: System1Request[] = [];
-
-  for (const [i, item] of inputs.entries()) {
-    const itemId = circuit.itemId(item, i);
-    const subject = circuit.subject(item);
-    const facts = circuit.extractFacts(item);
-    const staticSummary = circuit.summarizeFacts(facts);
-    const shortDecision = circuit.shortCircuit(facts);
-
-    if (shortDecision) {
-      staged.push({ itemId, subject, facts, staticSummary, shortDecision });
-    } else {
-      const requestId = `${circuit.id}:${itemId}`;
-      pendingRequests.push(circuit.buildRequest(item, facts, requestId));
-      staged.push({ itemId, subject, facts, staticSummary, shortDecision: null, requestId });
-    }
-  }
-
-  const answers = pendingRequests.length > 0 ? await engine.decide(pendingRequests) : [];
-  const answerById = new Map(answers.map((a) => [a.id, a]));
-
+function resolveStagedReceipts<TInput, TFacts>(
+  circuit: CircuitDefinition<TInput, TFacts>,
+  staged: readonly StagedItem<TFacts>[],
+  answerById: ReadonlyMap<string, System1ModelAnswer>,
+): { receipts: CircuitReceipt[]; bandCounts: Record<CircuitBand, number> } {
   const bandCounts: Record<CircuitBand, number> = {
     short_circuit: 0,
     high: 0,
@@ -175,8 +155,10 @@ export async function runCircuit<TInput, TFacts>(
     abstained: 0,
     contradicted: 0,
   };
-
   const receipts: CircuitReceipt[] = [];
+  if (!circuit.id) throw new Error("Circuit id is required.");
+  if (!staged.length) return { receipts, bandCounts };
+
   for (const row of staged) {
     if (row.shortDecision) {
       bandCounts.short_circuit += 1;
@@ -213,6 +195,40 @@ export async function runCircuit<TInput, TFacts>(
       modelConfidence: answer?.confidence ?? null,
     });
   }
+  return { receipts, bandCounts };
+}
+
+export async function runCircuit<TInput, TFacts>(
+  circuit: CircuitDefinition<TInput, TFacts>,
+  inputs: readonly TInput[],
+  engine: System1DecisionEngine,
+): Promise<CircuitRunReport> {
+  if (!circuit.id) throw new Error("Circuit id is required.");
+  if (!engine.name) throw new Error("Decision engine name is required.");
+
+  const circuitHash = hashCircuitDefinition(circuit);
+  const staged: StagedItem<TFacts>[] = [];
+  const pendingRequests: System1Request[] = [];
+
+  for (const [i, item] of inputs.entries()) {
+    const itemId = circuit.itemId(item, i);
+    const subject = circuit.subject(item);
+    const facts = circuit.extractFacts(item);
+    const staticSummary = circuit.summarizeFacts(facts);
+    const shortDecision = circuit.shortCircuit(facts);
+
+    if (shortDecision) {
+      staged.push({ itemId, subject, facts, staticSummary, shortDecision });
+    } else {
+      const requestId = `${circuit.id}:${itemId}`;
+      pendingRequests.push(circuit.buildRequest(item, facts, requestId));
+      staged.push({ itemId, subject, facts, staticSummary, shortDecision: null, requestId });
+    }
+  }
+
+  const answers = pendingRequests.length > 0 ? await engine.decide(pendingRequests) : [];
+  const answerById = new Map(answers.map((a) => [a.id, a]));
+  const { receipts, bandCounts } = resolveStagedReceipts(circuit, staged, answerById);
 
   const totalInputs = inputs.length;
   const shortCircuitedCount = bandCounts.short_circuit;

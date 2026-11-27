@@ -83,84 +83,104 @@ const TEST_SKIP_ONLY = /\b(?:describe|it|test)\.(?:only|skip|todo|fixme)\s*\(|\[
 const TEST_TAUTOLOGY = /\bexpect\s*\(\s*(?:true|false|\d+)\s*\)\s*\.\s*toBe\s*\(\s*(?:true|false|\d+)\s*\)|\bAssert\.(?:True\s*\(\s*true\s*\)|IsTrue\s*\(\s*true\s*\))|\bassert\s+True\b/g;
 const TEST_COND_EXPECT = /\bif\s*\([^)]+\)\s*\{[^}]{0,160}\b(?:expect|assert|Assert\.)\s*\(/g;
 
-function pushFast(
-  findings: Finding[],
-  file: ScannedFile,
-  offset: number,
-  rule: string,
-  category: Finding["category"],
-  rung: Finding["rung"],
-  severity: Finding["severity"],
-  message: string,
-  fix: string,
-): void {
-  const line = lineOf(file.content, offset);
+interface FastFindingSpec {
+  file: ScannedFile;
+  offset: number;
+  rule: string;
+  category: Finding["category"];
+  rung: Finding["rung"];
+  severity: Finding["severity"];
+  message: string;
+  fix: string;
+}
+
+function pushFast(findings: Finding[], spec: FastFindingSpec): void {
+  const line = lineOf(spec.file.content, spec.offset);
   findings.push({
-    id: `HF:${rule}:${file.rel}:${line}`,
-    rule,
-    category,
-    rung,
-    severity,
-    file: file.rel,
+    id: `HF:${spec.rule}:${spec.file.rel}:${line}`,
+    rule: spec.rule,
+    category: spec.category,
+    rung: spec.rung,
+    severity: spec.severity,
+    file: spec.file.rel,
     line,
-    message,
-    fix,
+    message: spec.message,
+    fix: spec.fix,
   });
 }
 
 function scanImmediateProd(file: ScannedFile, code: string, findings: Finding[]): void {
+  if (!file.language) return;
+  if (!code) return;
   if (file.language === "typescript") {
     for (const m of code.matchAll(CHAINED_AS)) {
-      pushFast(findings, file, m.index ?? 0, "no-chained-or-any-cast", "structure", "R0", "error", `Unsafe type escape hatch (${m[0]}) hides real contract.`, "Parse external data at the boundary with a schema or type guard instead of casting.");
+      pushFast(findings, { file, offset: m.index ?? 0, rule: "no-chained-or-any-cast", category: "structure", rung: "R0", severity: "error", message: `Unsafe type escape hatch (${m[0]}) hides real contract.`, fix: "Parse external data at the boundary with a schema or type guard instead of casting." });
     }
   }
   if (file.language === "typescript" || file.language === "javascript" || file.language === "csharp") {
     for (const off of findEmptyCatchOffsets(code)) {
-      pushFast(findings, file, off, "no-swallowing-catch", "structure", "R0", "warn", "Empty catch block silently swallows errors.", "Rethrow, return a typed error, or handle the specific expected error explicitly.");
+      pushFast(findings, { file, offset: off, rule: "no-swallowing-catch", category: "structure", rung: "R0", severity: "warn", message: "Empty catch block silently swallows errors.", fix: "Rethrow, return a typed error, or handle the specific expected error explicitly." });
     }
   }
   if (file.language === "csharp") {
     for (const m of code.matchAll(CSHARP_DYNAMIC)) {
-      pushFast(findings, file, m.index ?? 0, "no-chained-or-any-cast", "structure", "R0", "error", `C# dynamic binding (${m[0].trim()}) disables compile-time checking.`, "Use a concrete record, interface, or generic type parameter.");
+      pushFast(findings, { file, offset: m.index ?? 0, rule: "no-chained-or-any-cast", category: "structure", rung: "R0", severity: "error", message: `C# dynamic binding (${m[0].trim()}) disables compile-time checking.`, fix: "Use a concrete record, interface, or generic type parameter." });
     }
   }
   if (file.language === "python") {
     for (const m of code.matchAll(PY_ANY_ESCAPE)) {
-      pushFast(findings, file, m.index ?? 0, "no-chained-or-any-cast", "structure", "R0", "error", `Python Any escape (${m[0].trim()}) disables static type checking.`, "Use object, Protocol, TypeVar, or a validated model.");
+      pushFast(findings, { file, offset: m.index ?? 0, rule: "no-chained-or-any-cast", category: "structure", rung: "R0", severity: "error", message: `Python Any escape (${m[0].trim()}) disables static type checking.`, fix: "Use object, Protocol, TypeVar, or a validated model." });
     }
     for (const m of code.matchAll(PY_SWALLOWING_EXCEPT)) {
-      pushFast(findings, file, m.index ?? 0, "no-swallowing-catch", "structure", "R0", "error", "Python except-pass block silently swallows errors.", "Rethrow or handle the specific expected exception explicitly.");
+      pushFast(findings, { file, offset: m.index ?? 0, rule: "no-swallowing-catch", category: "structure", rung: "R0", severity: "error", message: "Python except-pass block silently swallows errors.", fix: "Rethrow or handle the specific expected exception explicitly." });
     }
     for (const m of code.matchAll(PY_PROD_ASSERT)) {
-      pushFast(findings, file, m.index ?? 0, "no-release-stripped-assert", "structure", "R1", "warn", "Bare Python assert in production code is stripped under python -O.", "Raise an explicit InvariantViolationError so invariants stay active in release.");
+      pushFast(findings, { file, offset: m.index ?? 0, rule: "no-release-stripped-assert", category: "structure", rung: "R1", severity: "warn", message: "Bare Python assert in production code is stripped under python -O.", fix: "Raise an explicit InvariantViolationError so invariants stay active in release." });
     }
   }
   if (file.language === "rust") {
     for (const m of code.matchAll(RUST_SWALLOWING_ERR)) {
-      pushFast(findings, file, m.index ?? 0, "no-swallowing-catch", "structure", "R0", "error", "Empty Err(_) match arm silently swallows errors.", "Propagate with '?' or handle the error variant explicitly.");
+      pushFast(findings, { file, offset: m.index ?? 0, rule: "no-swallowing-catch", category: "structure", rung: "R0", severity: "error", message: "Empty Err(_) match arm silently swallows errors.", fix: "Propagate with '?' or handle the error variant explicitly." });
     }
   }
   if (file.language === "csharp" || file.language === "rust") {
     for (const m of code.matchAll(PROD_STRIPPED_ASSERT)) {
-      pushFast(findings, file, m.index ?? 0, "no-release-stripped-assert", "structure", "R1", "warn", "Debug assertion compiles out in Release builds.", "Use an always-on production invariant check.");
+      pushFast(findings, { file, offset: m.index ?? 0, rule: "no-release-stripped-assert", category: "structure", rung: "R1", severity: "warn", message: "Debug assertion compiles out in Release builds.", fix: "Use an always-on production invariant check." });
     }
   }
 }
 
 function scanImmediateTest(file: ScannedFile, code: string, findings: Finding[]): void {
   for (const m of code.matchAll(TEST_SLEEP)) {
-    pushFast(findings, file, m.index ?? 0, "no-fixed-sleep", "cheat", "R0", "error", "Fixed sleep in test causes flakiness and slows CI.", "Await an explicit signal, completion promise, or web-first locator.");
+    pushFast(findings, { file, offset: m.index ?? 0, rule: "no-fixed-sleep", category: "cheat", rung: "R0", severity: "error", message: "Fixed sleep in test causes flakiness and slows CI.", fix: "Await an explicit signal, completion promise, or web-first locator." });
   }
   for (const m of code.matchAll(TEST_SKIP_ONLY)) {
-    pushFast(findings, file, m.index ?? 0, "test-discipline", "cheat", "R0", "error", "Skipped or focused test committed.", "Fix or delete the test instead of skipping or focusing it.");
+    pushFast(findings, { file, offset: m.index ?? 0, rule: "test-discipline", category: "cheat", rung: "R0", severity: "error", message: "Skipped or focused test committed.", fix: "Fix or delete the test instead of skipping or focusing it." });
   }
   for (const m of code.matchAll(TEST_TAUTOLOGY)) {
-    pushFast(findings, file, m.index ?? 0, "weak-asserts-tautology", "test-smell", "R0", "error", "Tautological assertion cannot fail when behavior breaks.", "Assert computed SUT output against an independent expected value.");
+    pushFast(findings, { file, offset: m.index ?? 0, rule: "weak-asserts-tautology", category: "test-smell", rung: "R0", severity: "error", message: "Tautological assertion cannot fail when behavior breaks.", fix: "Assert computed SUT output against an independent expected value." });
   }
   for (const m of code.matchAll(TEST_COND_EXPECT)) {
-    pushFast(findings, file, m.index ?? 0, "no-conditional-expect", "test-smell", "R0", "error", "Assertion inside conditional branch silently passes when skipped.", "Split into explicit cases with unconditional assertions.");
+    pushFast(findings, { file, offset: m.index ?? 0, rule: "no-conditional-expect", category: "test-smell", rung: "R0", severity: "error", message: "Assertion inside conditional branch silently passes when skipped.", fix: "Split into explicit cases with unconditional assertions." });
   }
 }
+
+const EMPTY_SIGNALS: DiscoveredRepo["signals"] = {
+  hasFormatter: false, hasLinter: false, hasOxlint: false, hasAntiSlop: false, hasLandmines: false,
+  hasGoInternal: false, hasDeslopPlease: false, hasDesloppify: false, hasStrictTypes: false, hasTsgo: false,
+  hasKnipOrDeadCode: false, hasJscpd: false, hasArchFitness: false, hasPreCommitHook: false, hasCodeowners: false,
+  hasReviewMd: false, hasAgentsMd: false, hasPbt: false, hasMbt: false, hasContractTool: false,
+  hasComponentUiTool: false, hasMsw: false, hasMswStrict: false, hasTestcontainersOrRealDb: false,
+  hasMigrationTest: false, hasBusDlqTest: false, hasDst: false, hasDryRun: false, hasMutationTool: false,
+  hasFormalTool: false, hasFuzzTool: false, hasBombadil: false, hasVisualTool: false, hasPerfOrLoadTool: false,
+  hasE2eTool: false, hasProdTelemetryOrCanary: false, hasDiffSelection: false,
+};
+
+const EMPTY_CI: DiscoveredRepo["ci"] = {
+  hasCiWorkflows: false, workflowFiles: [], runsFormatterOrLint: false, runsTypeOrStructureCheck: false,
+  runsUnitTests: false, runsBoundaryOrMbtTests: false, runsIntegrationOrDbTests: false, runsMutationOrFormal: false,
+  runsPerfOrBench: false, runsE2eTests: false, runsProdVerification: false,
+};
 
 function makeSingleFileRepo(repoRoot: string, file: ScannedFile): DiscoveredRepo {
   const files: ScannedFile[] = [file];
@@ -168,40 +188,46 @@ function makeSingleFileRepo(repoRoot: string, file: ScannedFile): DiscoveredRepo
   if (fs.existsSync(cpAbs) && fs.statSync(cpAbs).isFile()) {
     try {
       const cpContent = fs.readFileSync(cpAbs, "utf8");
-      files.push({
-        rel: ".verification/chokepoints.json",
-        abs: cpAbs,
-        isTest: false,
-        isWorkflow: false,
-        content: cpContent,
-        lines: cpContent.split(/\r?\n/).length,
-      });
+      files.push({ rel: ".verification/chokepoints.json", abs: cpAbs, isTest: false, isWorkflow: false, content: cpContent, lines: cpContent.split(/\r?\n/).length });
     } catch { void 0; }
   }
   return {
-    root: repoRoot,
-    files,
-    allRelPaths: files.map((f) => f.rel),
-    languages: file.language ? [file.language] : [],
-    archetype: "library",
-    observedArchetype: "library",
-    scopeExclusions: [],
-    signals: {
-      hasFormatter: false, hasLinter: false, hasOxlint: false, hasAntiSlop: false, hasLandmines: false,
-      hasGoInternal: false, hasDeslopPlease: false, hasDesloppify: false, hasStrictTypes: false, hasTsgo: false,
-      hasKnipOrDeadCode: false, hasJscpd: false, hasArchFitness: false, hasPreCommitHook: false, hasCodeowners: false,
-      hasReviewMd: false, hasAgentsMd: false, hasPbt: false, hasMbt: false, hasContractTool: false,
-      hasComponentUiTool: false, hasMsw: false, hasMswStrict: false, hasTestcontainersOrRealDb: false,
-      hasMigrationTest: false, hasBusDlqTest: false, hasDst: false, hasDryRun: false, hasMutationTool: false,
-      hasFormalTool: false, hasFuzzTool: false, hasBombadil: false, hasVisualTool: false, hasPerfOrLoadTool: false,
-      hasE2eTool: false, hasProdTelemetryOrCanary: false, hasDiffSelection: false,
-    },
-    ci: {
-      hasCiWorkflows: false, workflowFiles: [], runsFormatterOrLint: false, runsTypeOrStructureCheck: false,
-      runsUnitTests: false, runsBoundaryOrMbtTests: false, runsIntegrationOrDbTests: false, runsMutationOrFormal: false,
-      runsPerfOrBench: false, runsE2eTests: false, runsProdVerification: false,
-    },
+    root: repoRoot, files, allRelPaths: files.map((f) => f.rel),
+    languages: file.language ? [file.language] : [], archetype: "library", observedArchetype: "library",
+    scopeExclusions: [], signals: { ...EMPTY_SIGNALS }, ci: { ...EMPTY_CI },
   };
+}
+
+function scanCodeLanguageFile(file: ScannedFile, repoRoot: string, tier: CheckFileTier, maxLines: number): Finding[] {
+  if (!file.language) return [];
+  if (!repoRoot) throw new Error("repoRoot is required.");
+  const rawFindings: Finding[] = [];
+  if (!file.isStub) rawFindings.push(...lintNoComments(file.rel, file.content, file.language));
+  if (!file.isTest && file.lines > maxLines) {
+    rawFindings.push({
+      id: `HF:max-file-lines:${file.rel}:1`, rule: "max-file-lines", category: "structure", rung: "R1", severity: "warn",
+      file: file.rel, line: 1, message: `${file.rel} has ${file.lines} lines (limit: ${maxLines}).`,
+      fix: "Split cohesive responsibilities into deeper modules with narrow interfaces.",
+    });
+  }
+  const code = maskCode(file.content, file.language, !file.isTest);
+  const ast = parseTsAst(file);
+  if (file.isTest) {
+    scanImmediateTest(file, code, rawFindings);
+    rawFindings.push(...analyzeUniversalLandminesTest(file, code, ast));
+    if (tier === "all") rawFindings.push(...analyzeTests(makeSingleFileRepo(repoRoot, file)).findings);
+    return rawFindings;
+  }
+  scanImmediateProd(file, code, rawFindings);
+  rawFindings.push(...lintImplicitStateMachinesInFile(file), ...analyzeUniversalBendLaws(file), ...analyzeUniversalAntiSlopProd(file, ast), ...analyzeTsAstGuards(file, ast));
+  if (fs.existsSync(path.join(repoRoot, ".verification", "chokepoints.json"))) {
+    rawFindings.push(...analyzeImmuneSystemGates(makeSingleFileRepo(repoRoot, file)));
+  }
+  if (tier === "all") {
+    const singleRepo = makeSingleFileRepo(repoRoot, file);
+    rawFindings.push(...analyzeStructure(singleRepo), ...analyzeProdZeroDefectRules(singleRepo), ...analyzeRuntimeGuards(file), ...analyzeOssGuards(file), ...analyzeCveAndPostmortemGuards(file), ...analyzePerfHygiene(singleRepo));
+  }
+  return rawFindings;
 }
 
 export function scanSingleFile(filePath: string, options: CheckFileOptions = {}): CheckFileResult {
@@ -215,9 +241,7 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
 
   let content = options.content;
   if (content === undefined) {
-    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
-      throw new Error(`File not found: ${filePath}`);
-    }
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new Error(`File not found: ${filePath}`);
     content = fs.readFileSync(abs, "utf8");
   }
 
@@ -240,85 +264,28 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
       }],
     };
   }
-
   if (!effectiveLang && !isSql && !isShell && !isWorkflow) {
     return { file: rel, tier, language: null, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: [] };
   }
 
-  const lines = content.length === 0 ? 0 : content.split(/\r?\n/).length;
-  const isStub = isDeclarationStub(rel);
   const file: ScannedFile = {
-    rel,
-    abs,
-    language: effectiveLang,
-    isTest: isTestFilePath(rel),
-    isWorkflow,
-    ...(isStub ? { isStub: true } : {}),
-    content: effectiveContent,
-    ...(sfc ? { rawContent: content } : {}),
-    lines,
+    rel, abs, language: effectiveLang, isTest: isTestFilePath(rel), isWorkflow,
+    ...(isDeclarationStub(rel) ? { isStub: true } : {}),
+    content: effectiveContent, ...(sfc ? { rawContent: content } : {}),
+    lines: content.length === 0 ? 0 : content.split(/\r?\n/).length,
   };
 
   const rawFindings: Finding[] = [];
   if (isWorkflow) {
     const singleRepo = makeSingleFileRepo(repoRoot, file);
-    rawFindings.push(...auditCiWorkflows(singleRepo));
-    rawFindings.push(...analyzeImmuneSystemGates(singleRepo));
+    rawFindings.push(...auditCiWorkflows(singleRepo), ...analyzeImmuneSystemGates(singleRepo));
   } else if (isSql) {
     if (/(?:^|\/)migrations?\//i.test(file.rel)) rawFindings.push(...analyzeCveAndPostmortemGuards(file));
-    rawFindings.push(...analyzeWave6TitansAGuards(file));
-    rawFindings.push(...analyzeWave7TitansBGuards(file));
+    rawFindings.push(...analyzeWave6TitansAGuards(file), ...analyzeWave7TitansBGuards(file));
   } else if (isShell) {
-    rawFindings.push(...analyzeWave5AiFirstGuards(file));
-    rawFindings.push(...analyzeWave7TitansBGuards(file));
-    rawFindings.push(...analyzeBlackHoleReplayGuards(file));
-    rawFindings.push(...analyzeT3ProdGuards(file));
+    rawFindings.push(...analyzeWave5AiFirstGuards(file), ...analyzeWave7TitansBGuards(file), ...analyzeBlackHoleReplayGuards(file), ...analyzeT3ProdGuards(file));
   } else if (effectiveLang) {
-    if (!file.isStub) rawFindings.push(...lintNoComments(file.rel, file.content, effectiveLang));
-
-    if (!file.isTest && file.lines > maxLines) {
-      rawFindings.push({
-        id: `HF:max-file-lines:${file.rel}:1`,
-        rule: "max-file-lines",
-        category: "structure",
-        rung: "R1",
-        severity: "warn",
-        file: file.rel,
-        line: 1,
-        message: `${file.rel} has ${file.lines} lines (limit: ${maxLines}).`,
-        fix: "Split cohesive responsibilities into deeper modules with narrow interfaces.",
-      });
-    }
-
-    const code = maskCode(file.content, effectiveLang, !file.isTest);
-    const ast = parseTsAst(file);
-
-    if (file.isTest) {
-      scanImmediateTest(file, code, rawFindings);
-      rawFindings.push(...analyzeUniversalLandminesTest(file, code, ast));
-      if (tier === "all") {
-        const singleRepo = makeSingleFileRepo(repoRoot, file);
-        rawFindings.push(...analyzeTests(singleRepo).findings);
-      }
-    } else {
-      scanImmediateProd(file, code, rawFindings);
-      rawFindings.push(...lintImplicitStateMachinesInFile(file));
-      rawFindings.push(...analyzeUniversalBendLaws(file));
-      rawFindings.push(...analyzeUniversalAntiSlopProd(file, ast));
-      rawFindings.push(...analyzeTsAstGuards(file, ast));
-      if (fs.existsSync(path.join(repoRoot, ".verification", "chokepoints.json"))) {
-        rawFindings.push(...analyzeImmuneSystemGates(makeSingleFileRepo(repoRoot, file)));
-      }
-      if (tier === "all") {
-        const singleRepo = makeSingleFileRepo(repoRoot, file);
-        rawFindings.push(...analyzeStructure(singleRepo));
-        rawFindings.push(...analyzeProdZeroDefectRules(singleRepo));
-        rawFindings.push(...analyzeRuntimeGuards(file));
-        rawFindings.push(...analyzeOssGuards(file));
-        rawFindings.push(...analyzeCveAndPostmortemGuards(file));
-        rawFindings.push(...analyzePerfHygiene(singleRepo));
-      }
-    }
+    rawFindings.push(...scanCodeLanguageFile(file, repoRoot, tier, maxLines));
   }
 
   const deduped = new Map<string, Finding>();
@@ -328,14 +295,7 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
   }
   const unique = [...deduped.values()];
   const finalFindings = options.strict ? unique : applyRepoConfig(unique, loadRepoConfig(repoRoot)).findings;
-
-  return {
-    file: rel,
-    tier,
-    language,
-    elapsedMs: Number((performance.now() - started).toFixed(2)),
-    findings: finalFindings,
-  };
+  return { file: rel, tier, language, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: finalFindings };
 }
 
 export function formatSingleFileReport(result: CheckFileResult): string {

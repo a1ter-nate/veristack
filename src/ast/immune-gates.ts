@@ -22,17 +22,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function push(
-  findings: Finding[],
-  file: string,
-  line: number,
-  rule: string,
-  rung: Finding["rung"],
-  severity: Finding["severity"],
-  message: string,
-  fix: string,
-): void {
-  findings.push({ id: `IMM:${rule}:${file}:${line}`, rule, category: "ci-hygiene", rung, severity, file, line, message, fix });
+interface ImmuneFindingSpec {
+  file: string;
+  line: number;
+  rule: string;
+  rung: Finding["rung"];
+  severity: Finding["severity"];
+  message: string;
+  fix: string;
+}
+
+function push(findings: Finding[], spec: ImmuneFindingSpec): void {
+  findings.push({ id: `IMM:${spec.rule}:${spec.file}:${spec.line}`, category: "ci-hygiene", ...spec });
 }
 
 function loadChokePoints(repo: DiscoveredRepo, findings: Finding[]): ChokePointRule[] {
@@ -41,13 +42,13 @@ function loadChokePoints(repo: DiscoveredRepo, findings: Finding[]): ChokePointR
   try {
     const parsed = JSON.parse(cfg.content) as { rules?: unknown };
     if (!isRecord(parsed) || !Array.isArray(parsed.rules) || parsed.rules.length === 0) {
-      push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} must contain a non-empty 'rules' array.`, "Fix .verification/chokepoints.json schema so choke-point enforcement cannot fail open.");
+      push(findings, { file: cfg.rel, line: 1, rule: "chokepoints-invalid-json", rung: "R0", severity: "error", message: `${cfg.rel} must contain a non-empty 'rules' array.`, fix: "Fix .verification/chokepoints.json schema so choke-point enforcement cannot fail open." });
       return [];
     }
     const valid: ChokePointRule[] = [];
     for (const raw of parsed.rules) {
       if (!isRecord(raw) || typeof raw.pattern !== "string" || !raw.pattern.trim() || typeof raw.replacement !== "string") {
-        push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} contains a malformed or null choke-point rule entry.`, "Give every choke-point rule a non-empty 'pattern' and 'replacement'.");
+        push(findings, { file: cfg.rel, line: 1, rule: "chokepoints-invalid-json", rung: "R0", severity: "error", message: `${cfg.rel} contains a malformed or null choke-point rule entry.`, fix: "Give every choke-point rule a non-empty 'pattern' and 'replacement'." });
         continue;
       }
       if (
@@ -59,12 +60,12 @@ function loadChokePoints(repo: DiscoveredRepo, findings: Finding[]): ChokePointR
           return clean === "" || clean.includes("*") || !hasExt;
         })
       ) {
-        push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} rule '${raw.pattern}' has an overly broad or invalid allowPaths entry (must be an exact file path).`, "Scope allowPaths to exact choke-point wrapper file paths (e.g. 'src/db/client.ts').");
+        push(findings, { file: cfg.rel, line: 1, rule: "chokepoints-invalid-json", rung: "R0", severity: "error", message: `${cfg.rel} rule '${raw.pattern}' has an overly broad or invalid allowPaths entry (must be an exact file path).`, fix: "Scope allowPaths to exact choke-point wrapper file paths (e.g. 'src/db/client.ts')." });
         continue;
       }
       if (raw.languages !== undefined) {
         if (!Array.isArray(raw.languages) || raw.languages.length === 0 || raw.languages.some((l) => typeof l !== "string" || !VALID_CHOKE_LANGS.has(l))) {
-          push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} rule '${raw.pattern}' has empty or unrecognized languages (expected lowercase: typescript, javascript, csharp, python, rust, go).`, "List valid lowercase language identifiers or omit 'languages' to apply to all.");
+          push(findings, { file: cfg.rel, line: 1, rule: "chokepoints-invalid-json", rung: "R0", severity: "error", message: `${cfg.rel} rule '${raw.pattern}' has empty or unrecognized languages (expected lowercase: typescript, javascript, csharp, python, rust, go).`, fix: "List valid lowercase language identifiers or omit 'languages' to apply to all." });
           continue;
         }
       }
@@ -78,7 +79,7 @@ function loadChokePoints(repo: DiscoveredRepo, findings: Finding[]): ChokePointR
     }
     return valid;
   } catch {
-    push(findings, cfg.rel, 1, "chokepoints-invalid-json", "R0", "error", `${cfg.rel} contains invalid JSON — failing closed.`, "Fix JSON syntax in .verification/chokepoints.json.");
+    push(findings, { file: cfg.rel, line: 1, rule: "chokepoints-invalid-json", rung: "R0", severity: "error", message: `${cfg.rel} contains invalid JSON — failing closed.`, fix: "Fix JSON syntax in .verification/chokepoints.json." });
     return [];
   }
 }
@@ -112,11 +113,11 @@ function auditChokePoints(repo: DiscoveredRepo, findings: Finding[]): void {
       if (c.langSet && !c.langSet.has(file.language)) continue;
       if (c.allowSet.some((allowed) => file.rel === allowed)) continue;
       for (const offset of findTokenOffsets(masked, c.rule.pattern)) {
-        push(
-          findings, file.rel, lineOf(file.content, offset), "chokepoint-banned-primitive", "R0", "error",
-          `Direct use of banned primitive '${c.rule.pattern}' bypasses the repo choke point (${c.rule.reason ?? "enforced via .verification/chokepoints.json"}).`,
-          `Use '${c.rule.replacement}' instead of '${c.rule.pattern}'.`,
-        );
+        push(findings, {
+          file: file.rel, line: lineOf(file.content, offset), rule: "chokepoint-banned-primitive", rung: "R0", severity: "error",
+          message: `Direct use of banned primitive '${c.rule.pattern}' bypasses the repo choke point (${c.rule.reason ?? "enforced via .verification/chokepoints.json"}).`,
+          fix: `Use '${c.rule.replacement}' instead of '${c.rule.pattern}'.`,
+        });
       }
     }
   }
@@ -134,9 +135,8 @@ function auditUsesRef(file: ScannedFile, lines: readonly string[], usesVal: stri
   if (trimmed.startsWith("./") || trimmed.startsWith("../")) return;
   const line = findLineForNeedle(lines, trimmed);
   if (trimmed.startsWith("docker://")) {
-    const img = trimmed.slice(9);
-    if (!/@sha256:[0-9a-f]{64}$/i.test(img)) {
-      push(findings, file.rel, line, "ci-unpinned-third-party-action", "R0", "warn", `Docker action '${trimmed}' is not pinned to an immutable @sha256 digest.`, "Pin docker:// actions with '@sha256:<64-hex-digest>'.");
+    if (!/@sha256:[0-9a-f]{64}$/i.test(trimmed.slice(9))) {
+      push(findings, { file: file.rel, line, rule: "ci-unpinned-third-party-action", rung: "R0", severity: "warn", message: `Docker action '${trimmed}' is not pinned to an immutable @sha256 digest.`, fix: "Pin docker:// actions with '@sha256:<64-hex-digest>'." });
     }
     return;
   }
@@ -145,18 +145,18 @@ function auditUsesRef(file: ScannedFile, lines: readonly string[], usesVal: stri
   const action = trimmed.slice(0, atIdx);
   const ref = trimmed.slice(atIdx + 1);
   if (HEX_40.test(ref) || /^(?:actions|github)\//i.test(action)) return;
-  push(
-    findings, file.rel, line, "ci-unpinned-third-party-action", "R0", "warn",
-    `Third-party GitHub Action '${action}@${ref}' is not pinned to a full 40-char commit SHA.`,
-    `Pin '${action}@<40-char-commit-sha> # ${ref}' to prevent supply-chain tag hijacking.`,
-  );
+  push(findings, {
+    file: file.rel, line, rule: "ci-unpinned-third-party-action", rung: "R0", severity: "warn",
+    message: `Third-party GitHub Action '${action}@${ref}' is not pinned to a full 40-char commit SHA.`,
+    fix: `Pin '${action}@<40-char-commit-sha> # ${ref}' to prevent supply-chain tag hijacking.`,
+  });
 }
 
 function auditContainerImage(file: ScannedFile, lines: readonly string[], img: unknown, findings: Finding[]): void {
   const image = typeof img === "string" ? img : isRecord(img) && typeof img.image === "string" ? img.image : undefined;
   if (!image) return;
   if (/:latest$/i.test(image) || (!image.includes(":") && !image.includes("@sha256:"))) {
-    push(findings, file.rel, findLineForNeedle(lines, image), "ci-unpinned-third-party-action", "R0", "warn", `Workflow container/service image '${image}' uses a mutable tag instead of a pinned version or @sha256 digest.`, "Pin container images to an immutable @sha256 digest.");
+    push(findings, { file: file.rel, line: findLineForNeedle(lines, image), rule: "ci-unpinned-third-party-action", rung: "R0", severity: "warn", message: `Workflow container/service image '${image}' uses a mutable tag instead of a pinned version or @sha256 digest.`, fix: "Pin container images to an immutable @sha256 digest." });
   }
 }
 
@@ -168,7 +168,40 @@ function firstNonFlagTok(toks: readonly string[]): string | undefined {
   return undefined;
 }
 
+interface DownloadState {
+  downloadedFiles: Set<string>;
+  verifiedFiles: Set<string>;
+  globalChecksumVerified: boolean;
+}
+
+function checkDownloadedExecStmt(
+  file: ScannedFile,
+  lines: readonly string[],
+  st: string,
+  state: DownloadState,
+): Finding[] {
+  const out: Finding[] = [];
+  if (state.downloadedFiles.size === 0) return out;
+  const toks = st.split(/\s+/).map((t) => t.replace(/^["']|["']$/g, ""));
+  const cmdHead = (toks[0] ?? "").replace(/^(?:\/[\w.-]+)*\//, "");
+  const isExecInterp = /^(?:sh|bash|zsh|dash|node|bun|python3?|perl|ruby|source|\.)$/.test(cmdHead);
+  const firstNonFlagArg = firstNonFlagTok(toks);
+  const isChmodExec = cmdHead === "chmod" && /\+x|755|700/.test(st);
+  for (const f of state.downloadedFiles) {
+    if (state.verifiedFiles.has(f) || state.globalChecksumVerified) continue;
+    if (!st.includes(f) || /^(?:curl|wget|rm|echo|printf)$/.test(cmdHead)) continue;
+    const directExec = toks[0] === `./${f}` || toks[0] === f;
+    const chmodExec = isChmodExec && toks.includes(f);
+    const interpExec = isExecInterp && (firstNonFlagArg === f || firstNonFlagArg === `./${f}`);
+    if (directExec || chmodExec || interpExec) {
+      push(out, { file: file.rel, line: findLineForNeedle(lines, f), rule: "ci-curl-pipe-shell", rung: "R0", severity: "error", message: `Script downloads and executes '${f}' without prior verified checksum ('sha256sum -c' / 'gpg --verify').`, fix: "Verify sha256sum -c against a pinned digest before executing downloaded scripts." });
+    }
+  }
+  return out;
+}
+
 function auditRunScriptSupplyChain(file: ScannedFile, lines: readonly string[], runScript: string, findings: Finding[]): void {
+  if (!runScript) return;
   const joinedLines: string[] = [];
   let buf = "";
   for (const rawLine of runScript.split(/\r?\n/)) {
@@ -177,102 +210,75 @@ function auditRunScriptSupplyChain(file: ScannedFile, lines: readonly string[], 
     else { joinedLines.push(buf + rawLine); buf = ""; }
   }
   if (buf) joinedLines.push(buf);
-  const downloadedFiles = new Set<string>();
-  const verifiedFiles = new Set<string>();
-  let globalChecksumVerified = false;
+  const state: DownloadState = { downloadedFiles: new Set(), verifiedFiles: new Set(), globalChecksumVerified: false };
   const CHECKSUM_CMD = /(?:^|\|\s*)(?:sudo\s+)?(?:sha256sum\s+(?:-[A-Za-z]*c|--check)|shasum\s+-a\s+256\s+(?:-[A-Za-z]*c|--check)|sha512sum\s+(?:-[A-Za-z]*c|--check)|gpg\s+--verify)\b/i;
   for (const line of joinedLines) {
     if (/^\s*#/.test(line)) continue;
     if (FETCH_TO_SHELL.test(line)) {
-      push(findings, file.rel, findLineForNeedle(lines, line.trim().slice(0, 32)), "ci-curl-pipe-shell", "R0", "error", "Script pipes or evals remote download directly into a shell/script interpreter.", "Download a pinned checksum-verified release artifact or use a SHA-pinned action.");
+      push(findings, { file: file.rel, line: findLineForNeedle(lines, line.trim().slice(0, 32)), rule: "ci-curl-pipe-shell", rung: "R0", severity: "error", message: "Script pipes or evals remote download directly into a shell/script interpreter.", fix: "Download a pinned checksum-verified release artifact or use a SHA-pinned action." });
       continue;
     }
-    const stmts = line.split(/\s*(?:&&|;)\s*/);
-    for (const stmt of stmts) {
+    for (const stmt of line.split(/\s*(?:&&|;)\s*/)) {
       const st = stmt.trim();
       if (!st || st.startsWith("#")) continue;
       if (CHECKSUM_CMD.test(st) && !/\|\|\s*(?:true|:)\b/.test(st)) {
-        globalChecksumVerified = true;
-        for (const f of downloadedFiles) verifiedFiles.add(f);
+        state.globalChecksumVerified = true;
+        for (const f of state.downloadedFiles) state.verifiedFiles.add(f);
         continue;
       }
       const dl = DOWNLOAD_TO_FILE.exec(st);
       const dlTarget = (dl?.[1] ?? dl?.[2] ?? dl?.[3] ?? "").replace(/^["']|["']$/g, "");
       if (dlTarget && dlTarget !== "/dev/null") {
-        downloadedFiles.add(dlTarget);
-        verifiedFiles.delete(dlTarget);
+        state.downloadedFiles.add(dlTarget);
+        state.verifiedFiles.delete(dlTarget);
         continue;
       }
-      if (downloadedFiles.size > 0) {
-        const toks = st.split(/\s+/).map((t) => t.replace(/^["']|["']$/g, ""));
-        const cmdHead = (toks[0] ?? "").replace(/^(?:\/[\w.-]+)*\//, "");
-        const isExecInterp = /^(?:sh|bash|zsh|dash|node|bun|python3?|perl|ruby|source|\.)$/.test(cmdHead);
-        const firstNonFlagArg = firstNonFlagTok(toks);
-        const isChmodExec = cmdHead === "chmod" && /\+x|755|700/.test(st);
-        for (const f of downloadedFiles) {
-          if (verifiedFiles.has(f) || globalChecksumVerified) continue;
-          if (!st.includes(f) || /^(?:curl|wget|rm|echo|printf)$/.test(cmdHead)) continue;
-          const directExec = toks[0] === `./${f}` || toks[0] === f;
-          const chmodExec = isChmodExec && toks.includes(f);
-          const interpExec = isExecInterp && (firstNonFlagArg === f || firstNonFlagArg === `./${f}`);
-          if (directExec || chmodExec || interpExec) {
-            push(findings, file.rel, findLineForNeedle(lines, f), "ci-curl-pipe-shell", "R0", "error", `Script downloads and executes '${f}' without prior verified checksum ('sha256sum -c' / 'gpg --verify').`, "Verify sha256sum -c against a pinned digest before executing downloaded scripts.");
-          }
-        }
-      }
+      findings.push(...checkDownloadedExecStmt(file, lines, st, state));
     }
   }
 }
 
-function auditWorkflowImmuneSupplyChain(file: ScannedFile, findings: Finding[]): void {
-  const lines = file.content.split(/\r?\n/);
-
-  if (file.rel.startsWith(".github/workflows/") && !/^\s*permissions:/m.test(file.content)) {
-    push(findings, file.rel, 1, "ci-missing-explicit-permissions", "R0", "warn", "GitHub Actions workflow omits top-level 'permissions:' block.", "Add top-level 'permissions: { contents: read }' and grant narrower write scopes only on release jobs.");
+function auditWorkflowStepsList(file: ScannedFile, lines: readonly string[], steps: readonly unknown[], findings: Finding[]): void {
+  for (const step of steps) {
+    if (!isRecord(step)) continue;
+    if (typeof step.uses === "string") auditUsesRef(file, lines, step.uses, findings);
+    if (typeof step.run === "string") auditRunScriptSupplyChain(file, lines, step.run, findings);
   }
+}
 
+function auditWorkflowParsedDoc(file: ScannedFile, lines: readonly string[], doc: Record<string, unknown>, findings: Finding[]): boolean {
+  let parsedSteps = false;
+  if (isRecord(doc.runs) && Array.isArray(doc.runs.steps)) {
+    parsedSteps = true;
+    auditWorkflowStepsList(file, lines, doc.runs.steps, findings);
+  }
+  if (!isRecord(doc.jobs)) return parsedSteps;
+  parsedSteps = true;
+  for (const job of Object.values(doc.jobs)) {
+    if (!isRecord(job)) continue;
+    if (typeof job.uses === "string") auditUsesRef(file, lines, job.uses, findings);
+    if (job.container) auditContainerImage(file, lines, job.container, findings);
+    if (isRecord(job.services)) for (const svc of Object.values(job.services)) auditContainerImage(file, lines, svc, findings);
+    if (Array.isArray(job.steps)) auditWorkflowStepsList(file, lines, job.steps, findings);
+  }
+  return parsedSteps;
+}
+
+function auditWorkflowImmuneSupplyChain(file: ScannedFile, findings: Finding[]): void {
+  if (!file.content) return;
+  const lines = file.content.split(/\r?\n/);
+  if (file.rel.startsWith(".github/workflows/") && !/^\s*permissions:/m.test(file.content)) {
+    push(findings, { file: file.rel, line: 1, rule: "ci-missing-explicit-permissions", rung: "R0", severity: "warn", message: "GitHub Actions workflow omits top-level 'permissions:' block.", fix: "Add top-level 'permissions: { contents: read }' and grant narrower write scopes only on release jobs." });
+  }
   let parsedSteps = false;
   try {
     const doc: unknown = YAML.parse(file.content);
-    if (isRecord(doc)) {
-      if (isRecord(doc.runs) && Array.isArray(doc.runs.steps)) {
-        parsedSteps = true;
-        for (const step of doc.runs.steps) {
-          if (!isRecord(step)) continue;
-          if (typeof step.uses === "string") auditUsesRef(file, lines, step.uses, findings);
-          if (typeof step.run === "string") auditRunScriptSupplyChain(file, lines, step.run, findings);
-        }
-      }
-      if (isRecord(doc.jobs)) {
-        parsedSteps = true;
-        for (const job of Object.values(doc.jobs)) {
-          if (!isRecord(job)) continue;
-          if (typeof job.uses === "string") auditUsesRef(file, lines, job.uses, findings);
-          if (job.container) auditContainerImage(file, lines, job.container, findings);
-          if (isRecord(job.services)) {
-            for (const svc of Object.values(job.services)) auditContainerImage(file, lines, svc, findings);
-          }
-          if (Array.isArray(job.steps)) {
-            for (const step of job.steps) {
-              if (!isRecord(step)) continue;
-              if (typeof step.uses === "string") auditUsesRef(file, lines, step.uses, findings);
-              if (typeof step.run === "string") auditRunScriptSupplyChain(file, lines, step.run, findings);
-            }
-          }
-        }
-      }
-    }
-  } catch {
-    void 0;
-  }
-
-  if (!parsedSteps) {
-    auditRunScriptSupplyChain(file, lines, file.content, findings);
-  }
-
+    if (isRecord(doc)) parsedSteps = auditWorkflowParsedDoc(file, lines, doc, findings);
+  } catch { void 0; }
+  if (!parsedSteps) auditRunScriptSupplyChain(file, lines, file.content, findings);
   const hasDeployOrWrite = /\b(?:id-token:\s*write|packages:\s*write|deployments:\s*write|vercel\s+deploy|npm\s+publish|docker\s+push|aws-actions\/configure-aws-credentials)\b/i.test(file.content);
   if (hasDeployOrWrite && /uses:\s*["']?actions\/checkout@/i.test(file.content) && !/persist-credentials:\s*false/i.test(file.content)) {
-    push(findings, file.rel, 1, "ci-checkout-missing-persist-creds-false", "R0", "warn", "Workflow with privileged deploy/OIDC steps uses actions/checkout without 'persist-credentials: false'.", "Pass 'with: { persist-credentials: false }' to actions/checkout so GITHUB_TOKEN is not left in .git/config.");
+    push(findings, { file: file.rel, line: 1, rule: "ci-checkout-missing-persist-creds-false", rung: "R0", severity: "warn", message: "Workflow with privileged deploy/OIDC steps uses actions/checkout without 'persist-credentials: false'.", fix: "Pass 'with: { persist-credentials: false }' to actions/checkout so GITHUB_TOKEN is not left in .git/config." });
   }
 }
 
@@ -282,13 +288,13 @@ function auditLinterImmuneConfigs(file: ScannedFile, findings: Finding[]): void 
     const hasAnalyzers = /<EnableNETAnalyzers>\s*true\s*<\/EnableNETAnalyzers>/i.test(file.content) || /<AnalysisLevel>\s*latest/i.test(file.content);
     const hasTreatWarn = /<TreatWarningsAsErrors>\s*true\s*<\/TreatWarningsAsErrors>/i.test(file.content);
     if (!hasAnalyzers || !hasTreatWarn) {
-      push(findings, file.rel, 1, "immune-dotnet-missing-analyzers", "R1", "warn", "Directory.Build.props is missing <EnableNETAnalyzers>true</EnableNETAnalyzers> or <TreatWarningsAsErrors>true</TreatWarningsAsErrors>.", "Enable built-in .NET analyzers at AnalysisLevel=latest and enforce TreatWarningsAsErrors=true.");
+      push(findings, { file: file.rel, line: 1, rule: "immune-dotnet-missing-analyzers", rung: "R1", severity: "warn", message: "Directory.Build.props is missing <EnableNETAnalyzers>true</EnableNETAnalyzers> or <TreatWarningsAsErrors>true</TreatWarningsAsErrors>.", fix: "Enable built-in .NET analyzers at AnalysisLevel=latest and enforce TreatWarningsAsErrors=true." });
     }
   }
   if (base === ".golangci.yml" || base === ".golangci.yaml") {
     const missing = ["errcheck", "bodyclose", "gosec"].filter((r) => findTokenOffsets(file.content, r).length === 0);
     if (missing.length > 0) {
-      push(findings, file.rel, 1, "immune-go-missing-safety-linters", "R1", "warn", `.golangci.yml is missing critical Go safety linters: ${missing.join(", ")}.`, `Enable ${missing.join(", ")} in .golangci.yml.`);
+      push(findings, { file: file.rel, line: 1, rule: "immune-go-missing-safety-linters", rung: "R1", severity: "warn", message: `.golangci.yml is missing critical Go safety linters: ${missing.join(", ")}.`, fix: `Enable ${missing.join(", ")} in .golangci.yml.` });
     }
   }
 }

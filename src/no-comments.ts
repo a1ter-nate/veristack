@@ -39,13 +39,15 @@ function hasAllowedPrefix(inner: string, prefixes: readonly string[]): boolean {
   });
 }
 
-function commentAllowed(
-  hit: CommentHit,
-  nextCodeLine: string,
-  prefixes: readonly string[],
-  allowExportedTsDoc: boolean,
-  language: Language,
-): boolean {
+interface CommentAllowContext {
+  nextCodeLine: string;
+  prefixes: readonly string[];
+  allowExportedTsDoc: boolean;
+  language: Language;
+}
+
+function commentAllowed(hit: CommentHit, ctx: CommentAllowContext): boolean {
+  const { nextCodeLine, prefixes, allowExportedTsDoc, language } = ctx;
   const inner = normalizeBody(hit.text);
   if (!inner) return true;
   if (GENERATED.test(inner)) return true;
@@ -113,7 +115,7 @@ export function lintNoComments(
       break;
     }
     const nextCodeLine = lines[nextIdx] ?? "";
-    return !commentAllowed(hit, nextCodeLine, prefixes, allowExportedTsDoc, language);
+    return !commentAllowed(hit, { nextCodeLine, prefixes, allowExportedTsDoc, language });
   });
 
   const grouped = groupContiguous(disallowed);

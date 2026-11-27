@@ -60,71 +60,14 @@ public sealed class ExplicitStateMachineAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeNamedType(SymbolAnalysisContext context)
     {
-        if (context.Symbol is not INamedTypeSymbol type)
-        {
-            return;
-        }
-
-        if (type.TypeKind != TypeKind.Class && type.TypeKind != TypeKind.Struct)
-        {
-            return;
-        }
-
-        if (type.IsImplicitlyDeclared)
-        {
-            return;
-        }
+        if (context.Symbol is not INamedTypeSymbol type) return;
+        if (type.TypeKind != TypeKind.Class && type.TypeKind != TypeKind.Struct) return;
+        if (type.IsImplicitlyDeclared) return;
 
         var location = type.Locations.FirstOrDefault(l => l.IsInSource);
-        if (location is null)
-        {
-            return;
-        }
+        if (location is null) return;
 
-        var lifecycleBools = new HashSet<string>(StringComparer.Ordinal);
-        string? discriminantName = null;
-        var nullableSiblings = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var member in type.GetMembers())
-        {
-            if (member.IsImplicitlyDeclared || member.IsStatic)
-            {
-                continue;
-            }
-
-            ITypeSymbol? memberType = member switch
-            {
-                IPropertySymbol prop => prop.Type,
-                IFieldSymbol field when field.AssociatedSymbol is null => field.Type,
-                _ => null,
-            };
-
-            if (memberType is null)
-            {
-                continue;
-            }
-
-            var bareName = member.Name.TrimStart('_');
-            if (memberType.SpecialType == SpecialType.System_Boolean && LifecycleBoolPattern.IsMatch(bareName))
-            {
-                lifecycleBools.Add(member.Name);
-            }
-
-            var isNullable = memberType.NullableAnnotation == NullableAnnotation.Annotated ||
-                             memberType.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
-
-            if (!isNullable && StateDiscriminantPattern.IsMatch(bareName))
-            {
-                if (!(bareName == "Mode" && ConfigTypeSuffix.IsMatch(type.Name)))
-                {
-                    discriminantName = member.Name;
-                }
-            }
-            else if (isNullable)
-            {
-                nullableSiblings.Add(member.Name);
-            }
-        }
+        var (lifecycleBools, discriminantName, nullableSiblings) = InspectTypeMembers(type);
 
         if (lifecycleBools.Count >= 2)
         {
@@ -150,8 +93,54 @@ public sealed class ExplicitStateMachineAnalyzer : DiagnosticAnalyzer
         AnalyzeScatteredMutations(context, type);
     }
 
+    private static (HashSet<string> LifecycleBools, string? DiscriminantName, HashSet<string> NullableSiblings) InspectTypeMembers(INamedTypeSymbol type)
+    {
+        var lifecycleBools = new HashSet<string>(StringComparer.Ordinal);
+        string? discriminantName = null;
+        var nullableSiblings = new HashSet<string>(StringComparer.Ordinal);
+        if (type is null) return (lifecycleBools, discriminantName, nullableSiblings);
+
+        foreach (var member in type.GetMembers())
+        {
+            if (member.IsImplicitlyDeclared || member.IsStatic) continue;
+
+            ITypeSymbol? memberType = member switch
+            {
+                IPropertySymbol prop => prop.Type,
+                IFieldSymbol field when field.AssociatedSymbol is null => field.Type,
+                _ => null,
+            };
+
+            if (memberType is null) continue;
+
+            var bareName = member.Name.TrimStart('_');
+            if (memberType.SpecialType == SpecialType.System_Boolean && LifecycleBoolPattern.IsMatch(bareName))
+            {
+                lifecycleBools.Add(member.Name);
+            }
+
+            var isNullable = memberType.NullableAnnotation == NullableAnnotation.Annotated ||
+                             memberType.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
+            if (!isNullable && StateDiscriminantPattern.IsMatch(bareName))
+            {
+                if (!(bareName == "Mode" && ConfigTypeSuffix.IsMatch(type.Name)))
+                {
+                    discriminantName = member.Name;
+                }
+            }
+            else if (isNullable)
+            {
+                nullableSiblings.Add(member.Name);
+            }
+        }
+
+        return (lifecycleBools, discriminantName, nullableSiblings);
+    }
+
     private static void AnalyzeScatteredMutations(SymbolAnalysisContext context, INamedTypeSymbol type)
     {
+        if (type is null) return;
         var mutatingMethods = new Dictionary<string, Location>(StringComparer.Ordinal);
 
         foreach (var syntaxRef in type.DeclaringSyntaxReferences)

@@ -74,12 +74,38 @@ function collectInstructionInputs(repoPath: string): InstructionRuleInput[] {
   return items;
 }
 
+function collectPerfAdvisorInputs(targetPath: string, maxCandidates: number): PerfAdvisorInput[] {
+  const repo = discoverRepo(targetPath);
+  const perfFindings = analyzePerfHygiene(repo);
+  const hitsByFile = new Map<string, string[]>();
+  for (const f of perfFindings) {
+    const list = hitsByFile.get(f.file) ?? [];
+    list.push(f.rule);
+    hitsByFile.set(f.file, list);
+  }
+  const generatedPath =
+    /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
+  const prodFiles = repo.files
+    .filter((f) => Boolean(f.language) && !f.isTest && !generatedPath.test(f.rel))
+    .sort((a, b) => (hitsByFile.get(b.rel)?.length ?? 0) - (hitsByFile.get(a.rel)?.length ?? 0) || b.lines - a.lines)
+    .slice(0, maxCandidates);
+  return prodFiles.map((f) => ({
+    file: f.rel,
+    lines: f.lines,
+    snippet: f.content,
+    staticPerfHits: hitsByFile.get(f.rel) ?? [],
+  }));
+}
+
 export async function runRepoCircuit(
   circuitId: CircuitId,
   targetPath: string,
   engine: System1DecisionEngine,
   options: { baseRef?: string; maxCandidates?: number } = {},
 ): Promise<CircuitRunReport> {
+  if (!targetPath) throw new Error("Target path is required.");
+  if (!engine.name) throw new Error("Decision engine name is required.");
+
   if (circuitId === "test-triage") {
     const packet = buildSystem1Packet(targetPath, { maxCandidates: options.maxCandidates ?? 30 });
     const repo = discoverRepo(targetPath);
@@ -93,40 +119,13 @@ export async function runRepoCircuit(
       }));
     return runCircuit(testTriageCircuit, inputs, engine);
   }
-
   if (circuitId === "pr-risk-router") {
-    const inputs = collectPrRiskInputs(targetPath, options.baseRef ?? "HEAD");
-    return runCircuit(prRiskRouterCircuit, inputs, engine);
+    return runCircuit(prRiskRouterCircuit, collectPrRiskInputs(targetPath, options.baseRef ?? "HEAD"), engine);
   }
-
   if (circuitId === "instruction-lint-promoter") {
-    const inputs = collectInstructionInputs(targetPath);
-    return runCircuit(instructionLintPromoterCircuit, inputs, engine);
+    return runCircuit(instructionLintPromoterCircuit, collectInstructionInputs(targetPath), engine);
   }
-
-  const repo = discoverRepo(targetPath);
-  const perfFindings = analyzePerfHygiene(repo);
-  const hitsByFile = new Map<string, string[]>();
-  for (const f of perfFindings) {
-    const list = hitsByFile.get(f.file) ?? [];
-    list.push(f.rule);
-    hitsByFile.set(f.file, list);
-  }
-
-  const generatedPath =
-    /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
-  const prodFiles = repo.files
-    .filter((f) => Boolean(f.language) && !f.isTest && !generatedPath.test(f.rel))
-    .sort((a, b) => (hitsByFile.get(b.rel)?.length ?? 0) - (hitsByFile.get(a.rel)?.length ?? 0) || b.lines - a.lines)
-    .slice(0, options.maxCandidates ?? 25);
-
-  const inputs: PerfAdvisorInput[] = prodFiles.map((f) => ({
-    file: f.rel,
-    lines: f.lines,
-    snippet: f.content,
-    staticPerfHits: hitsByFile.get(f.rel) ?? [],
-  }));
-  return runCircuit(perfArchitectureAdvisorCircuit, inputs, engine);
+  return runCircuit(perfArchitectureAdvisorCircuit, collectPerfAdvisorInputs(targetPath, options.maxCandidates ?? 25), engine);
 }
 
 export function formatCircuitReport(report: CircuitRunReport): string {

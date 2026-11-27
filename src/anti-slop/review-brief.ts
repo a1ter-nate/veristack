@@ -165,162 +165,131 @@ function buildBlindSpots(
   return spots;
 }
 
-export function buildReviewBrief(repoPath: string, options: ReviewBriefOptions = {}): ReviewBriefReport {
-  const repoRoot = path.resolve(repoPath);
-  const baseRef = options.baseRef ?? "HEAD";
-  validateBaseRef(baseRef);
-
-  const maxLines = options.maxLines ?? 600;
-  const maxDirs = options.maxDirs ?? 8;
-  const maxDocLines = options.maxDocLines ?? 250;
-
-  const numstat = runGitClean(repoRoot, ["diff", baseRef, "--numstat", "--no-renames"]);
-  if (numstat.status !== 0) {
-    throw new Error(`git diff failed for base "${baseRef}": ${(numstat.stderr ?? "").trim()}`);
-  }
-
-  const cheatFindings = scanGitDiffCheats(repoRoot, baseRef);
-  const workaroundSignals = collectWorkaroundSignals(repoRoot, baseRef);
-
-  const cheatsByFile = new Map<string, number>();
-  for (const f of cheatFindings) {
-    cheatsByFile.set(f.file, (cheatsByFile.get(f.file) ?? 0) + 1);
-  }
-  const workaroundsByFile = new Map<string, number>();
-  for (const w of workaroundSignals) {
-    workaroundsByFile.set(w.file, (workaroundsByFile.get(w.file) ?? 0) + 1);
-  }
-
+function parseDiffNumstat(
+  numstatOut: string,
+  cheatsByFile: ReadonlyMap<string, number>,
+  workaroundsByFile: ReadonlyMap<string, number>,
+) {
+  if (!numstatOut) return { items: [] as ReviewFileItem[], dirsTouched: 0, linesAdded: 0, linesDeleted: 0, nonLockfileLinesAdded: 0, docLinesAdded: 0, deletionRatio: 0 };
   const items: ReviewFileItem[] = [];
   const dirs = new Set<string>();
-  let linesAdded = 0;
-  let linesDeleted = 0;
-  let nonLockfileLinesAdded = 0;
-  let docLinesAdded = 0;
-
-  for (const line of numstat.stdout.split(/\r?\n/)) {
+  let linesAdded = 0; let linesDeleted = 0; let nonLockfileLinesAdded = 0; let docLinesAdded = 0;
+  for (const line of numstatOut.split(/\r?\n/)) {
     if (!line.trim()) continue;
     const [rawAdd, rawDel, ...restPath] = line.split("\t");
     const file = restPath.join("\t").trim();
     if (!file) continue;
     const added = rawAdd === "-" ? 0 : Number(rawAdd) || 0;
     const deleted = rawDel === "-" ? 0 : Number(rawDel) || 0;
-
-    linesAdded += added;
-    linesDeleted += deleted;
+    linesAdded += added; linesDeleted += deleted;
     if (!LOCK_OR_GENERATED.test(file)) {
       nonLockfileLinesAdded += added;
       const dir = path.posix.dirname(file);
       dirs.add(dir === "." ? "<root>" : dir);
     }
     if (DOC_FILE.test(file)) docLinesAdded += added;
-
     const cheatCount = cheatsByFile.get(file) ?? 0;
     const workaroundCount = workaroundsByFile.get(file) ?? 0;
     const classified = classifyFileStakes(file, cheatCount, workaroundCount);
-    items.push({
-      file,
-      tier: classified.tier,
-      added,
-      deleted,
-      reason: classified.reason,
-      cheatCount,
-    });
+    items.push({ file, tier: classified.tier, added, deleted, reason: classified.reason, cheatCount });
   }
-
-  items.sort((a, b) => {
-    const tierDiff = TIER_ORDER[a.tier] - TIER_ORDER[b.tier];
-    if (tierDiff !== 0) return tierDiff;
-    return b.added + b.deleted - (a.added + a.deleted);
-  });
-
+  items.sort((a, b) => TIER_ORDER[a.tier] - TIER_ORDER[b.tier] || b.added + b.deleted - (a.added + a.deleted));
   const totalChurn = linesAdded + linesDeleted;
   const deletionRatio = totalChurn > 0 ? Number((linesDeleted / totalChurn).toFixed(3)) : 0;
-  const dirsTouched = dirs.size;
-  const additionBias = nonLockfileLinesAdded >= 300 && deletionRatio < 0.05 && items.length >= 5;
+  return { items, dirsTouched: dirs.size, linesAdded, linesDeleted, nonLockfileLinesAdded, docLinesAdded, deletionRatio };
+}
 
-  const budgetBreaches: ReviewBudgetBreach[] = [];
+interface ReviewBudgetInput {
+  cheatFindings: readonly Finding[];
+  workaroundSignals: readonly ReviewWorkaroundSignal[];
+  stats: ReturnType<typeof parseDiffNumstat>;
+  budgets: { maxLines: number; maxDirs: number; maxDocLines: number };
+}
+
+function evaluateReviewBudgets(input: ReviewBudgetInput): { breaches: ReviewBudgetBreach[]; additionBias: boolean } {
+  const { cheatFindings, workaroundSignals, stats, budgets } = input;
+  if (budgets.maxLines <= 0) throw new Error("maxLines must be positive");
+  const additionBias = stats.nonLockfileLinesAdded >= 300 && stats.deletionRatio < 0.05 && stats.items.length >= 5;
+  const breaches: ReviewBudgetBreach[] = [];
   if (cheatFindings.length > 0) {
-    budgetBreaches.push({
-      rule: "review-budget-diff-cheats",
-      actual: cheatFindings.length,
-      limit: 0,
+    breaches.push({
+      rule: "review-budget-diff-cheats", actual: cheatFindings.length, limit: 0,
       message: `${cheatFindings.length} anti-cheat / dropped-invariant violation(s) found in diff.`,
       fix: "Resolve every diff-cheats finding before requesting human review.",
     });
   }
-  if (nonLockfileLinesAdded > maxLines) {
-    budgetBreaches.push({
-      rule: "review-budget-diff-size",
-      actual: nonLockfileLinesAdded,
-      limit: maxLines,
-      message: `Diff adds ${nonLockfileLinesAdded} non-lockfile lines (review budget: <= ${maxLines}).`,
+  if (stats.nonLockfileLinesAdded > budgets.maxLines) {
+    breaches.push({
+      rule: "review-budget-diff-size", actual: stats.nonLockfileLinesAdded, limit: budgets.maxLines,
+      message: `Diff adds ${stats.nonLockfileLinesAdded} non-lockfile lines (review budget: <= ${budgets.maxLines}).`,
       fix: "Split into stacked, independently reviewable PRs or delete redundant code before asking for review.",
     });
   }
-  if (dirsTouched > maxDirs) {
-    budgetBreaches.push({
-      rule: "review-budget-shotgun-spread",
-      actual: dirsTouched,
-      limit: maxDirs,
-      message: `Diff scatters changes across ${dirsTouched} directories (budget: <= ${maxDirs}).`,
+  if (stats.dirsTouched > budgets.maxDirs) {
+    breaches.push({
+      rule: "review-budget-shotgun-spread", actual: stats.dirsTouched, limit: budgets.maxDirs,
+      message: `Diff scatters changes across ${stats.dirsTouched} directories (budget: <= ${budgets.maxDirs}).`,
       fix: "Isolate unrelated refactors or consolidate leaky abstractions into a deeper module.",
     });
   }
-  if (docLinesAdded > maxDocLines) {
-    budgetBreaches.push({
-      rule: "review-budget-doc-dump",
-      actual: docLinesAdded,
-      limit: maxDocLines,
-      message: `Diff adds ${docLinesAdded} lines of prose/docs (budget: <= ${maxDocLines}).`,
+  if (stats.docLinesAdded > budgets.maxDocLines) {
+    breaches.push({
+      rule: "review-budget-doc-dump", actual: stats.docLinesAdded, limit: budgets.maxDocLines,
+      message: `Diff adds ${stats.docLinesAdded} lines of prose/docs (budget: <= ${budgets.maxDocLines}).`,
       fix: "Trim AI-generated prose so every line respects the reader's time.",
     });
   }
   if (additionBias) {
-    budgetBreaches.push({
-      rule: "review-budget-addition-bias",
-      actual: Math.round(deletionRatio * 100),
-      limit: 5,
-      message: `Heavily additive diff (+${nonLockfileLinesAdded}/-${linesDeleted}, ${(deletionRatio * 100).toFixed(1)}% deletions across ${items.length} files).`,
+    breaches.push({
+      rule: "review-budget-addition-bias", actual: Math.round(stats.deletionRatio * 100), limit: 5,
+      message: `Heavily additive diff (+${stats.nonLockfileLinesAdded}/-${stats.linesDeleted}, ${(stats.deletionRatio * 100).toFixed(1)}% deletions across ${stats.items.length} files).`,
       fix: "Check for workarounds or parallel wrappers that should replace or delete existing code instead.",
     });
   }
   if (workaroundSignals.length > 0) {
-    budgetBreaches.push({
-      rule: "review-budget-workarounds",
-      actual: workaroundSignals.length,
-      limit: 0,
+    breaches.push({
+      rule: "review-budget-workarounds", actual: workaroundSignals.length, limit: 0,
       message: `Added ${workaroundSignals.length} workaround/fallback-swallow signal(s) in production diff.`,
       fix: "Fix the root cause instead of layering HACK/WORKAROUND markers or silent fallback catches.",
     });
   }
+  return { breaches, additionBias };
+}
 
+export function buildReviewBrief(repoPath: string, options: ReviewBriefOptions = {}): ReviewBriefReport {
+  const repoRoot = path.resolve(repoPath);
+  const baseRef = options.baseRef ?? "HEAD";
+  validateBaseRef(baseRef);
+  const budgets = { maxLines: options.maxLines ?? 600, maxDirs: options.maxDirs ?? 8, maxDocLines: options.maxDocLines ?? 250 };
+  const numstat = runGitClean(repoRoot, ["diff", baseRef, "--numstat", "--no-renames"]);
+  if (numstat.status !== 0) {
+    throw new Error(`git diff failed for base "${baseRef}": ${(numstat.stderr ?? "").trim()}`);
+  }
+  const cheatFindings = scanGitDiffCheats(repoRoot, baseRef);
+  const workaroundSignals = collectWorkaroundSignals(repoRoot, baseRef);
+  const cheatsByFile = new Map<string, number>();
+  for (const f of cheatFindings) cheatsByFile.set(f.file, (cheatsByFile.get(f.file) ?? 0) + 1);
+  const workaroundsByFile = new Map<string, number>();
+  for (const w of workaroundSignals) workaroundsByFile.set(w.file, (workaroundsByFile.get(w.file) ?? 0) + 1);
+  const stats = parseDiffNumstat(numstat.stdout, cheatsByFile, workaroundsByFile);
+  const { breaches, additionBias } = evaluateReviewBudgets({ cheatFindings, workaroundSignals, stats, budgets });
   return {
-    schemaVersion: 1,
-    repo: repoRoot,
-    baseRef,
-    passed: budgetBreaches.length === 0,
+    schemaVersion: 1, repo: repoRoot, baseRef, passed: breaches.length === 0,
     metrics: {
-      filesChanged: items.length,
-      dirsTouched,
-      linesAdded,
-      linesDeleted,
-      netLines: linesAdded - linesDeleted,
-      nonLockfileLinesAdded,
-      docLinesAdded,
-      deletionRatio,
+      filesChanged: stats.items.length, dirsTouched: stats.dirsTouched,
+      linesAdded: stats.linesAdded, linesDeleted: stats.linesDeleted,
+      netLines: stats.linesAdded - stats.linesDeleted,
+      nonLockfileLinesAdded: stats.nonLockfileLinesAdded,
+      docLinesAdded: stats.docLinesAdded, deletionRatio: stats.deletionRatio,
     },
-    budgets: { maxLines, maxDirs, maxDocLines },
-    budgetBreaches,
-    cheatFindings,
-    workaroundSignals,
+    budgets, budgetBreaches: breaches, cheatFindings, workaroundSignals,
     reviewQueue: {
-      mustReview: items.filter((i) => i.tier === "critical"),
-      coreLogic: items.filter((i) => i.tier === "core"),
-      verifyOracles: items.filter((i) => i.tier === "verify"),
-      lowStakes: items.filter((i) => i.tier === "low"),
+      mustReview: stats.items.filter((i) => i.tier === "critical"),
+      coreLogic: stats.items.filter((i) => i.tier === "core"),
+      verifyOracles: stats.items.filter((i) => i.tier === "verify"),
+      lowStakes: stats.items.filter((i) => i.tier === "low"),
     },
-    blindSpots: buildBlindSpots(items, docLinesAdded, additionBias),
+    blindSpots: buildBlindSpots(stats.items, stats.docLinesAdded, additionBias),
     ownershipChecklist: [
       "Problem & prior art understood before generation (no unreviewed first-draft pass-through).",
       "High-stakes slice (Must-Review queue above) verified directly by a human owner.",
@@ -365,6 +334,7 @@ export function formatReviewBriefTerminal(report: ReviewBriefReport): string {
 }
 
 export function formatReviewBriefMarkdown(report: ReviewBriefReport): string {
+  if (!report.repo) throw new Error("report.repo is required");
   const m = report.metrics;
   const out: string[] = [];
   out.push(`## Human Review Brief (\`${report.baseRef}\`) — ${report.passed ? "Within Budget" : "Attention Required"}`);

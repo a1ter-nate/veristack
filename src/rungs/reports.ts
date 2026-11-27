@@ -6,31 +6,15 @@ import { maskCode } from "../test-lexical.ts";
 import type { RungId } from "../types.ts";
 import { isHostRepoFile } from "./manifest.ts";
 
-interface StructuredReportMetrics {
-  testsPassed?: number;
-  testsFailed?: number;
-  testsSkipped?: number;
-  mutationScore?: number;
-  lineCoveragePct?: number;
-  fileCoverage: Map<string, number>;
-}
+interface StructuredReportMetrics { testsPassed?: number; testsFailed?: number; testsSkipped?: number; mutationScore?: number; lineCoveragePct?: number; fileCoverage: Map<string, number>; }
 interface CrapEntry { file: string; cyclomaticComplexity: number; coveragePct: number; crapScore: number; }
-interface CrapReport {
-  maxAllowed: number; passed: boolean; worstCrap: number;
-  offenders: CrapEntry[]; evaluatedFiles: number; uncoveredRepoFiles: string[];
-}
-interface DetailedCoverage {
-  fileRate: Map<string, number>;
-  lineHits: Map<string, Map<number, number>>;
-  branchHits?: Map<string, Map<number, { found: number; hit: number }>>;
-}
+interface CrapReport { maxAllowed: number; passed: boolean; worstCrap: number; offenders: CrapEntry[]; evaluatedFiles: number; uncoveredRepoFiles: string[]; }
+interface DetailedCoverage { fileRate: Map<string, number>; lineHits: Map<string, Map<number, number>>; branchHits?: Map<string, Map<number, { found: number; hit: number }>>; }
 
 const EXACT_REPORT_PATHS: ReadonlySet<string> = new Set([
-  "coverage/lcov.info", "lcov.info", ".verification/lcov.info",
-  "coverage/cobertura-coverage.xml", "coverage.cobertura.xml", ".verification/coverage.cobertura.xml",
+  "coverage/lcov.info", "lcov.info", ".verification/lcov.info", "coverage/cobertura-coverage.xml", "coverage.cobertura.xml", ".verification/coverage.cobertura.xml",
   "reports/mutation/mutation.json", "StrykerOutput/mutation-report.json", ".verification/mutation.json",
-  "junit.xml", "test-results/junit.xml", "TestResults/results.trx",
-  ".verification/junit.xml", ".verification/reports/junit.xml",
+  "junit.xml", "test-results/junit.xml", "TestResults/results.trx", ".verification/junit.xml", ".verification/reports/junit.xml",
 ]);
 
 function realpathSafe(p: string): string {
@@ -53,6 +37,8 @@ function canonicalizeCovPath(rawPath: string, repoRoot?: string): string {
 }
 
 function parseLcovDetailed(content: string, repoRoot?: string): DetailedCoverage {
+  if (!content) return { fileRate: new Map(), lineHits: new Map(), branchHits: new Map() };
+  if (!content.trim()) return { fileRate: new Map(), lineHits: new Map(), branchHits: new Map() };
   const accum = new Map<string, { found: number; hit: number }>();
   const lineHits = new Map<string, Map<number, number>>();
   const branchHits = new Map<string, Map<number, { found: number; hit: number }>>();
@@ -278,31 +264,38 @@ function parseJunitOrTrx(content: string): { passed: number; failed: number; ski
   return undefined;
 }
 
-function isFreshFile(abs: string, rel: string, minMtimeMs?: number, maxMtimeMs?: number, preSnapshot?: ReadonlyMap<string, { mtimeMs: number; size: number }>): boolean {
-  if (!fs.existsSync(abs)) return false;
+interface FreshFileOptions {
+  minMtimeMs?: number;
+  maxMtimeMs?: number;
+  preSnapshot?: ReadonlyMap<string, { mtimeMs: number; size: number }>;
+}
+
+function isFreshFile(abs: string, rel: string, opts?: FreshFileOptions): boolean {
+  let st: fs.Stats;
+  try { st = fs.statSync(abs); } catch { return false; }
+  const { minMtimeMs, maxMtimeMs, preSnapshot } = opts ?? {};
   if (minMtimeMs === undefined && maxMtimeMs === undefined && !preSnapshot) return true;
-  try {
-    const st = fs.statSync(abs);
-    if (preSnapshot) { const prev = preSnapshot.get(rel); return !prev || prev.mtimeMs !== st.mtimeMs || prev.size !== st.size; }
-    if (minMtimeMs !== undefined && st.mtimeMs < minMtimeMs - 1500) return false;
-    return maxMtimeMs === undefined || st.mtimeMs <= maxMtimeMs;
-  } catch { return false; }
+  if (preSnapshot) { const prev = preSnapshot.get(rel); return !prev || prev.mtimeMs !== st.mtimeMs || prev.size !== st.size; }
+  if (minMtimeMs !== undefined && st.mtimeMs < minMtimeMs - 1500) return false;
+  return maxMtimeMs === undefined || st.mtimeMs <= maxMtimeMs;
 }
 
 function parseStructuredReports(
   repoRoot: string,
   options?: { minMtimeMs?: number; maxMtimeMs?: number; rung?: RungId; preSnapshot?: ReadonlyMap<string, { mtimeMs: number; size: number }> },
 ): StructuredReportMetrics {
+  if (!repoRoot) throw new Error("repoRoot is required.");
   const result: StructuredReportMetrics = { fileCoverage: new Map() };
-  const { minMtimeMs: minM, maxMtimeMs: maxM, rung, preSnapshot: snap } = options ?? {};
+  if (!fs.existsSync(repoRoot)) return result;
+  const rung = options?.rung;
   for (const rel of ["coverage/lcov.info", "lcov.info", ".verification/lcov.info"]) {
     const abs = path.join(repoRoot, rel);
-    if (isFreshFile(abs, rel, minM, maxM, snap)) { result.fileCoverage = parseLcov(fs.readFileSync(abs, "utf8")); break; }
+    if (isFreshFile(abs, rel, options)) { result.fileCoverage = parseLcov(fs.readFileSync(abs, "utf8")); break; }
   }
   if (result.fileCoverage.size === 0) {
     for (const rel of ["coverage/cobertura-coverage.xml", "coverage.cobertura.xml", ".verification/coverage.cobertura.xml"]) {
       const abs = path.join(repoRoot, rel);
-      if (isFreshFile(abs, rel, minM, maxM, snap)) { result.fileCoverage = parseCoberturaXml(fs.readFileSync(abs, "utf8"), repoRoot); break; }
+      if (isFreshFile(abs, rel, options)) { result.fileCoverage = parseCoberturaXml(fs.readFileSync(abs, "utf8"), repoRoot); break; }
     }
   }
   if (result.fileCoverage.size > 0) {
@@ -312,13 +305,13 @@ function parseStructuredReports(
   if (!rung || rung === "R5") {
     for (const rel of ["reports/mutation/mutation.json", "StrykerOutput/mutation-report.json", ".verification/mutation.json"]) {
       const abs = path.join(repoRoot, rel);
-      if (isFreshFile(abs, rel, minM, maxM, snap)) { const score = parseStrykerJson(fs.readFileSync(abs, "utf8")); if (score !== undefined) { result.mutationScore = score; break; } }
+      if (isFreshFile(abs, rel, options)) { const score = parseStrykerJson(fs.readFileSync(abs, "utf8")); if (score !== undefined) { result.mutationScore = score; break; } }
     }
   }
   if (!rung || rung === "R2" || rung === "R3" || rung === "R4" || rung === "R7") {
     for (const rel of ["junit.xml", "test-results/junit.xml", "TestResults/results.trx", ".verification/junit.xml", ".verification/reports/junit.xml"]) {
       const abs = path.join(repoRoot, rel);
-      if (isFreshFile(abs, rel, minM, maxM, snap)) {
+      if (isFreshFile(abs, rel, options)) {
         const counts = parseJunitOrTrx(fs.readFileSync(abs, "utf8"));
         if (counts) { result.testsPassed = counts.passed; result.testsFailed = counts.failed; result.testsSkipped = counts.skipped; break; }
       }
@@ -341,118 +334,90 @@ function lineAtOffset(source: string, offset: number): number {
   return line;
 }
 
-function extractJsFunctionSpans(filePath: string, source: string): FunctionSpan[] {
-  const totalLines = source.split(/\r?\n/).length;
-  try {
-    const parsed = parseSync(filePath, source);
-    const spans: FunctionSpan[] = [];
-    const walk = (node: unknown, cur: { count: number }): void => {
-      if (!node || typeof node !== "object") return;
-      const rec = node as Record<string, unknown>;
-      const t = typeof rec.type === "string" ? rec.type : "";
-      if (JS_FUNC_TYPES.has(t)) {
-        const child = { count: 1 };
-        for (const val of Object.values(rec)) {
-          if (Array.isArray(val)) for (const item of val) walk(item, child);
-          else walk(val, child);
-        }
-        const st = typeof rec.start === "number" ? lineAtOffset(source, rec.start) : 1;
-        const en = typeof rec.end === "number" ? lineAtOffset(source, rec.end) : st;
-        spans.push({ startLine: st, endLine: en, cc: child.count });
-        return;
-      }
-      if (JS_BRANCH_TYPES.has(t) || (t === "SwitchCase" && rec.test !== null)) cur.count += 1;
-      for (const val of Object.values(rec)) {
-        if (Array.isArray(val)) for (const item of val) walk(item, cur);
-        else walk(val, cur);
-      }
-    };
-    const top = { count: 1 };
-    walk(parsed.program, top);
-    if (spans.length === 0 || top.count > 1) spans.push({ startLine: 1, endLine: totalLines, cc: top.count });
-    return spans;
-  } catch {
-    return [{ startLine: 1, endLine: totalLines, cc: 1 }];
+function pushAstValueChildren(rec: Record<string, unknown>, target: { count: number }, stack: Array<{ node: unknown; cur: { count: number } }>): void {
+  for (const val of Object.values(rec)) {
+    if (Array.isArray(val)) for (let i = val.length - 1; i >= 0; i--) stack.push({ node: val[i], cur: target });
+    else if (val && typeof val === "object") stack.push({ node: val, cur: target });
   }
 }
 
+function extractJsFunctionSpans(filePath: string, source: string): FunctionSpan[] {
+  if (!filePath) throw new Error("filePath is required.");
+  const totalLines = source.split(/\r?\n/).length;
+  if (!source) return [{ startLine: 1, endLine: totalLines, cc: 1 }];
+  let parsed: ReturnType<typeof parseSync>;
+  try { parsed = parseSync(filePath, source); } catch { return [{ startLine: 1, endLine: totalLines, cc: 1 }]; }
+  const pending: Array<{ startLine: number; endLine: number; counter: { count: number } }> = [];
+  const top = { count: 1 };
+  const stack: Array<{ node: unknown; cur: { count: number } }> = [{ node: parsed.program, cur: top }];
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (!frame || !frame.node || typeof frame.node !== "object") continue;
+    const rec = frame.node as Record<string, unknown>;
+    const t = typeof rec.type === "string" ? rec.type : "";
+    let target = frame.cur;
+    if (JS_FUNC_TYPES.has(t)) {
+      target = { count: 1 };
+      const st = typeof rec.start === "number" ? lineAtOffset(source, rec.start) : 1;
+      const en = typeof rec.end === "number" ? lineAtOffset(source, rec.end) : st;
+      pending.push({ startLine: st, endLine: en, counter: target });
+    } else if (JS_BRANCH_TYPES.has(t) || (t === "SwitchCase" && rec.test !== null)) {
+      target.count += 1;
+    }
+    pushAstValueChildren(rec, target, stack);
+  }
+  const spans: FunctionSpan[] = pending.map((p) => ({ startLine: p.startLine, endLine: p.endLine, cc: p.counter.count }));
+  if (spans.length === 0 || top.count > 1) spans.push({ startLine: 1, endLine: totalLines, cc: top.count });
+  return spans;
+}
+
 function extractFallbackFunctionSpans(filePath: string, source: string): FunctionSpan[] {
+  if (!filePath) throw new Error("filePath is required.");
+  if (!source) return [{ startLine: 1, endLine: 1, cc: 1 }];
   const lang = filePath.endsWith(".py") ? "python" : filePath.endsWith(".rs") ? "rust" : filePath.endsWith(".cs") ? "csharp" : filePath.endsWith(".go") ? "go" : undefined;
-  const cleaned = maskCode(source, lang, true);
-  const lines = cleaned.split(/\r?\n/);
+  const lines = maskCode(source, lang, true).split(/\r?\n/);
   const isCs = lang === "csharp";
   const starts: number[] = [0];
   for (let i = 1; i < lines.length; i++) {
     const l = lines[i] ?? "";
-    if (
-      /^\s*(?:async\s+)?def\s+\w+\s*\(/.test(l) ||
-      /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+\w+/.test(l) ||
-      /^\s*func\s+(?:\([^)]+\)\s+)?\w+\s*\(/.test(l) ||
-      (isCs && /^\s*(?:public|private|internal|protected)\s+(?:static\s+|async\s+|virtual\s+|override\s+)*[A-Za-z0-9_<>,.\s?]+\s+\w+\s*\(/.test(l))
-    ) {
-      starts.push(i);
-    }
+    if (/^\s*(?:async\s+)?def\s+\w+\s*\(/.test(l) || /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+\w+/.test(l) || /^\s*func\s+(?:\([^)]+\)\s+)?\w+\s*\(/.test(l) || (isCs && /^\s*(?:public|private|internal|protected)\s+(?:static\s+|async\s+|virtual\s+|override\s+)*[A-Za-z0-9_<>,.\s?]+\s+\w+\s*\(/.test(l))) starts.push(i);
   }
-  const branchRe = isCs
-    ? /\b(?:if|else\s+if|for|foreach|while|case|catch)\b|&&|\|\|/g
-    : /\b(?:if|elif|else\s+if|for|while|case|catch|except|and|or)\b|&&|\|\||=>|\?(?![.?])/g;
+  const branchRe = isCs ? /\b(?:if|else\s+if|for|foreach|while|case|catch)\b|&&|\|\|/g : /\b(?:if|elif|else\s+if|for|while|case|catch|except|and|or)\b|&&|\|\||=>|\?(?![.?])/g;
   const spans: FunctionSpan[] = [];
   for (let idx = 0; idx < starts.length; idx++) {
-    const startIdx = starts[idx] ?? 0;
-    const endIdx = (starts[idx + 1] ?? lines.length) - 1;
-    const chunk = lines.slice(startIdx, endIdx + 1).join("\n");
-    const branches = chunk.match(branchRe);
+    const startIdx = starts[idx] ?? 0; const endIdx = (starts[idx + 1] ?? lines.length) - 1;
+    const branches = lines.slice(startIdx, endIdx + 1).join("\n").match(branchRe);
     spans.push({ startLine: startIdx + 1, endLine: endIdx + 1, cc: 1 + (branches ? branches.length : 0) });
   }
   return spans;
 }
 
-function attributeToInnermostSpans(
-  spans: readonly FunctionSpan[],
-  ln: number,
-  onOwner: (idx: number) => void,
-): void {
+function attributeToInnermostSpans(spans: readonly FunctionSpan[], ln: number, onOwner: (idx: number) => void): void {
   let bestLen = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < spans.length; i++) {
-    const sp = spans[i];
-    if (sp && ln >= sp.startLine && ln <= sp.endLine) bestLen = Math.min(bestLen, sp.endLine - sp.startLine);
-  }
+  for (let i = 0; i < spans.length; i++) { const sp = spans[i]; if (sp && ln >= sp.startLine && ln <= sp.endLine) bestLen = Math.min(bestLen, sp.endLine - sp.startLine); }
   if (!Number.isFinite(bestLen)) return;
-  for (let i = 0; i < spans.length; i++) {
-    const sp = spans[i];
-    if (sp && ln >= sp.startLine && ln <= sp.endLine && sp.endLine - sp.startLine === bestLen) onOwner(i);
+  for (let i = 0; i < spans.length; i++) { const sp = spans[i]; if (sp && ln >= sp.startLine && ln <= sp.endLine && sp.endLine - sp.startLine === bestLen) onOwner(i); }
+}
+
+function fillUnattributedSpanLines(spans: readonly FunctionSpan[], idx: number, lineMap: ReadonlyMap<number, number>, bucket: { found: number; hit: number }): void {
+  const sp = spans[idx]; if (!sp || bucket.found > 0) return;
+  for (const [ln, hits] of lineMap.entries()) {
+    if (ln < sp.startLine || ln > sp.endLine) continue;
+    if (spans.every((o, j) => j === idx || ln < o.startLine || ln > o.endLine || o.startLine === o.endLine)) { bucket.found += 1; if (hits > 0) bucket.hit += 1; }
   }
 }
 
-function computeOwnedSpanCoverage(
-  spans: readonly FunctionSpan[],
-  lineMap: ReadonlyMap<number, number> | undefined,
-  branchMap?: ReadonlyMap<number, { found: number; hit: number }>,
-): Map<number, number> {
+function computeOwnedSpanCoverage(spans: readonly FunctionSpan[], lineMap: ReadonlyMap<number, number> | undefined, branchMap?: ReadonlyMap<number, { found: number; hit: number }>): Map<number, number> {
   const out = new Map<number, number>();
+  if (spans.length === 0) return out;
   if (!lineMap || lineMap.size === 0) { for (let i = 0; i < spans.length; i++) out.set(i, 0); return out; }
   const counts = spans.map(() => ({ found: 0, hit: 0 }));
   const brCounts = spans.map(() => ({ found: 0, hit: 0 }));
-  for (const [ln, hits] of lineMap.entries()) {
-    attributeToInnermostSpans(spans, ln, (i) => { const b = counts[i]; if (b) { b.found += 1; if (hits > 0) b.hit += 1; } });
-  }
-  if (branchMap) {
-    for (const [ln, br] of branchMap.entries()) {
-      attributeToInnermostSpans(spans, ln, (i) => { const b = brCounts[i]; if (b) { b.found += br.found; b.hit += br.hit; } });
-    }
-  }
+  for (const [ln, hits] of lineMap.entries()) attributeToInnermostSpans(spans, ln, (i) => { const b = counts[i]; if (b) { b.found += 1; if (hits > 0) b.hit += 1; } });
+  if (branchMap) for (const [ln, br] of branchMap.entries()) attributeToInnermostSpans(spans, ln, (i) => { const b = brCounts[i]; if (b) { b.found += br.found; b.hit += br.hit; } });
   for (let i = 0; i < spans.length; i++) {
-    const b = counts[i]; const sp = spans[i];
-    if (b && b.found === 0 && sp) {
-      for (const [ln, hits] of lineMap.entries()) {
-        if (ln < sp.startLine || ln > sp.endLine) continue;
-        if (spans.every((o, j) => j === i || ln < o.startLine || ln > o.endLine || o.startLine === o.endLine)) {
-          b.found += 1; if (hits > 0) b.hit += 1;
-        }
-      }
-    }
-    const lineCov = b && b.found > 0 ? b.hit / b.found : 0;
-    const br = brCounts[i];
+    const b = counts[i]; if (b) fillUnattributedSpanLines(spans, i, lineMap, b);
+    const lineCov = b && b.found > 0 ? b.hit / b.found : 0; const br = brCounts[i];
     out.set(i, Math.min(lineCov, br && br.found > 0 ? br.hit / br.found : lineCov));
   }
   return out;

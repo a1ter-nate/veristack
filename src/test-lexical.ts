@@ -35,34 +35,44 @@ export function lineOf(content: string, index: number): number {
   return line;
 }
 
-export function hasNonFrameworkImport(raw: string, language?: string): boolean {
-  if (language === "csharp") {
-    for (const match of raw.matchAll(CSHARP_USING)) {
-      const ns = match[1] ?? "";
-      if (!CSHARP_FRAMEWORK_USING.test(ns)) return true;
-    }
-    if (CSHARP_PARENT_NS_TEST.test(raw) || /^\s*namespace\s+[A-Za-z_][A-Za-z0-9_.]*\s*[;{]/m.test(raw)) {
-      const masked = maskCode(raw, "csharp");
-      for (const match of masked.matchAll(/\bnew\s+([A-Z][A-Za-z0-9_]*)\s*[<(]/g)) {
-        const typeName = match[1] ?? "";
-        if (!CSHARP_FRAMEWORK_TYPE.test(typeName)) return true;
-      }
-      for (const match of masked.matchAll(/\b([A-Z][A-Za-z0-9_]*)\.[A-Z][A-Za-z0-9_]*\s*[<(]/g)) {
-        const typeName = match[1] ?? "";
-        if (!CSHARP_FRAMEWORK_TYPE.test(typeName)) return true;
-      }
-      for (const match of masked.matchAll(/\bclass\s+[A-Za-z0-9_]+\s*:\s*([A-Z][A-Za-z0-9_]*)/g)) {
-        const baseName = match[1] ?? "";
-        if (!CSHARP_FRAMEWORK_TYPE.test(baseName)) return true;
-      }
-    }
-    return false;
+function hasCSharpNonFrameworkImport(raw: string): boolean {
+  for (const match of raw.matchAll(CSHARP_USING)) {
+    if (!CSHARP_FRAMEWORK_USING.test(match[1] ?? "")) return true;
   }
-  if (language === "rust") {
-    for (const match of raw.matchAll(RUST_USE)) {
-      const root = match[1] ?? "";
-      if (!RUST_FRAMEWORK_USE.test(root)) return true;
+  if (!CSHARP_PARENT_NS_TEST.test(raw) && !/^\s*namespace\s+[A-Za-z_][A-Za-z0-9_.]*\s*[;{]/m.test(raw)) return false;
+  const masked = maskCode(raw, "csharp");
+  for (const match of masked.matchAll(/\bnew\s+([A-Z][A-Za-z0-9_]*)\s*[<(]/g)) {
+    if (!CSHARP_FRAMEWORK_TYPE.test(match[1] ?? "")) return true;
+  }
+  for (const match of masked.matchAll(/\b([A-Z][A-Za-z0-9_]*)\.[A-Z][A-Za-z0-9_]*\s*[<(]/g)) {
+    if (!CSHARP_FRAMEWORK_TYPE.test(match[1] ?? "")) return true;
+  }
+  for (const match of masked.matchAll(/\bclass\s+[A-Za-z0-9_]+\s*:\s*([A-Z][A-Za-z0-9_]*)/g)) {
+    if (!CSHARP_FRAMEWORK_TYPE.test(match[1] ?? "")) return true;
+  }
+  return false;
+}
+
+function hasGoNonFrameworkImport(raw: string): boolean {
+  const GO_STDLIB_OR_TEST = /^(?:testing|fmt|os|io|bytes|strings|strconv|errors|context|time|math|sort|slices|maps|sync|net|http|encoding|path|filepath|regexp|reflect|runtime|bufio|crypto|database|flag|log|os\/exec|net\/http|net\/http\/httptest|encoding\/json|path\/filepath|github\.com\/stretchr\/testify|pgregory\.net\/rapid)(?:\/|$)/;
+  const goImports = [...raw.matchAll(/"([a-zA-Z0-9._/-]+)"/g)].map((m) => m[1] ?? "");
+  if (goImports.some((imp) => imp.length > 0 && !GO_STDLIB_OR_TEST.test(imp))) return true;
+  const pkgMatch = /^\s*package\s+([a-zA-Z0-9_]+)/m.exec(raw);
+  if (!pkgMatch?.[1] || pkgMatch[1].endsWith("_test")) return false;
+  const masked = maskCode(raw, "go");
+  for (const m of masked.matchAll(/\b([A-Za-z][A-Za-z0-9_]*)\s*\(/g)) {
+    if (!/^(?:Test[A-Z]|Benchmark[A-Z]|Fuzz[A-Z]|Example|if|for|switch|func|make|len|cap|append|new|delete|panic|recover|fmt|t|b|assert|require|rapid|errors|strings|bytes|time|context|json|os|filepath|http|httptest|testing)$/.test(m[1] ?? "")) {
+      return true;
     }
+  }
+  return false;
+}
+
+export function hasNonFrameworkImport(raw: string, language?: string): boolean {
+  if (!raw) return false;
+  if (language === "csharp") return hasCSharpNonFrameworkImport(raw);
+  if (language === "rust") {
+    for (const match of raw.matchAll(RUST_USE)) if (!RUST_FRAMEWORK_USE.test(match[1] ?? "")) return true;
     return /\bsuper::|\bcrate::/.test(raw);
   }
   if (language === "python") {
@@ -72,33 +82,15 @@ export function hasNonFrameworkImport(raw: string, language?: string): boolean {
     }
     return false;
   }
-  if (language === "go") {
-    const GO_STDLIB_OR_TEST = /^(?:testing|fmt|os|io|bytes|strings|strconv|errors|context|time|math|sort|slices|maps|sync|net|http|encoding|path|filepath|regexp|reflect|runtime|bufio|crypto|database|flag|log|os\/exec|net\/http|net\/http\/httptest|encoding\/json|path\/filepath|github\.com\/stretchr\/testify|pgregory\.net\/rapid)(?:\/|$)/;
-    const goImports = [...raw.matchAll(/"([a-zA-Z0-9._/-]+)"/g)].map((m) => m[1] ?? "");
-    if (goImports.some((imp) => imp.length > 0 && !GO_STDLIB_OR_TEST.test(imp))) {
-      return true;
-    }
-    const pkgMatch = /^\s*package\s+([a-zA-Z0-9_]+)/m.exec(raw);
-    if (pkgMatch?.[1] && !pkgMatch[1].endsWith("_test")) {
-      const masked = maskCode(raw, "go");
-      for (const m of masked.matchAll(/\b([A-Za-z][A-Za-z0-9_]*)\s*\(/g)) {
-        const fn = m[1] ?? "";
-        if (!/^(?:Test[A-Z]|Benchmark[A-Z]|Fuzz[A-Z]|Example|if|for|switch|func|make|len|cap|append|new|delete|panic|recover|fmt|t|b|assert|require|rapid|errors|strings|bytes|time|context|json|os|filepath|http|httptest|testing)$/.test(fn)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-  for (const match of raw.matchAll(IMPORT_SOURCE)) {
-    const spec = match[1] ?? "";
-    if (!FRAMEWORK_IMPORT.test(spec)) return true;
-  }
+  if (language === "go") return hasGoNonFrameworkImport(raw);
+  for (const match of raw.matchAll(IMPORT_SOURCE)) if (!FRAMEWORK_IMPORT.test(match[1] ?? "")) return true;
   return /\b(?:await\s+import|require)\s*\(\s*["'](?:\.\.?\/|@?[a-z])/i.test(raw);
 }
 
 export function scanVitestConfigs(repo: DiscoveredRepo): Finding[] {
+  if (!repo.root) throw new Error("Repo root is required.");
   const findings: Finding[] = [];
+  if (repo.files.length === 0) return findings;
   for (const file of repo.files) {
     const base = path.posix.basename(file.rel);
     if (!VITEST_CONFIG_FILE.test(base)) continue;
@@ -110,29 +102,16 @@ export function scanVitestConfigs(repo: DiscoveredRepo): Finding[] {
 
     if (!PINS_UTC.test(file.content)) {
       findings.push({
-        id: `TD:utc:${file.rel}`,
-        rule: "vitest-missing-utc-tz",
-        category: "test-smell",
-        rung: "R0",
-        severity: "warn",
-        file: file.rel,
-        line: 1,
-        message: `${file.rel} does not pin test.env.TZ to "UTC".`,
+        id: `TD:utc:${file.rel}`, rule: "vitest-missing-utc-tz", category: "test-smell", rung: "R0", severity: "warn",
+        file: file.rel, line: 1, message: `${file.rel} does not pin test.env.TZ to "UTC".`,
         fix: 'Set test: { env: { TZ: "UTC" } } so date/time tests are identical across developer laptops and CI.',
       });
     }
-
     const missingRestore = MOCK_RESTORATION_CHECKS.filter((c) => !c.regex.test(file.content)).map((c) => c.key);
     if (missingRestore.length > 0) {
       findings.push({
-        id: `TD:restore:${file.rel}`,
-        rule: "vitest-missing-mock-restoration",
-        category: "test-smell",
-        rung: "R0",
-        severity: "warn",
-        file: file.rel,
-        line: 1,
-        message: `${file.rel} omits ${missingRestore.join(", ")}: true, risking mock/env leakage between tests.`,
+        id: `TD:restore:${file.rel}`, rule: "vitest-missing-mock-restoration", category: "test-smell", rung: "R0", severity: "warn",
+        file: file.rel, line: 1, message: `${file.rel} omits ${missingRestore.join(", ")}: true, risking mock/env leakage between tests.`,
         fix: "Enable restoreMocks: true, unstubGlobals: true, and unstubEnvs: true in Vitest config.",
       });
     }
@@ -152,6 +131,66 @@ const SKIP_IN_AFTER_HOOK = /\b(?:afterEach|afterAll)\s*\([\s\S]{0,220}?\b(?:test
 const LONG_UNREFD_TIMER = /\bsetTimeout\s*\([^,\n]+,\s*(?:[5-9]\d{3}|\d{5,})\s*\)/g;
 const PY_GLOBAL_TEST_MUTATION = /\b(?:sys\.modules\s*\[[^\]]+\]\s*=|sys\.path\.(?:append|insert)\s*\()/g;
 
+function scanViMockHoistHazard(file: ScannedFile, raw: string, code: string, findings: Finding[]): void {
+  if (!/\bvi\.mock\s*\(/.test(code) || /\bvi\.hoisted\s*\(/.test(code)) return;
+  const topDecls = new Set<string>();
+  const mockIdx = code.search(/\bvi\.mock\s*\(/);
+  for (const d of code.slice(0, Math.max(0, mockIdx)).matchAll(/^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/gm)) {
+    if (d[1]) topDecls.add(d[1]);
+  }
+  if (topDecls.size === 0) return;
+  const factoryMatch = /\bvi\.mock\s*\([^,\n]+,\s*(?:async\s*)?\(\s*[^)]*\)\s*=>\s*\{?([\s\S]{0,400})/.exec(code.slice(mockIdx));
+  const referencedIds = new Set((factoryMatch?.[1] ?? "").match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? []);
+  for (const name of topDecls) {
+    if (!referencedIds.has(name)) continue;
+    const line = lineOf(raw, mockIdx);
+    findings.push({
+      id: `TH:vi-hoist:${file.rel}:${line}`, rule: "vitest-mock-hoist-hazard", category: "test-smell", rung: "R0", severity: "error",
+      file: file.rel, line, message: `vi.mock() factory references unhoisted local binding '${name}' (hoisting causes runtime ReferenceError or broken cleanup).`,
+      fix: `Declare '${name}' inside vi.hoisted(() => ...) so it is initialized before vi.mock executes.`,
+    });
+    break;
+  }
+}
+
+function scanTsJsTestHarnessGuards(
+  ctx: { file: ScannedFile; raw: string; code: string; repoHasEmulator: boolean },
+  findings: Finding[],
+): void {
+  if (!ctx.code) return;
+  const { file, raw, code, repoHasEmulator } = ctx;
+  for (const m of code.matchAll(SKIP_IN_AFTER_HOOK)) {
+    const line = lineOf(raw, m.index ?? 0);
+    findings.push({ id: `TH:skip-after:${file.rel}:${line}`, rule: "no-skip-in-after-hook", category: "cheat", rung: "R0", severity: "error", file: file.rel, line, message: "Calling test.skip() inside afterEach/afterAll aborts cleanup hooks and masks teardown failures.", fix: "Guard conditional skips at the top of the test or in beforeEach, never inside teardown hooks." });
+  }
+  if (!/\.unref\s*\(\s*\)|\bclearTimeout\s*\(/.test(code)) {
+    for (const m of code.matchAll(LONG_UNREFD_TIMER)) {
+      const line = lineOf(raw, m.index ?? 0);
+      findings.push({ id: `TH:long-timer:${file.rel}:${line}`, rule: "no-unrefd-long-test-timer", category: "test-smell", rung: "R2", severity: "warn", file: file.rel, line, message: "Long setTimeout (>= 5s) in test without .unref() or clearTimeout keeps the event loop alive and stalls worker exit.", fix: "Call timer.unref(), clearTimeout in finally, or use fake timers / AbortSignal.timeout." });
+    }
+  }
+  if (CLOUD_SDK_IMPORT.test(raw) && !EMULATOR_GUARD.test(raw)) {
+    const line = lineOf(raw, Math.max(0, raw.search(CLOUD_SDK_IMPORT)));
+    findings.push({ id: `TH:emulator-guard:${file.rel}:${line}`, rule: "test-require-emulator-guard", category: "test-smell", rung: "R4", severity: "error", file: file.rel, line, message: "Test imports a cloud/Firebase SDK without an emulator-host guard or test-environment bootstrap (risks hitting live cloud).", fix: "Require *_EMULATOR_HOST / initializeTestEnvironment before initializing cloud SDKs in tests." });
+  }
+  if (repoHasEmulator) {
+    for (const m of code.matchAll(/\b(?:vi|jest)\.mock\s*\(/g)) {
+      const idx = m.index ?? 0;
+      if (!DAO_MOCK_PATH.test(raw.slice(idx, idx + 120))) continue;
+      DAO_MOCK_PATH.lastIndex = 0;
+      const line = lineOf(raw, idx);
+      findings.push({ id: `TH:dao-mock:${file.rel}:${line}`, rule: "no-dao-mock-with-fake-db", category: "test-smell", rung: "R3", severity: "warn", file: file.rel, line, message: "Test mocks a DAO/repository module in a repo that already provides an emulator or in-memory fake DB.", fix: "Exercise the real DAO against the in-memory fake DB or emulator so persistence/merge contracts stay verified." });
+    }
+  }
+  if (!/\b(?:mkdtemp|tmpdir|os\.tmpdir)\b/.test(raw)) {
+    for (const m of raw.matchAll(REPO_MUTATION_CALL)) {
+      const line = lineOf(raw, m.index ?? 0);
+      findings.push({ id: `TH:repo-mutate:${file.rel}:${line}`, rule: "test-repo-mutation-risk", category: "test-smell", rung: "R2", severity: "warn", file: file.rel, line, message: "Test writes files or mutates git inside the enclosing repo root without mkdtemp/tmpdir isolation.", fix: "Create an isolated directory with fs.mkdtempSync(path.join(os.tmpdir(), ...)) and clean it up in afterEach." });
+    }
+  }
+  scanViMockHoistHazard(file, raw, code, findings);
+}
+
 export function scanTestHarnessGuards(
   file: ScannedFile,
   raw: string,
@@ -159,186 +198,33 @@ export function scanTestHarnessGuards(
   repoHasEmulator: boolean,
 ): Finding[] {
   const findings: Finding[] = [];
-
+  if (!raw) return findings;
   for (const m of code.matchAll(HARDCODED_TEST_PORT)) {
     const idx = m.index ?? 0;
     const lineText = raw.split(/\r?\n/)[lineOf(raw, idx) - 1] ?? "";
-    if (/^\s*(?:\/\/|#|\*)/.test(lineText) || /\b(?:mock|stub|baseUrl|example\.com|FIRESTORE_EMULATOR_HOST)\b/i.test(lineText)) {
-      continue;
-    }
+    if (/^\s*(?:\/\/|#|\*)/.test(lineText) || /\b(?:mock|stub|baseUrl|example\.com|FIRESTORE_EMULATOR_HOST)\b/i.test(lineText)) continue;
     if (/\b(?:listen|bind|TcpListener|HTTPServer|createServer)\b/i.test(lineText)) {
       const line = lineOf(raw, idx);
-      findings.push({
-        id: `TH:static-loopback-port:${file.rel}:${line}`,
-        rule: "test-hardcoded-loopback-port",
-        category: "test-smell",
-        rung: "R3",
-        severity: "warn",
-        file: file.rel,
-        line,
-        message: "Test binds a hardcoded loopback port, causing EADDRINUSE flakes under parallel test execution.",
-        fix: "Bind port 0 (ephemeral OS-assigned port) and read the assigned address from the listener.",
-      });
+      findings.push({ id: `TH:static-loopback-port:${file.rel}:${line}`, rule: "test-hardcoded-loopback-port", category: "test-smell", rung: "R3", severity: "warn", file: file.rel, line, message: "Test binds a hardcoded loopback port, causing EADDRINUSE flakes under parallel test execution.", fix: "Bind port 0 (ephemeral OS-assigned port) and read the assigned address from the listener." });
     }
   }
-
   if (file.language === "python") {
     if (!/\b(?:monkeypatch|patch\.dict)\b/.test(raw)) {
       for (const m of code.matchAll(PY_GLOBAL_TEST_MUTATION)) {
         const line = lineOf(raw, m.index ?? 0);
-        findings.push({
-          id: `TH:py-global-state:${file.rel}:${line}`,
-          rule: "py-test-global-state-pollution",
-          category: "test-smell",
-          rung: "R2",
-          severity: "warn",
-          file: file.rel,
-          line,
-          message: `Test mutates global Python runtime state (${m[0].trim()}) without monkeypatch or mock.patch.dict cleanup.`,
-          fix: "Use pytest monkeypatch.setitem/syspath_prepend or unittest.mock.patch.dict so state resets after the test.",
-        });
+        findings.push({ id: `TH:py-global-state:${file.rel}:${line}`, rule: "py-test-global-state-pollution", category: "test-smell", rung: "R2", severity: "warn", file: file.rel, line, message: `Test mutates global Python runtime state (${m[0].trim()}) without monkeypatch or mock.patch.dict cleanup.`, fix: "Use pytest monkeypatch.setitem/syspath_prepend or unittest.mock.patch.dict so state resets after the test." });
       }
     }
     return findings;
   }
-
   if (file.language === "rust") {
     for (const m of code.matchAll(/\bassert_eq!\s*\([^;\n]*\.to_bits\s*\(\s*\)/g)) {
       const line = lineOf(raw, m.index ?? 0);
-      findings.push({
-        id: `TH:rs-float-bits:${file.rel}:${line}`,
-        rule: "no-cross-platform-float-bit-golden",
-        category: "test-smell",
-        rung: "R2",
-        severity: "warn",
-        file: file.rel,
-        line,
-        message: "Bit-exact float assertion (.to_bits()) flakes across OS/CPU libm implementations (1-ULP transcendental drift).",
-        fix: "Assert within an explicit ULP, epsilon, or dB tolerance instead of bit-exact float equality.",
-      });
+      findings.push({ id: `TH:rs-float-bits:${file.rel}:${line}`, rule: "no-cross-platform-float-bit-golden", category: "test-smell", rung: "R2", severity: "warn", file: file.rel, line, message: "Bit-exact float assertion (.to_bits()) flakes across OS/CPU libm implementations (1-ULP transcendental drift).", fix: "Assert within an explicit ULP, epsilon, or dB tolerance instead of bit-exact float equality." });
     }
     return findings;
   }
   if (file.language !== "typescript" && file.language !== "javascript") return findings;
-
-  for (const m of code.matchAll(SKIP_IN_AFTER_HOOK)) {
-    const line = lineOf(raw, m.index ?? 0);
-    findings.push({
-      id: `TH:skip-after:${file.rel}:${line}`,
-      rule: "no-skip-in-after-hook",
-      category: "cheat",
-      rung: "R0",
-      severity: "error",
-      file: file.rel,
-      line,
-      message: "Calling test.skip() inside afterEach/afterAll aborts cleanup hooks and masks teardown failures.",
-      fix: "Guard conditional skips at the top of the test or in beforeEach, never inside teardown hooks.",
-    });
-  }
-
-  if (!/\.unref\s*\(\s*\)|\bclearTimeout\s*\(/.test(code)) {
-    for (const m of code.matchAll(LONG_UNREFD_TIMER)) {
-      const line = lineOf(raw, m.index ?? 0);
-      findings.push({
-        id: `TH:long-timer:${file.rel}:${line}`,
-        rule: "no-unrefd-long-test-timer",
-        category: "test-smell",
-        rung: "R2",
-        severity: "warn",
-        file: file.rel,
-        line,
-        message: "Long setTimeout (>= 5s) in test without .unref() or clearTimeout keeps the event loop alive and stalls worker exit.",
-        fix: "Call timer.unref(), clearTimeout in finally, or use fake timers / AbortSignal.timeout.",
-      });
-    }
-  }
-
-  if (CLOUD_SDK_IMPORT.test(raw) && !EMULATOR_GUARD.test(raw)) {
-    const idx = raw.search(CLOUD_SDK_IMPORT);
-    const line = lineOf(raw, Math.max(0, idx));
-    findings.push({
-      id: `TH:emulator-guard:${file.rel}:${line}`,
-      rule: "test-require-emulator-guard",
-      category: "test-smell",
-      rung: "R4",
-      severity: "error",
-      file: file.rel,
-      line,
-      message: "Test imports a cloud/Firebase SDK without an emulator-host guard or test-environment bootstrap (risks hitting live cloud).",
-      fix: "Require *_EMULATOR_HOST / initializeTestEnvironment before initializing cloud SDKs in tests.",
-    });
-  }
-
-  if (repoHasEmulator) {
-    for (const m of code.matchAll(/\b(?:vi|jest)\.mock\s*\(/g)) {
-      const idx = m.index ?? 0;
-      const slice = raw.slice(idx, idx + 120);
-      if (!DAO_MOCK_PATH.test(slice)) continue;
-      DAO_MOCK_PATH.lastIndex = 0;
-      const line = lineOf(raw, idx);
-      findings.push({
-        id: `TH:dao-mock:${file.rel}:${line}`,
-        rule: "no-dao-mock-with-fake-db",
-        category: "test-smell",
-        rung: "R3",
-        severity: "warn",
-        file: file.rel,
-        line,
-        message: "Test mocks a DAO/repository module in a repo that already provides an emulator or in-memory fake DB.",
-        fix: "Exercise the real DAO against the in-memory fake DB or emulator so persistence/merge contracts stay verified.",
-      });
-    }
-  }
-
-  if (!/\b(?:mkdtemp|tmpdir|os\.tmpdir)\b/.test(raw)) {
-    for (const m of raw.matchAll(REPO_MUTATION_CALL)) {
-      const line = lineOf(raw, m.index ?? 0);
-      findings.push({
-        id: `TH:repo-mutate:${file.rel}:${line}`,
-        rule: "test-repo-mutation-risk",
-        category: "test-smell",
-        rung: "R2",
-        severity: "warn",
-        file: file.rel,
-        line,
-        message: "Test writes files or mutates git inside the enclosing repo root without mkdtemp/tmpdir isolation.",
-        fix: "Create an isolated directory with fs.mkdtempSync(path.join(os.tmpdir(), ...)) and clean it up in afterEach.",
-      });
-    }
-  }
-
-  if (/\bvi\.mock\s*\(/.test(code) && !/\bvi\.hoisted\s*\(/.test(code)) {
-    const topDecls = new Set<string>();
-    const mockIdx = code.search(/\bvi\.mock\s*\(/);
-    const beforeMock = code.slice(0, Math.max(0, mockIdx));
-    for (const d of beforeMock.matchAll(/^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/gm)) {
-      if (d[1]) topDecls.add(d[1]);
-    }
-    if (topDecls.size > 0) {
-      const factoryMatch = /\bvi\.mock\s*\([^,\n]+,\s*(?:async\s*)?\(\s*[^)]*\)\s*=>\s*\{?([\s\S]{0,400})/.exec(
-        code.slice(mockIdx),
-      );
-      const factoryBody = factoryMatch?.[1] ?? "";
-      const referencedIds = new Set(factoryBody.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? []);
-      for (const name of topDecls) {
-        if (referencedIds.has(name)) {
-          const line = lineOf(raw, mockIdx);
-          findings.push({
-            id: `TH:vi-hoist:${file.rel}:${line}`,
-            rule: "vitest-mock-hoist-hazard",
-            category: "test-smell",
-            rung: "R0",
-            severity: "error",
-            file: file.rel,
-            line,
-            message: `vi.mock() factory references unhoisted local binding '${name}' (hoisting causes runtime ReferenceError or broken cleanup).`,
-            fix: `Declare '${name}' inside vi.hoisted(() => ...) so it is initialized before vi.mock executes.`,
-          });
-          break;
-        }
-      }
-    }
-  }
-
+  scanTsJsTestHarnessGuards({ file, raw, code, repoHasEmulator }, findings);
   return findings;
 }

@@ -71,57 +71,72 @@ function tokenizeBoolExpr(expr: string): BoolToken[] {
   return tokens;
 }
 
+const BOOL_PRECEDENCE: Record<"OR" | "AND" | "NOT", number> = { OR: 1, AND: 2, NOT: 3 };
+
+function applyBoolOp(op: "OR" | "AND" | "NOT", values: boolean[]): void {
+  if (op === "NOT") {
+    const operand = values.pop();
+    if (operand === undefined) throw new Error("Invalid boolean expression syntax.");
+    values.push(!operand);
+    return;
+  }
+  const right = values.pop();
+  const left = values.pop();
+  if (left === undefined || right === undefined) throw new Error("Invalid boolean expression syntax.");
+  values.push(op === "AND" ? left && right : left || right);
+}
+
 function evalBoolTokens(tokens: readonly BoolToken[], env: Readonly<Record<string, boolean>>): boolean {
-  let pos = 0;
-  const isOp = (val: "AND" | "OR" | "NOT"): boolean => {
-    const cur = tokens[pos];
-    return cur?.kind === "op" && cur.value === val;
-  };
-  const parseOr = (): boolean => {
-    let left = parseAnd();
-    while (isOp("OR")) {
-      pos += 1;
-      const right = parseAnd();
-      left = left || right;
+  if (tokens.length === 0) throw new Error("Unexpected end of boolean expression.");
+  const values: boolean[] = [];
+  const ops: Array<"OR" | "AND" | "NOT" | "("> = [];
+  let expectOperand = true;
+  for (const tok of tokens) {
+    if (tok.kind === "lit" || tok.kind === "id") {
+      if (!expectOperand) throw new Error("Trailing tokens in boolean expression.");
+      values.push(tok.kind === "lit" ? tok.value : env[tok.value] === true);
+      expectOperand = false;
+      continue;
     }
-    return left;
-  };
-  const parseAnd = (): boolean => {
-    let left = parseNot();
-    while (isOp("AND")) {
-      pos += 1;
-      const right = parseNot();
-      left = left && right;
-    }
-    return left;
-  };
-  const parseNot = (): boolean => {
-    if (isOp("NOT")) {
-      pos += 1;
-      return !parseNot();
-    }
-    const tok = tokens[pos];
-    if (!tok) throw new Error("Unexpected end of boolean expression.");
     if (tok.kind === "lparen") {
-      pos += 1;
-      const val = parseOr();
-      if (tokens[pos]?.kind !== "rparen") throw new Error("Unclosed '(' in boolean expression.");
-      pos += 1;
-      return val;
+      if (!expectOperand) throw new Error("Trailing tokens in boolean expression.");
+      ops.push("(");
+      continue;
     }
-    if (tok.kind === "lit") {
-      pos += 1;
-      return tok.value;
+    if (tok.kind === "rparen") {
+      if (expectOperand) throw new Error("Invalid boolean expression syntax.");
+      while (ops.length > 0 && ops[ops.length - 1] !== "(") {
+        const top = ops.pop();
+        if (top && top !== "(") applyBoolOp(top, values);
+      }
+      if (ops.pop() !== "(") throw new Error("Unmatched ')' in boolean expression.");
+      expectOperand = false;
+      continue;
     }
-    if (tok.kind === "id") {
-      pos += 1;
-      return env[tok.value] === true;
+    if (tok.value === "NOT") {
+      if (!expectOperand) throw new Error("Trailing tokens in boolean expression.");
+      ops.push("NOT");
+      continue;
     }
-    throw new Error("Invalid boolean expression syntax.");
-  };
-  const value = parseOr();
-  if (pos !== tokens.length) throw new Error("Trailing tokens in boolean expression.");
-  return value;
+    if (expectOperand) throw new Error("Invalid boolean expression syntax.");
+    const prec = BOOL_PRECEDENCE[tok.value];
+    while (ops.length > 0) {
+      const top = ops[ops.length - 1];
+      if (!top || top === "(" || BOOL_PRECEDENCE[top] < prec) break;
+      ops.pop();
+      applyBoolOp(top, values);
+    }
+    ops.push(tok.value);
+    expectOperand = true;
+  }
+  if (expectOperand) throw new Error("Unexpected end of boolean expression.");
+  while (ops.length > 0) {
+    const top = ops.pop();
+    if (!top || top === "(") throw new Error("Unclosed '(' in boolean expression.");
+    applyBoolOp(top, values);
+  }
+  if (values.length !== 1) throw new Error("Trailing tokens in boolean expression.");
+  return values[0] === true;
 }
 
 export function generateMcdcVectors(expression: string): McdcResult {
