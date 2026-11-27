@@ -32,7 +32,10 @@ function checkTsTestAstGuards(file: ScannedFile, raw: string, findings: Finding[
   if (!ast) return;
   walkAst(ast, (node) => {
     if (node.type === "CallExpression" && isAstNode(node.callee) && Array.isArray(node.arguments) && node.arguments.length >= 2) {
-      const name = getMemberChain(node.callee);
+      const isDirectTestCallee =
+        node.callee.type === "Identifier" ||
+        (node.callee.type === "MemberExpression" && isAstNode(node.callee.object) && node.callee.object.type === "Identifier");
+      const name = isDirectTestCallee ? getMemberChain(node.callee) : "";
       if (/^(?:test|it)(?:\.(?:concurrent|sequential|only|skip|todo|fails))?$/.test(name)) {
         const hasTimeout = node.arguments.slice(1, 3).some((arg) => {
           const isNum = isAstNode(arg) && arg.type === "Literal" && typeof arg.value === "number" && arg.value >= 1000;
@@ -52,8 +55,8 @@ function checkTsTestAstGuards(file: ScannedFile, raw: string, findings: Finding[
       const body = isAstNode(node.body) ? node.body : null;
       if (!body) return;
       walkAst(body, (inner) => {
-        if (inner.type === "CallExpression" && isAstNode(inner.callee)) {
-          const name = getMemberChain(inner.callee);
+        if (inner.type === "CallExpression" && isAstNode(inner.callee) && inner.callee.type === "Identifier") {
+          const name = typeof inner.callee.name === "string" ? inner.callee.name : "";
           if (name === "test" || name === "it") {
             push(findings, {
               file: file.rel, line: lineOf(raw, inner.start ?? 0), rule: "test-no-test-in-loop", category: "test-smell", rung: "R2", severity: "warn",

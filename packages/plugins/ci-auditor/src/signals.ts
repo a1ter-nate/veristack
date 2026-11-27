@@ -381,7 +381,10 @@ function buildToolSignalsFromContext(ctx: SignalTextContext): { signals: ToolSig
   const manifestAndConfig = `${manifestText}\n${configText}`;
   const testImportAndManifest = `${manifestText}\n${testImportLines}`;
   const hasOxlint = hasHostPath(/(?:^|\/)(?:\.oxlintrc\.jsonc?|oxlint\.config\.[cm]?[jt]s)$/) || /\boxlint\b/i.test(configAndCi);
-  const hasInProcessRealDb = /@electric-sql\/pglite|\bpglite\b/i.test(`${testImportAndManifest}\n${codeTestText}`);
+  const hasInProcessRealDb =
+    /@electric-sql\/pglite|\bpglite\b|bun:sqlite|node:sqlite|better-sqlite3|@effect\/sql-sqlite-bun|@effect\/sql-sqlite-node|\bsqlite3\b/i.test(
+      `${testImportAndManifest}\n${codeTestText}`,
+    );
   const hasMigrationTest = hasHostPath(/(?:^|\/)[^/]*migrat(?:e|ion)[^/]*\.(?:test|spec)\.[cm]?[jt]sx?$/i) || /\b(?:MigrateAsync|MigrationBuilder|alembic|flyway|prisma\s+migrate|sqlx::migrate|golang-migrate|goose|drizzle-kit)\b/i.test(`${configAndCi}\n${codeTestText}`);
   const signals: ToolSignals = {
     hasFormatter: hasHostPath(/(?:^|\/)(?:\.?prettier|oxfmt|\.editorconfig|rustfmt\.toml|\.rustfmt\.toml|biome\.jsonc?|ruff\.toml|\.ruff\.toml)/) || /\[tool\.ruff(?:\.format)?\]|\b(?:prettier|oxfmt|biome|ruff\s+format|dotnet\s+format|gofmt|goimports|rustfmt|cargo\s+fmt)\b/i.test(configAndCi),

@@ -126,6 +126,7 @@ function extractTsFunctionUnits(file: ScannedFile): FunctionUnit[] {
   if (!file.content) return [];
   let parsed: ReturnType<typeof parseSync>;
   try { parsed = parseSync(file.rel, file.content); } catch { return []; }
+  const maskedFile = maskTigerCode(file.content, file.language === "javascript" ? "javascript" : "typescript");
   const out: FunctionUnit[] = [];
   const stack: Array<{ node: unknown; parent?: Record<string, unknown> }> = [{ node: parsed.program }];
   const maxNodes = 60_000;
@@ -142,12 +143,13 @@ function extractTsFunctionUnits(file: ScannedFile): FunctionUnit[] {
         const startLine = lineAtOffset(file.content, rec.start);
         const endLine = lineAtOffset(file.content, rec.end);
         const bodyText = file.content.slice(rec.start, rec.end);
+        const maskedBody = maskedFile.slice(rec.start, rec.end);
         const params = Array.isArray(rec.params) ? rec.params : [];
         out.push({
           name: resolveTsFuncName(rec, entry?.parent),
           startLine,
           endLine,
-          codeLines: countNonBlankLines(bodyText),
+          codeLines: countNonBlankLines(maskedBody),
           paramCount: params.length,
           boolParamCount: countTsBoolParams(params, file.content),
           bodyText,
@@ -214,12 +216,13 @@ function extractBraceLangUnits(file: ScannedFile, lang: TigerLang): FunctionUnit
     const endIdx = findBraceSpanEnd(masked, braceIdx);
     if (endIdx < 0) continue;
     const bodyText = file.content.slice(idx, endIdx + 1);
+    const maskedBody = masked.slice(idx, endIdx + 1);
     const counts = countParamsFromHeader(m[2] ?? "", lang);
     out.push({
       name,
       startLine: lineAtOffset(file.content, idx),
       endLine: lineAtOffset(file.content, endIdx),
-      codeLines: countNonBlankLines(bodyText),
+      codeLines: countNonBlankLines(maskedBody),
       paramCount: counts.params,
       boolParamCount: counts.bools,
       bodyText,

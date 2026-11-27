@@ -24,7 +24,11 @@ const COMPONENT_SIGNAL = /\b(?:@testing-library|render\(|screen\.getBy|mount\(|p
 const HOST_SIGNAL = /\b(?:WebApplicationFactory|TestServer|actix_web::test|httptest\.(?:NewServer|NewRecorder))\b|\b(?:supertest|app\.request|TestClient|oneshot)\s*\(|\bspawnSync\s*\(\s*process\.execPath/i;
 const CONTRACT_SIGNAL = /\b(?:@pact-foundation|PactBuilder|VerifyProvider|schemathesis|OpenApiValidator|openapi-response-contract)\b/i;
 const REAL_DB_SIGNAL =
-  /\b(?:Testcontainers|PostgreSqlContainer|MsSqlContainer|UseNpgsql|UseSqlServer|SqlConnection|pg\.Pool|PgPool::connect|sqlx::test|PGlite|MigrateAsync|FIRESTORE_EMULATOR_HOST|FIREBASE_AUTH_EMULATOR_HOST|firebase-emulator|initializeTestEnvironment)\b/i;
+  /\b(?:Testcontainers|PostgreSqlContainer|MsSqlContainer|UseNpgsql|UseSqlServer|UseSqlite|SqlConnection|SqliteConnection|pg\.Pool|PgPool::connect|sqlx::test|rusqlite::Connection|PGlite|DatabaseSync|SqliteClient|sqlite3\.connect|MigrateAsync|FIRESTORE_EMULATOR_HOST|FIREBASE_AUTH_EMULATOR_HOST|firebase-emulator|initializeTestEnvironment)\b/i;
+const REAL_SQLITE_IMPORT =
+  /(?:from|import|require\s*\()\s*["'](?:bun:sqlite|node:sqlite|better-sqlite3|@effect\/sql-sqlite-bun|@effect\/sql-sqlite-node|sqlite3)["']/;
+const REAL_SQLITE_USAGE =
+  /\b(?:new\s+Database(?:Sync)?\s*\(|SqliteClient\b|sqlite3\.connect\s*\(|exec\s*\(|prepare\s*\(|query\s*\()/;
 const REAL_BUS_SIGNAL = /\b(?:ServiceBusClient|RabbitMQ|KafkaContainer|DeadLetter|MaxDeliveryCount)\b/i;
 const NETWORK_MOCK_SIGNAL = /\b(?:page\.route|cy\.intercept|setupServer|nock|wiremock::MockServer|mockito::Server|respx\.mock)\s*\(|\b(?:msw|respx)\b/i;
 
@@ -62,9 +66,16 @@ const COVERAGE_FARM_NAME = /(?:^|[-_.])(?:coverage-|closeout|easy-?wins|zero-?co
 const COVERAGE_POLICY_TOOLING =
   /\bcoverage-(?:policy|floor|floors|inventory|gate|gates|config|check|checks|report|summary|threshold|thresholds|ratchet|baseline)\b/i;
 
-function classifyBoundary(file: ScannedFile, code: string, repoHasEmulator: boolean): { boundary: TestBoundary; rung: RungId } {
+function hasRealDbEngineSignal(raw: string, code: string): boolean {
+  if (REAL_DB_SIGNAL.test(code)) return true;
+  if (!REAL_SQLITE_USAGE.test(code)) return false;
+  const uncommented = raw.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:\\])\/\/[^\n]*/g, "$1 ");
+  return REAL_SQLITE_IMPORT.test(uncommented);
+}
+
+function classifyBoundary(file: ScannedFile, raw: string, code: string, repoHasEmulator: boolean): { boundary: TestBoundary; rung: RungId } {
   if (E2E_SIGNAL.test(code) || /\.e2e\.|\/e2e\//i.test(file.rel)) return { boundary: "e2e", rung: "R7" };
-  if (REAL_DB_SIGNAL.test(code) || REAL_BUS_SIGNAL.test(code)) return { boundary: "integration", rung: "R4" };
+  if (hasRealDbEngineSignal(raw, code) || REAL_BUS_SIGNAL.test(code)) return { boundary: "integration", rung: "R4" };
   if (repoHasEmulator && /(?:cloud-integration|emulator)/i.test(file.rel)) return { boundary: "integration", rung: "R4" };
   if (MBT_SIGNAL.test(code)) return { boundary: "mbt", rung: "R3" };
   if (CONTRACT_SIGNAL.test(code)) return { boundary: "contract", rung: "R3" };
@@ -174,12 +185,12 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
   const raw = file.content;
   const code = maskStrings(raw);
   const findings: Finding[] = [];
-  const { boundary, rung } = classifyBoundary(file, code, repoHasEmulator);
+  const { boundary, rung } = classifyBoundary(file, raw, code, repoHasEmulator);
   const testCases = code.match(TEST_CASE_DECL)?.length ?? 0;
   const hasTable = TABLE_TEST.test(raw);
   const hasPbt = PBT_SIGNAL.test(raw);
   const hasMbt = MBT_SIGNAL.test(code);
-  const hasRealDb = REAL_DB_SIGNAL.test(code) || (repoHasEmulator && /(?:cloud-integration|emulator)/i.test(file.rel));
+  const hasRealDb = hasRealDbEngineSignal(raw, code) || (repoHasEmulator && /(?:cloud-integration|emulator)/i.test(file.rel));
   const hasRealBus = REAL_BUS_SIGNAL.test(code);
   const hasNetworkMock = NETWORK_MOCK_SIGNAL.test(code);
   const isConfigFile = /(?:config|playwright|vitest|jest)\.[cm]?[jt]s$/i.test(file.rel);

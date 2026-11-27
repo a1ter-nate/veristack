@@ -78,3 +78,18 @@ test("vstack bench verifies 100% example recall, 0 clean FPs, and 0 adversarial 
   );
   assert.equal(report.passed, true);
 });
+
+test("vstack bench with --corpus passes on clean repos without examples/*/manifest.json fixtures", () => {
+  withTempRepo(
+    {
+      "package.json": JSON.stringify({ name: "clean-app" }),
+      "src/math.ts": "export function addNumbers(left: number, right: number): number {\n  if (!Number.isFinite(left) || !Number.isFinite(right)) throw new Error('finite');\n  return left + right;\n}\n",
+    },
+    (dir) => {
+      const report = runPrecisionBench(dir, "src");
+      assert.equal(report.passed, true);
+      assert.equal(report.totalExpectedRules, 0);
+      assert.equal(typeof report.corpusFindingsPer10kLoc, "number");
+    },
+  );
+});

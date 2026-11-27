@@ -285,19 +285,22 @@ function runLanguagePrecisionBench(examplesRoot: string, lang: string): BenchLan
 export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDir?: string): BenchReport {
   if (!repoRoot) throw new Error("repoRoot is required.");
   const examplesRoot = path.join(repoRoot, "examples");
-  if (!fs.existsSync(examplesRoot)) {
-    return { passed: false, totalExpectedRules: 0, totalMatchedRules: 0, totalCleanFps: 0, totalAdversarialFps: 0, totalScanMs: 0, languages: [] };
-  }
   const langs = ["typescript", "csharp", "rust", "python", "go", "sql", "shell"] as const;
   const languages: BenchLanguageResult[] = [];
-  for (const lang of langs) {
-    const result = runLanguagePrecisionBench(examplesRoot, lang);
-    if (result) languages.push(result);
+  if (fs.existsSync(examplesRoot)) {
+    for (const lang of langs) {
+      const result = runLanguagePrecisionBench(examplesRoot, lang);
+      if (result) languages.push(result);
+    }
   }
 
+  const resolvedCorpus = corpusDir ? (path.isAbsolute(corpusDir) ? corpusDir : path.resolve(repoRoot, corpusDir)) : undefined;
   let corpusFindingsPer10kLoc: number | undefined;
-  if (corpusDir && fs.existsSync(corpusDir)) {
-    const corpusReport = (getCoreServices().scanRepo ?? (() => { throw new Error("Core scanRepo service not registered."); }))(corpusDir);
+  let corpusScanMs = 0;
+  if (resolvedCorpus && fs.existsSync(resolvedCorpus)) {
+    const t0 = performance.now();
+    const corpusReport = (getCoreServices().scanRepo ?? (() => { throw new Error("Core scanRepo service not registered."); }))(resolvedCorpus);
+    corpusScanMs = Number((performance.now() - t0).toFixed(2));
     const loc = Math.max(1, corpusReport.summary.prodLines + corpusReport.summary.testLines);
     corpusFindingsPer10kLoc = Number(((corpusReport.findings.length / loc) * 10_000).toFixed(2));
   }
@@ -306,19 +309,29 @@ export function runPrecisionBench(repoRoot: string, corpusDir?: string, replayDi
   const totalMatchedRules = languages.reduce((s, l) => s + l.matchedRules, 0);
   const totalCleanFps = languages.reduce((s, l) => s + l.cleanFalsePositives.length, 0);
   const totalAdversarialFps = languages.reduce((s, l) => s + l.commentWrappedFps.length + l.stringWrappedFps.length, 0);
-  const totalScanMs = Number(languages.reduce((s, l) => s + l.scanMs, 0).toFixed(2));
-  const replay = replayDir && fs.existsSync(path.join(replayDir, "manifest.json")) ? runHistoricalReplayBench(replayDir) : undefined;
+  const totalScanMs = Number((languages.reduce((s, l) => s + l.scanMs, 0) + corpusScanMs).toFixed(2));
+  const resolvedReplay = replayDir ? (path.isAbsolute(replayDir) ? replayDir : path.resolve(repoRoot, replayDir)) : undefined;
+  const replay = resolvedReplay && fs.existsSync(path.join(resolvedReplay, "manifest.json")) ? runHistoricalReplayBench(resolvedReplay) : undefined;
   const replayPassed = !replay || replay.totalPairs === 0 || (replay.combinedCaughtPairs > 0 && replay.cleanAfterPairs === replay.totalPairs);
+  const hasCorpusOrReplay = corpusFindingsPer10kLoc !== undefined || Boolean(replay);
+  const examplesPassed = totalExpectedRules > 0
+    ? totalExpectedRules === totalMatchedRules && totalCleanFps === 0 && totalAdversarialFps === 0
+    : hasCorpusOrReplay;
 
   return {
-    passed: totalExpectedRules > 0 && totalExpectedRules === totalMatchedRules && totalCleanFps === 0 && totalAdversarialFps === 0 && replayPassed,
+    passed: examplesPassed && replayPassed,
     totalExpectedRules, totalMatchedRules, totalCleanFps, totalAdversarialFps, totalScanMs, languages, corpusFindingsPer10kLoc, replay,
   };
 }
 
 export function formatBenchReport(report: BenchReport): string {
+  const recallText = report.totalExpectedRules > 0
+    ? `${report.totalMatchedRules}/${report.totalExpectedRules}`
+    : report.corpusFindingsPer10kLoc !== undefined || report.replay
+      ? "N/A"
+      : "0/0";
   const lines = [
-    `vstack bench [${report.passed ? "PASS" : "FAIL"}]: recall=${report.totalMatchedRules}/${report.totalExpectedRules} | cleanFPs=${report.totalCleanFps} | adversarialFPs=${report.totalAdversarialFps} | scanMs=${report.totalScanMs}ms`,
+    `vstack bench [${report.passed ? "PASS" : "FAIL"}]: recall=${recallText} | cleanFPs=${report.totalCleanFps} | adversarialFPs=${report.totalAdversarialFps} | scanMs=${report.totalScanMs}ms`,
   ];
   if (report.corpusFindingsPer10kLoc !== undefined) {
     lines.push(`  corpus density: ${report.corpusFindingsPer10kLoc} findings / 10k LOC`);

@@ -355,14 +355,19 @@ function auditNodeModulesBinLinks(dir: string, absRoot: string): string | null {
   const nmBin = path.join(dir, "node_modules", ".bin");
   if (!fs.existsSync(nmBin) || !fs.statSync(nmBin).isDirectory()) return null;
   const realRoot = (() => { try { return fs.realpathSync(absRoot); } catch { return absRoot; } })();
-  const realNm = (() => { try { return fs.realpathSync(path.join(dir, "node_modules")); } catch { return path.join(dir, "node_modules"); } })();
+  const allowedNms: string[] = [];
+  for (let cur = path.resolve(dir); cur === absRoot || cur.startsWith(`${absRoot}${path.sep}`); cur = path.dirname(cur)) {
+    const nmDir = path.join(cur, "node_modules");
+    if (fs.existsSync(nmDir)) allowedNms.push((() => { try { return fs.realpathSync(nmDir); } catch { return nmDir; } })());
+    if (path.dirname(cur) === cur) break;
+  }
   for (const tool of VERIFICATION_TOOLS) {
     const binEntry = path.join(nmBin, tool);
     if (!fs.existsSync(binEntry)) continue;
     try {
       const resolved = fs.realpathSync(binEntry);
       const insideRoot = resolved === realRoot || resolved.startsWith(`${realRoot}${path.sep}`);
-      const insideNm = resolved === realNm || resolved.startsWith(`${realNm}${path.sep}`);
+      const insideNm = allowedNms.some((nm) => resolved === nm || resolved.startsWith(`${nm}${path.sep}`));
       if (insideRoot && !insideNm) return `node_modules/.bin/${tool} resolves outside node_modules (${path.relative(realRoot, resolved)}).`;
     } catch { continue; }
   }

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
-import { createPluginHostSync } from "@veristack/core";
+import { createPluginHostSync, scanRepo } from "@veristack/core";
 import { isVeristackPlugin } from "@veristack/plugin";
 import { ciAuditorPlugin } from "@veristack/plugin-ci-auditor";
 
@@ -12,4 +15,47 @@ test("ci-auditor plugin defines valid Veristack plugin and registers into signal
   assert.equal(statuses.length, 1);
   assert.equal(statuses[0]?.status, "active");
   assert.ok(host.registries.signals().length >= 1);
+});
+
+test("bun:sqlite and better-sqlite3 real-engine tests classify as R4 without integration-without-real-engine push-downs", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-sqlite-r4-"));
+  try {
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "tests", "integration"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "svc", dependencies: { express: "^5.0.0" } }));
+    fs.writeFileSync(path.join(dir, "src", "db.ts"), "export function schemaSql(): string { return 'CREATE TABLE t(id INT)'; }\n");
+    fs.writeFileSync(
+      path.join(dir, "tests", "integration", "sqlite-engine.integration.test.ts"),
+      [
+        'import { Database } from "bun:sqlite";',
+        'import { test, expect } from "bun:test";',
+        'import { schemaSql } from "../../src/db.ts";',
+        'test("runs ddl", () => {',
+        '  const db = new Database(":memory:");',
+        '  db.exec(schemaSql());',
+        '  expect(db.query("SELECT 1").get()).toBeDefined();',
+        '});',
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "tests", "integration", "sqlite-migration.integration.test.ts"),
+      [
+        'import Database from "better-sqlite3";',
+        'import { test, expect } from "bun:test";',
+        'import { schemaSql } from "../../src/db.ts";',
+        'test("migrates", () => {',
+        '  const db = new Database(":memory:");',
+        '  db.exec(schemaSql());',
+        '  expect(db.prepare("SELECT 1").get()).toBeDefined();',
+        '});',
+      ].join("\n"),
+    );
+    const report = scanRepo(dir);
+    const r4 = report.testInventory.filter((t) => t.rung === "R4");
+    assert.equal(r4.length, 2);
+    assert.equal(r4.every((t) => t.hasRealDb), true);
+    assert.equal(report.pushDownOpportunities.some((p) => p.pattern === "integration-without-real-engine"), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
