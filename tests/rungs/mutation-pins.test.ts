@@ -6,12 +6,12 @@ import { test } from "node:test";
 import { discoverRepo } from "../../src/discover.ts";
 import { executeHookEvent, loadHookConfig } from "../../src/hooks/runtime.ts";
 import { classifyCanaryOutcome, isRetryableCanarySignal } from "../../src/rungs/canary-runner.ts";
-import { parseAndValidateCommandArgv } from "../../src/rungs/command-audit.ts";
+import { extractToolHead, parseAndValidateCommandArgv } from "../../src/rungs/command-audit.ts";
 import { auditRunnerConfigs, runGitClean } from "../../src/rungs/config-audit.ts";
-import { discoverWorkspaces } from "../../src/rungs/manifest.ts";
+import { discoverWorkspaces, inferArchetypeFromFiles } from "../../src/rungs/manifest.ts";
 import { insertSemanticNoOp, runPlantedFaultCanary, runPlantedFaultCanaryAsync } from "../../src/rungs/mutation-probe.ts";
 import { runTwoSidedOracleCheck } from "../../src/rungs/oracle-check.ts";
-import { computeRepoTreeHash, runRungAndWriteReceipt } from "../../src/rungs/receipts.ts";
+import { computeRepoTreeHash, runAllDeclaredRungsAsync, runRungAndWriteReceipt } from "../../src/rungs/receipts.ts";
 import { evaluateCrapForCoverageFile, parseStructuredReports, reportParsers } from "../../src/rungs/reports.ts";
 import { checkGitHubBranchProtection, evaluateBranchProtectionJson, globMatchesPath, parseGitHubWorkflow } from "../../src/rungs/workflow-audit.ts";
 
@@ -144,6 +144,10 @@ test("config-audit pins: local package bin/tarball shadowing, node_modules/.bin 
     fs.unlinkSync(path.join(dir, "jest.config.json"));
     assert.equal(parseAndValidateCommandArgv("R2", "uv run pytest", dir).error, undefined);
     assert.ok(parseAndValidateCommandArgv("R2", "uv run ./evil", dir).error?.includes("disallowed uv run target"));
+    assert.ok(extractToolHead(["bun", "--cwd", "sub", "test"]).error?.includes("package.json script"));
+    assert.equal(extractToolHead(["bun", "--cwd", "sub", "build"]).head, "bun build");
+    assert.ok(parseAndValidateCommandArgv("R0", "vstack no-comments .", dir).error?.includes("--fail"));
+    assert.equal(parseAndValidateCommandArgv("R0", "vstack no-comments . --fail", dir).error, undefined);
   });
 });
 
@@ -233,8 +237,8 @@ test("reports pins: self-closing JUnit suites, TRX counters, invalid attrs, maxM
   });
 });
 
-test("receipts & manifest pins: git-tracked binary asset hash, JUnit failure fallback without stdout summary, and explicit workspace archetype", () => {
-  withTempDir((dir) => {
+test("receipts & manifest pins: git-tracked binary asset hash, JUnit failure fallback without stdout summary, and explicit workspace archetype", async () => {
+  await withTempDirAsync(async (dir) => {
     initGit(dir);
     fs.mkdirSync(path.join(dir, "packages", "pkg", "src"), { recursive: true });
     fs.mkdirSync(path.join(dir, "tests"), { recursive: true });
@@ -263,6 +267,8 @@ test("receipts & manifest pins: git-tracked binary asset hash, JUnit failure fal
       workspaces: [{ name: "pkg", path: "packages/pkg", archetype: "fullstack" }],
     });
     assert.equal(ws.find((w) => w.path === "packages/pkg")?.archetype, "fullstack");
+    assert.equal(inferArchetypeFromFiles([], ["src/routes/users.ts"]), "service");
+    await assert.rejects(() => runAllDeclaredRungsAsync(discoverRepo(dir), "R2"), /Missing/);
 
     const rec = runRungAndWriteReceipt(
       discoverRepo(dir),
@@ -273,6 +279,10 @@ test("receipts & manifest pins: git-tracked binary asset hash, JUnit failure fal
     assert.equal(rec.exitCode, 1);
     assert.equal(rec.metrics?.testsFailed, 1);
     assert.equal(rec.metrics?.mutationScore, undefined);
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".verification", "rungs.json"), JSON.stringify({ schemaVersion: 1, archetype: "library", rungs: { R0: { command: "vstack no-comments . --fail", required: true } } }));
+    const asyncRun = await runAllDeclaredRungsAsync(discoverRepo(dir), "R0", "test-key-1234");
+    assert.equal(asyncRun.receipts.length, 1);
   });
 });
 
