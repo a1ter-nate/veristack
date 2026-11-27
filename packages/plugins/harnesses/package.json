@@ -15,5 +15,8 @@
     "@veristack/plugin-zero-defect": "workspace:*",
     "@veristack/plugin-agent-docs": "workspace:*",
     "@veristack/plugin-laws-formal": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }

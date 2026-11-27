@@ -15,7 +15,7 @@ import { runCircuit, type System1DecisionEngine } from "@veristack/plugin-circui
 import { listDefaultCircuits } from "@veristack/plugin-circuits";
 import type { System1ModelAnswer, System1Request } from "@veristack/plugin";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const cliPath = path.join(repoRoot, "src", "cli.ts");
 
 function mockEngine(

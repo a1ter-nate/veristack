@@ -8,5 +8,8 @@
   "dependencies": {
     "@veristack/plugin": "workspace:*",
     "@veristack/plugin-tigerstyle": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }

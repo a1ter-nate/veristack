@@ -52,7 +52,8 @@
   "scripts": {
     "build": "bun build src/cli.ts --outfile dist/cli.mjs --target node --external oxc-parser",
     "prepack": "bun run build",
-    "test": "bun test ./tests/",
+    "test": "bun test ./tests/ ./packages/",
+    "test:packages": "bun run --filter '@veristack/*' test",
     "test:examples": "bun test ./tests/examples-accuracy.test.ts ./examples/typescript/clean/check-coverage-policy.test.ts",
     "scan": "bun src/cli.ts scan .",
     "scan:strict": "bun src/cli.ts verify . --strict",
@@ -62,7 +63,7 @@
     "perf:check": "bun scripts/check-perf-budget.mjs",
     "lint:no-comments": "bun src/cli.ts no-comments . --fail",
     "lint:state-machines": "bun src/cli.ts state-machines . --fail",
-    "crap:self": "bun test --coverage --coverage-reporter=lcov --coverage-dir=/tmp/veristack-crap-cov ./tests/ ./examples/typescript/clean/ && bun src/cli.ts crap . --coverage /tmp/veristack-crap-cov/lcov.info --max-crap 30",
+    "crap:self": "bun test --coverage --coverage-reporter=lcov --coverage-dir=/tmp/veristack-crap-cov ./tests/ ./packages/ ./examples/typescript/clean/ && bun src/cli.ts crap . --coverage /tmp/veristack-crap-cov/lcov.info --max-crap 30",
     "test:csharp": "dotnet test lint/csharp/VStack.Analyzers.Tests/VStack.Analyzers.Tests.csproj && dotnet test templates/csharp-reference/OrderLifecycle.slnx",
     "test:rust": "cargo fmt --manifest-path templates/rust-reference/Cargo.toml --check && cargo clippy --manifest-path templates/rust-reference/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path templates/rust-reference/Cargo.toml",
     "test:go": "cd templates/go-reference && go vet ./... && go test -race -v ./...",

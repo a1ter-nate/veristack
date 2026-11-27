@@ -9,5 +9,8 @@
     "@veristack/plugin": "workspace:*",
     "@veristack/plugin-ci-auditor": "workspace:*",
     "@veristack/plugin-anti-slop": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }

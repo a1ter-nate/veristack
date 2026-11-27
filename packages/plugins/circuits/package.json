@@ -10,5 +10,8 @@
     "@veristack/plugin-anti-slop": "workspace:*",
     "@veristack/plugin-ci-auditor": "workspace:*",
     "@veristack/plugin-zero-defect": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }

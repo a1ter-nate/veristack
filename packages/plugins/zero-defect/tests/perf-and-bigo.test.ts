@@ -11,7 +11,7 @@ import { runCircuit, type System1DecisionEngine } from "@veristack/plugin-circui
 import { scanRepo } from "@veristack/core";
 import { fitEmpiricalBigO, measureEmpiricalBigO } from "@veristack/plugin-zero-defect";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const cliPath = path.join(repoRoot, "src", "cli.ts");
 
 test("V42 deterministic perf-hygiene lints catch O(N^2) loop scans/shifts, N+1 I/O, loop regex/deepcopy, and GC tampering across TS/C#/Rust/Python", () => {

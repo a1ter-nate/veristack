@@ -10,5 +10,8 @@
     "@veristack/plugin-lang-csharp": "workspace:*",
     "@veristack/plugin-lang-rust": "workspace:*",
     "@veristack/plugin-lang-python": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import explicitSmPlugin from "../lint/oxlint-explicit-state-machine.mjs";
+import explicitSmPlugin from "../../../../lint/oxlint-explicit-state-machine.mjs";
 import type { ScannedFile } from "@veristack/core";
 import { lintImplicitStateMachinesInFile } from "@veristack/plugin-state-machines";
 

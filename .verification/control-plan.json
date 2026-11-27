@@ -26,7 +26,7 @@
       "failureMode": "Abstained or fact-contradicted System 1 answer auto-approves without human review",
       "severity": 10,
       "maxAllowedRung": "R2",
-      "controlRef": "tests/formal-verification.test.ts",
+      "controlRef": "packages/plugins/laws-formal/tests/formal-verification.test.ts",
       "reqId": "REQ-CIRCUIT-SAFETY-01"
     }
   ],

@@ -205,7 +205,7 @@ test("C# test-analyzer catches nondeterminism, env mutation, stopwatch timing, s
 });
 
 test("System 1 classifier extracts C# SUT imports and classifies templates/csharp-reference as BEHAVIOR", () => {
-  const csharpRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "templates", "csharp-reference");
+  const csharpRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "templates", "csharp-reference");
   const report = buildSystem1Packet(csharpRef, { maxCandidates: 10 });
   assert.ok(report.candidates.length >= 3);
   const transitionCand = report.candidates.find((c) => c.file.endsWith("TransitionTableTests.cs"));

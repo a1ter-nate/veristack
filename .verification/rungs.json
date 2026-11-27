@@ -14,11 +14,11 @@
       "required": true
     },
     "R2": {
-      "command": "bun test --timeout 30000 ./tests/ ./examples/typescript/clean/",
+      "command": "bun test --timeout 30000 ./tests/ ./packages/ ./examples/typescript/clean/",
       "required": true,
       "canary": {
         "enabled": true,
-        "testCommand": "bun test --timeout 30000 ./tests/no-comments.test.ts ./tests/rungs/ ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts ./tests/anti-slop/fail-closed-contracts.test.ts ./tests/anti-slop/gate-pin-matrix.test.ts",
+        "testCommand": "bun test --timeout 30000 ./packages/plugins/anti-slop/tests/no-comments.test.ts ./tests/rungs/ ./tests/rung-coverage.test.ts ./tests/zero-defect/ratchet-and-formal-sync.test.ts ./tests/anti-slop/fail-closed-contracts.test.ts ./tests/anti-slop/gate-pin-matrix.test.ts",
         "targets": [
           "packages/core/src/ratchet.ts",
           "packages/plugins/anti-slop/src/no-comments.ts",
@@ -37,7 +37,7 @@
       }
     },
     "R3": {
-      "command": "bun test --timeout 30000 ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts ./tests/plugin-architecture/ ./tests/packages/standalone-plugin-toggle.test.ts",
+      "command": "bun test --timeout 30000 ./tests/cli.test.ts ./tests/rungs/property-and-mbt.test.ts ./tests/anti-slop/hooks-and-doctor.test.ts ./tests/plugin-architecture/",
       "required": true
     },
     "R5": {

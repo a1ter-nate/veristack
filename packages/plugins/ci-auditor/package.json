@@ -9,5 +9,8 @@
     "@veristack/plugin": "workspace:*",
     "@veristack/plugin-control-plane": "workspace:*",
     "@veristack/plugin-lang-typescript": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }

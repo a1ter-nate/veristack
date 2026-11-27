@@ -194,7 +194,7 @@ test("diff-cheats catches newly added Rust #[ignore], blanket #[allow], and carg
 });
 
 test("System 1 classifier extracts Rust SUT imports and classifies templates/rust-reference as BEHAVIOR", () => {
-  const rustRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "templates", "rust-reference");
+  const rustRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "templates", "rust-reference");
   const report = buildSystem1Packet(rustRef, { maxCandidates: 10 });
   assert.ok(report.candidates.length >= 2);
   const tableCand = report.candidates.find((c) => c.file.endsWith("transition_table.rs"));

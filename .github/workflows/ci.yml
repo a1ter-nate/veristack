@@ -66,7 +66,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           node bin/vstack.mjs diff-cheats . --base "origin/$BASE_REF" --fail
-          node bin/vstack.mjs oracle-check . --base "origin/$BASE_REF" --test-cmd "bun test ./tests/ ./examples/typescript/clean/"
+          node bin/vstack.mjs oracle-check . --base "origin/$BASE_REF" --test-cmd "bun test ./tests/ ./packages/ ./examples/typescript/clean/"
 
   verify-ts:
     runs-on: ubuntu-latest
@@ -83,6 +83,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: git fetch --no-tags --depth=50 origin "$BASE_REF"
+      - run: bun run test:packages
       - run: bun run check
 
   verify-csharp:

@@ -33,7 +33,7 @@
     {
       "id": "ts-zero-defect-invariants-and-anti-evasion",
       "invariant": "TypeScript cross-file AST, invariant-loss, and anti-evasion gates pass deterministically.",
-      "witnessRef": "tests/zero-defect/repo-config-and-rust.test.ts"
+      "witnessRef": "packages/plugins/zero-defect/tests/repo-config-and-rust.test.ts"
     }
   ]
 }

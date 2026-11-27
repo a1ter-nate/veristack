@@ -197,7 +197,7 @@ test("diff-cheats catches newly added Python @pytest.mark.skip, bare # noqa, and
 });
 
 test("System 1 classifier extracts Python SUT imports on templates/python-reference", () => {
-  const pyRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "templates", "python-reference");
+  const pyRef = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "templates", "python-reference");
   const report = buildSystem1Packet(pyRef, { maxCandidates: 10 });
   assert.ok(report.candidates.length >= 3);
   const tableCand = report.candidates.find((c) => c.file.endsWith("test_transition_table.py"));

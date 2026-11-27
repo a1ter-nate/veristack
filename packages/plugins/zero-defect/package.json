@@ -11,5 +11,8 @@
     "@veristack/plugin-canary": "workspace:*",
     "@veristack/plugin-laws-formal": "workspace:*",
     "@veristack/plugin-lang-typescript": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }

@@ -12,7 +12,7 @@ import {
   formatReviewBriefTerminal,
 } from "@veristack/plugin-review-brief";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const binPath = path.join(repoRoot, "bin", "vstack.mjs");
 
 function initTempGitRepo(prefix: string): string {

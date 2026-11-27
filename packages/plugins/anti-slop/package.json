@@ -9,5 +9,8 @@
     "@veristack/plugin": "workspace:*",
     "@veristack/plugin-lang-typescript": "workspace:*",
     "@veristack/plugin-state-machines": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }

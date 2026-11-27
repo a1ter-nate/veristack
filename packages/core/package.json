@@ -25,5 +25,8 @@
     "@veristack/plugin-state-machines": "workspace:*",
     "@veristack/plugin-tigerstyle": "workspace:*",
     "@veristack/plugin-zero-defect": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test ./tests/"
   }
 }
