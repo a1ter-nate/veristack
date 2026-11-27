@@ -7,6 +7,7 @@ import { manageHooks } from "./install.ts";
 export interface InitRepoOptions {
   force?: boolean;
   noHooks?: boolean;
+  dryRun?: boolean;
   harnesses?: readonly HookHarness[];
   commandPrefix?: string;
 }
@@ -19,6 +20,7 @@ export interface InitRepoResult {
   manifestCreated: boolean;
   gitignoreUpdated: boolean;
   hooksEnabled: boolean;
+  dryRun?: boolean;
   touchedFiles: string[];
   uncoveredRungs: RungId[];
   testFilesCount: number;
@@ -93,16 +95,18 @@ function buildDefaultRungEntries(
   return rungs;
 }
 
-function ensureReceiptsGitignored(repoRoot: string): boolean {
+function ensureReceiptsGitignored(repoRoot: string, dryRun = false): boolean {
   const giPath = path.join(repoRoot, ".gitignore");
   const entry = ".verification/receipts/";
   if (fs.existsSync(giPath)) {
     const raw = fs.readFileSync(giPath, "utf8");
     if (raw.includes(".verification/receipts")) return false;
+    if (dryRun) return true;
     const sep = raw.length > 0 && !raw.endsWith("\n") ? "\n" : "";
     fs.writeFileSync(giPath, `${raw}${sep}${entry}\n`, "utf8");
     return true;
   }
+  if (dryRun) return true;
   fs.writeFileSync(giPath, `${entry}\n`, "utf8");
   return true;
 }
@@ -117,6 +121,7 @@ export function initVeristackRepo(repoPath: string, options: InitRepoOptions = {
   if (!fs.existsSync(repoRoot) || !fs.statSync(repoRoot).isDirectory()) {
     throw new Error(`Directory not found: ${repoPath}`);
   }
+  const dryRun = options.dryRun === true;
   const repo = (getCoreServices().discoverRepo ?? (() => { throw new Error("Core discoverRepo service not registered."); }))(repoRoot);
   const manifestRel = ".verification/rungs.json";
   const manifestAbs = path.join(repoRoot, manifestRel);
@@ -130,13 +135,15 @@ export function initVeristackRepo(repoPath: string, options: InitRepoOptions = {
       allowExcluded: [],
       rungs: buildDefaultRungEntries(repo.languages, repo.observedArchetype, hasBunIndicator(repo)),
     };
-    fs.mkdirSync(path.dirname(manifestAbs), { recursive: true });
-    fs.writeFileSync(manifestAbs, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(manifestAbs), { recursive: true });
+      fs.writeFileSync(manifestAbs, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    }
     manifestCreated = true;
     touchedFiles.push(manifestRel);
   }
 
-  const gitignoreUpdated = ensureReceiptsGitignored(repoRoot);
+  const gitignoreUpdated = ensureReceiptsGitignored(repoRoot, dryRun);
   if (gitignoreUpdated) touchedFiles.push(".gitignore");
 
   let hooksEnabled = false;
@@ -144,19 +151,23 @@ export function initVeristackRepo(repoPath: string, options: InitRepoOptions = {
     const hookRes = manageHooks(repoRoot, "on", {
       harnesses: options.harnesses,
       commandPrefix: options.commandPrefix,
+      dryRun,
     });
     hooksEnabled = hookRes.enabled;
     touchedFiles.push(...hookRes.touchedManifests, hookRes.configPath);
   }
 
-  const afterRepo = (getCoreServices().discoverRepo ?? (() => { throw new Error("Core discoverRepo service not registered."); }))(repoRoot);
+  const afterRepo = dryRun
+    ? repo
+    : (getCoreServices().discoverRepo ?? (() => { throw new Error("Core discoverRepo service not registered."); }))(repoRoot);
   const testResult = analyzeTests(afterRepo);
   const rungs = (getCoreServices().buildRungStatuses ?? (() => []))(afterRepo, testResult.inventory, { requireReceipts: false });
   const uncoveredRungs = rungs
     .filter((r) => r.coverageGrade === "not-covered" || r.coverageGrade === "over-budget")
     .map((r) => r.rung);
   const testFilesCount = afterRepo.files.filter((f) => f.language && f.isTest).length;
-  const summary = `vstack init: archetype=${afterRepo.archetype} | languages=[${afterRepo.languages.join(", ") || "none"}] | manifest=${manifestCreated ? "created" : "kept"} | hooks=${hooksEnabled ? "ON" : "skipped"} | tests=${testFilesCount} | uncovered=[${uncoveredRungs.join(", ") || "none"}]`;
+  const modeTag = dryRun ? " [dry-run]" : "";
+  const summary = `vstack init${modeTag}: archetype=${afterRepo.archetype} | languages=[${afterRepo.languages.join(", ") || "none"}] | manifest=${manifestCreated ? (dryRun ? "would-create" : "created") : "kept"} | hooks=${hooksEnabled ? (dryRun ? "would-enable" : "ON") : "skipped"} | tests=${testFilesCount} | uncovered=[${uncoveredRungs.join(", ") || "none"}]`;
 
   return {
     repoRoot,
@@ -166,6 +177,7 @@ export function initVeristackRepo(repoPath: string, options: InitRepoOptions = {
     manifestCreated,
     gitignoreUpdated,
     hooksEnabled,
+    ...(dryRun ? { dryRun: true } : {}),
     touchedFiles: [...new Set(touchedFiles)],
     uncoveredRungs,
     testFilesCount,
@@ -175,7 +187,9 @@ export function initVeristackRepo(repoPath: string, options: InitRepoOptions = {
 
 export function formatInitReport(result: InitRepoResult): string {
   const lines = [result.summary];
-  if (result.touchedFiles.length > 0) lines.push(`  Touched: ${result.touchedFiles.join(", ")}`);
+  if (result.touchedFiles.length > 0) {
+    lines.push(result.dryRun ? `  Planned (dry-run, no files written): ${result.touchedFiles.join(", ")}` : `  Touched: ${result.touchedFiles.join(", ")}`);
+  }
   if (result.testFilesCount === 0 || result.uncoveredRungs.length > 0) {
     lines.push("  Next required steps before Veristack passes:");
     if (result.testFilesCount === 0) lines.push("    - Write real behavioral tests (R2 unit tables + PBT, R3 boundary/MBT) — zero-test repos are blocked by Stop hook & --strict.");

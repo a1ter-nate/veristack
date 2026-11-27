@@ -10,6 +10,7 @@ export interface HooksAdminResult {
   repoRoot: string;
   configPath: string;
   enabled: boolean;
+  dryRun?: boolean;
   harnesses: HookHarness[];
   touchedManifests: string[];
   summary: string;
@@ -269,7 +270,7 @@ function getHooksStatus(repoRoot: string, configRel: string, current: HookProjec
 export function manageHooks(
   repoPath: string,
   action: HooksAdminAction,
-  options: { harnesses?: readonly HookHarness[]; commandPrefix?: string } = {},
+  options: { harnesses?: readonly HookHarness[]; commandPrefix?: string; dryRun?: boolean } = {},
 ): HooksAdminResult {
   if (!repoPath) throw new Error("repoPath is required.");
   const repoRoot = path.resolve(repoPath);
@@ -283,10 +284,15 @@ export function manageHooks(
         ? current.harnesses
         : ["claude", "codex", "cursor"];
   const cmdPrefix = options.commandPrefix ?? "npx --no-install vstack";
+  const dryRun = options.dryRun === true;
 
   if (action === "status") return getHooksStatus(repoRoot, configRel, current);
 
   if (action === "on") {
+    const planned = selected.map((h) => path.relative(repoRoot, manifestPathFor(repoRoot, h)).split(path.sep).join("/"));
+    if (dryRun) {
+      return { action, repoRoot, configPath: configRel, enabled: true, dryRun: true, harnesses: selected, touchedManifests: planned, summary: `hooks [dry-run]: would enable [${selected.join(", ")}] (${planned.join(", ")}, ${configRel})` };
+    }
     const touched = selected.map((h) => installHarnessManifest(repoRoot, h, cmdPrefix));
     const nextCfg: HookProjectConfig = { enabled: true, tier: current.tier, ...(current.auditLog ? { auditLog: current.auditLog } : {}), harnesses: selected };
     writeJsonObj(configPath, nextCfg);
@@ -294,11 +300,21 @@ export function manageHooks(
   }
 
   if (action === "off") {
+    if (dryRun) {
+      return { action, repoRoot, configPath: configRel, enabled: false, dryRun: true, harnesses: current.harnesses, touchedManifests: [configRel], summary: "hooks [dry-run]: would disable automatic hooks in .verification/hooks.json." };
+    }
     const nextCfg: HookProjectConfig = { enabled: false, tier: current.tier, ...(current.auditLog ? { auditLog: current.auditLog } : {}), harnesses: current.harnesses };
     writeJsonObj(configPath, nextCfg);
     return { action, repoRoot, configPath: configRel, enabled: false, harnesses: current.harnesses, touchedManifests: [configRel], summary: "hooks: OFF — automatic per-edit and stop hooks paused in .verification/hooks.json." };
   }
 
+  if (dryRun) {
+    const plannedRemove = ALL_HARNESSES
+      .filter((h) => fs.existsSync(manifestPathFor(repoRoot, h)))
+      .map((h) => path.relative(repoRoot, manifestPathFor(repoRoot, h)).split(path.sep).join("/"));
+    if (fs.existsSync(configPath)) plannedRemove.push(configRel);
+    return { action, repoRoot, configPath: configRel, enabled: false, dryRun: true, harnesses: [], touchedManifests: plannedRemove, summary: `hooks [dry-run]: would remove Veristack hook entries (${plannedRemove.join(", ") || "none present"}).` };
+  }
   const removed: string[] = [];
   for (const h of ALL_HARNESSES) {
     const r = removeHarnessManifest(repoRoot, h);

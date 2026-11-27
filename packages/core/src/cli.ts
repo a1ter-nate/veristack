@@ -13,6 +13,30 @@ const CLI_VALUE_FLAGS = new Set([
   "--max-mutants", "--min-kill-rate", "--coverage", "--max-crap", "--plugin", "--disable-plugin",
 ]);
 
+const CLI_BOOL_FLAGS = new Set([
+  "--json", "--md", "--strict", "--fail", "--allow-missing-rungs", "--update-ratchet",
+  "--fail-on-poor-coverage", "--fail-on-errors", "--fail-on-cheats", "--force", "--no-hooks",
+  "--dry-run", "--verify", "--update", "--check-github", "--emit-requests", "-h", "--help",
+]);
+
+function findUnknownCliFlag(args: readonly string[], extraUsage?: string): string | null {
+  const extraFlags = new Set<string>();
+  if (extraUsage) {
+    for (const m of extraUsage.matchAll(/--[a-z][a-z0-9-]*/g)) extraFlags.add(m[0]);
+  }
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i] ?? "";
+    if (tok === "--") break;
+    if (CLI_VALUE_FLAGS.has(tok)) { i += 1; continue; }
+    if (!tok.startsWith("-") || tok === "-") continue;
+    const eqIdx = tok.indexOf("=");
+    const flagName = eqIdx > 0 ? tok.slice(0, eqIdx) : tok;
+    if (CLI_VALUE_FLAGS.has(flagName) || CLI_BOOL_FLAGS.has(flagName) || extraFlags.has(flagName)) continue;
+    return tok;
+  }
+  return null;
+}
+
 function extractPluginOperations(args: readonly string[]): { operations: PluginOperation[]; cleanArgs: string[] } {
   const operations: PluginOperation[] = [];
   const cleanArgs: string[] = [];
@@ -117,13 +141,18 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       console.log(formatUsage(host));
       return 0;
     }
+    const pluginCmd = host.registries.commands().find((c) => c.name === cmd);
+    const unknownFlag = findUnknownCliFlag(rest, pluginCmd?.usage);
+    if (unknownFlag) {
+      console.error(`Unknown flag: ${unknownFlag}\nRun 'vstack --help' for supported flags.`);
+      return 2;
+    }
     if (cmd === "plugins") return handlePluginsCommand(host, asJson);
     if (cmd === "scan") return await handleScanCli(host, rest, target, { asJson, asMd });
 
     const verifyCode = await handleVerifyAndRunRungCli(host, cmd, rest, target);
     if (verifyCode !== null) return verifyCode;
 
-    const pluginCmd = host.registries.commands().find((c) => c.name === cmd);
     if (pluginCmd && typeof pluginCmd.run === "function") {
       return await pluginCmd.run({ cmd, rest, target, asJson, asMd, host });
     }

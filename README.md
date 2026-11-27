@@ -1,7 +1,6 @@
 # Veristack (`vstack`)
 
 **Replace test theater, slop asymmetry, and silent regressions with deterministic verification gates.**
-Warning, veristack is "slop" :)
 
 Veristack is a deterministic **9-rung verification ladder (`R0 → R8`)**, cross-language static and invariant analyzer (`vstack`), native linter/analyzer kit, runnable formal proof suite (**Bend 2**), anti-slop PR review briefer, and portable agent skill for **TypeScript/JS, C#/.NET, Rust, Python, Go, SQL, and Shell**.
 
@@ -96,11 +95,11 @@ Once committed, `vstack diff-cheats` watches `.vstack.json`, `.vstackignore`, an
 
 ## Multi-Language Coverage (7 Benchmarked Languages)
 
-Every language is verified by a living `caught/` vs `clean/` precision benchmark under [examples/](examples/README.md) (`vstack bench . --fail`: **196/196 recall, 0 clean FPs, 0 adversarial comment/string-wrapped FPs**):
+Every language is verified by a living `caught/` vs `clean/` precision benchmark under [examples/](examples/README.md) (`vstack bench . --fail`: **249/249 recall, 0 clean FPs, 0 adversarial comment/string-wrapped FPs**):
 
 | Language | Static & Native Enforcement (`R0`–`R1`) | Runnable Reference & Formal Proof (`R2`–`R5`) | Guide |
 | :--- | :--- | :--- | :--- |
-| **TypeScript / JS** | `oxc-parser` AST (`anti-slop`, `landmines`, `internal/` boundaries, cross-file graph) + unified Oxlint plugin (`veristack/lint`) | `src/` + `tests/` ([formal-verification.test.ts](tests/formal-verification.test.ts)) | [typescript.md](skill/references/languages/typescript.md) |
+| **TypeScript / JS** | `oxc-parser` AST (`anti-slop`, `landmines`, `internal/` boundaries, cross-file graph) + unified Oxlint plugin (`veristack/lint`) | `packages/` + `tests/` ([formal-verification.test.ts](packages/plugins/laws-formal/tests/formal-verification.test.ts)) | [typescript.md](skill/references/languages/typescript.md) |
 | **C# / .NET 10** | Roslyn [VStack.Analyzers](lint/csharp/VStack.Analyzers/) (`VSTACK001`–`VSTACK004`), `TreatWarningsAsErrors` | [templates/csharp-reference/](templates/csharp-reference/) (BFS proof, Dafny, `FsCheck`, `Stryker.NET`) | [csharp.md](skill/references/languages/csharp.md) |
 | **Rust (2024)** | `unsafe_code = "forbid"`, Clippy `unwrap_used`/`expect_used`/`wildcard_enum_match_arm = "deny"` | [templates/rust-reference/](templates/rust-reference/) (`stateright`, Kani, `proptest`, `cargo-mutants`) | [rust.md](skill/references/languages/rust.md) |
 | **Python (3.12+)** | `ruff` strict + `S101` prod assert ban, `mypy --strict`, `assert_never` | [templates/python-reference/](templates/python-reference/) (`hypothesis` PBT/MBT, BFS proof, `mutmut`) | [python.md](skill/references/languages/python.md) |

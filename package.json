@@ -1,6 +1,6 @@
 {
   "name": "veristack",
-  "version": "0.1.1",
+  "version": "0.1.20",
   "description": "Deterministic 9-rung zero-defect verification ladder, cross-language static and invariant analyzer, Bend 2 formal laws, and anti-cheat CI gates for TypeScript, C#, Rust, Python, Go, SQL, and Shell.",
   "type": "module",
   "homepage": "https://github.com/a1ter-nate/veristack#readme",
@@ -34,7 +34,6 @@
   "files": [
     "bin/",
     "dist/",
-    "packages/",
     "lint/index.mjs",
     "lint/oxlint-no-comments.mjs",
     "lint/oxlint-explicit-state-machine.mjs",
@@ -43,14 +42,14 @@
     "README.md"
   ],
   "exports": {
-    "./plugin": "./packages/plugin/src/index.ts",
-    "./core": "./packages/core/src/index.ts",
+    "./plugin": "./dist/plugin.mjs",
+    "./core": "./dist/core.mjs",
     "./lint": "./lint/index.mjs",
     "./lint/no-comments": "./lint/oxlint-no-comments.mjs",
     "./lint/explicit-state-machine": "./lint/oxlint-explicit-state-machine.mjs"
   },
   "scripts": {
-    "build": "bun build src/cli.ts --outfile dist/cli.mjs --target node --external oxc-parser",
+    "build": "bun build src/cli.ts --outfile dist/cli.mjs --target node --external oxc-parser --external smol-toml --external yaml && bun build packages/core/src/index.ts --outfile dist/core.mjs --target node --external oxc-parser --external smol-toml --external yaml && bun build packages/plugin/src/index.ts --outfile dist/plugin.mjs --target node --external oxc-parser --external smol-toml --external yaml",
     "prepack": "bun run build",
     "test": "bun test ./tests/ ./packages/",
     "test:packages": "bun run --filter '@veristack/*' test",

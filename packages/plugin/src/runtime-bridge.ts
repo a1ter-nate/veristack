@@ -26,12 +26,21 @@ export interface CoreRuntimeServices {
   validateCommand?: (rung: RungId | "canary", command: string, repoRoot?: string) => string | null;
 }
 
-const activeServices: CoreRuntimeServices = {};
+const CORE_SERVICES_SYMBOL = Symbol.for("veristack.coreServices.v1");
+
+function resolveActiveServices(): CoreRuntimeServices {
+  const holder = globalThis as Record<PropertyKey, unknown>;
+  const existing = holder[CORE_SERVICES_SYMBOL];
+  if (existing && typeof existing === "object") return existing as CoreRuntimeServices;
+  const created: CoreRuntimeServices = {};
+  holder[CORE_SERVICES_SYMBOL] = created;
+  return created;
+}
 
 export function registerCoreServices(partial: Partial<CoreRuntimeServices>): void {
-  Object.assign(activeServices, partial);
+  Object.assign(resolveActiveServices(), partial);
 }
 
 export function getCoreServices(): Readonly<CoreRuntimeServices> {
-  return activeServices;
+  return resolveActiveServices();
 }

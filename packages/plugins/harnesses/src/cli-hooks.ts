@@ -112,7 +112,7 @@ function handleHooksAdminCli(rest: readonly string[], asJson: boolean): number {
   const harnesses = harnessesRaw
     ? harnessesRaw.split(",").map((s) => parseHarness(s.trim())).filter((h): h is HookHarness => Boolean(h))
     : undefined;
-  const res = manageHooks(dirArg, action, { harnesses, commandPrefix: parseFlag(rest, "--command") });
+  const res = manageHooks(dirArg, action, { harnesses, commandPrefix: parseFlag(rest, "--command"), dryRun: rest.includes("--dry-run") });
   console.log(asJson ? JSON.stringify(res, null, 2) : formatHooksStatus(res));
   return action === "status" && rest.includes("--fail") && !res.enabled ? 1 : 0;
 }
@@ -141,6 +141,7 @@ export function handleHooksAndDoctorCli(
     const res = initVeristackRepo(dirArg, {
       force: rest.includes("--force"),
       noHooks: rest.includes("--no-hooks"),
+      dryRun: rest.includes("--dry-run"),
       harnesses,
       commandPrefix: parseFlag(rest, "--command"),
     });
