@@ -68,6 +68,7 @@
     "test:rust": "cargo fmt --manifest-path templates/rust-reference/Cargo.toml --check && cargo clippy --manifest-path templates/rust-reference/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path templates/rust-reference/Cargo.toml",
     "test:go": "cd templates/go-reference && go vet ./... && go test -race -v ./...",
     "test:laws": "bun src/cli.ts laws . --verify --fail",
+    "check:features": "bunx featlock check .",
     "test:python": "uv run --project templates/python-reference ruff check templates/python-reference examples/python/clean && uv run --project templates/python-reference ruff format --check templates/python-reference examples/python/clean && uv run --project templates/python-reference mypy templates/python-reference/src templates/python-reference/tests examples/python/clean && PYTHONPATH=examples/python/clean uv run --project templates/python-reference pytest templates/python-reference examples/python/clean",
     "check": "bun run typecheck && bun run lint:oxlint && bun run check:max-lines && bun run perf:check && bun run lint:no-comments && bun run lint:state-machines && bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts perimeter . --fail && bun src/cli.ts verify . --strict"
   },
@@ -104,6 +105,7 @@
     "@veristack/plugin-tigerstyle": "workspace:*",
     "@veristack/plugin-zero-defect": "workspace:*",
     "fast-check": "^4.11.0",
+    "featlock": "github:a1ter-nate/featlock#v0.1.0-pre",
     "oxlint": "^1.95.0",
     "typescript": "^7.0.2"
   }
