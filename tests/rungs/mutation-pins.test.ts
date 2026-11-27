@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { discoverRepo } from "@veristack/core";
+import { buildRatchetBaseline, discoverRepo } from "@veristack/core";
 import { executeHookEvent, loadHookConfig } from "@veristack/plugin-control-plane";
 import { classifyCanaryOutcome, isRetryableCanarySignal } from "@veristack/plugin-canary";
 import { extractToolHead, parseAndValidateCommandArgv } from "@veristack/plugin-control-plane";
@@ -406,5 +406,49 @@ test("mutation-probe & canary-runner pins: AST loop/return/arithmetic operators,
     fs.writeFileSync(path.join(dir, "src", "lib.rs"), "pub fn f(x: &&str) -> bool { let c = || true; c() }\n");
     const rsSkip = runPlantedFaultCanary({ repoRoot: dir, testCmd: "bun test ./tests/ops.test.ts", targets: ["src/lib.rs"], maxMutants: 4, minKillRate: 0.75 });
     assert.equal(rsSkip.totalMutants, 0);
+  });
+});
+
+test("R5 pins: buildRatchetBaseline dependenciesCount presence, manifest selfName filtering, and runAllDeclaredRungsAsync failureOutputs presence", async () => {
+  const withDeps = buildRatchetBaseline([], undefined, 3);
+  assert.equal(withDeps.dependenciesCount, 3);
+  const withoutDeps = buildRatchetBaseline([]);
+  assert.equal("dependenciesCount" in withoutDeps, false);
+
+  const selfPkgFiles = [
+    { rel: "package.json", abs: "/tmp/package.json", language: undefined, isTest: false, isWorkflow: false, lines: 1, content: JSON.stringify({ name: "express", dependencies: { express: "workspace:*" } }) },
+    { rel: "src/index.ts", abs: "/tmp/src/index.ts", language: "typescript" as const, isTest: false, isWorkflow: false, lines: 1, content: "export const x = 1;\n" },
+  ];
+  assert.equal(inferArchetypeFromFiles(selfPkgFiles, ["package.json", "src/index.ts"]), "library");
+  const namelessPkgFiles = [
+    { rel: "package.json", abs: "/tmp/package.json", language: undefined, isTest: false, isWorkflow: false, lines: 1, content: JSON.stringify({ dependencies: { express: "^5.0.0" } }) },
+    { rel: "src/index.ts", abs: "/tmp/src/index.ts", language: "typescript" as const, isTest: false, isWorkflow: false, lines: 1, content: "export const x = 1;\n" },
+  ];
+  assert.equal(inferArchetypeFromFiles(namelessPkgFiles, ["package.json", "src/index.ts"]), "service");
+
+  await withTempDirAsync(async (dir) => {
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "pass.test.ts"), "import { test } from 'node:test'; import assert from 'node:assert/strict'; test('ok', () => { assert.equal(1, 1); });\n");
+    fs.writeFileSync(path.join(dir, "fail.test.ts"), "import { test } from 'node:test'; import assert from 'node:assert/strict'; test('boom', () => { assert.equal(1, 2); });\n");
+    fs.writeFileSync(
+      path.join(dir, ".verification", "rungs.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        archetype: "library",
+        rungs: {
+          R2: { command: "bun test pass.test.ts" },
+          R3: { command: "bun test fail.test.ts" },
+        },
+      }),
+    );
+    const repo = discoverRepo(dir);
+    const okRes = await runAllDeclaredRungsAsync(repo, "R2", "test-key");
+    assert.equal(okRes.passed, true);
+    assert.equal("failureOutputs" in okRes, false);
+
+    const failRes = await runAllDeclaredRungsAsync(repo, "R3", "test-key");
+    assert.equal(failRes.passed, false);
+    assert.equal("failureOutputs" in failRes, true);
+    assert.ok((failRes.failureOutputs?.R3 ?? "").length > 0);
   });
 });

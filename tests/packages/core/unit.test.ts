@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createPluginHostSync, createState } from "@veristack/core";
+import { buildRatchetBaseline, createPluginHostSync, createState } from "@veristack/core";
 
 test("State.create tracks revision and createPluginHostSync activates all 18 built-in plugins", () => {
   const st = createState<number[], { push: (n: number) => void }>({
@@ -19,4 +19,11 @@ test("State.create tracks revision and createPluginHostSync activates all 18 bui
   const entries = host.list();
   assert.equal(entries.length, 18);
   assert.equal(entries.every((e) => e.status === "active"), true);
+});
+
+test("buildRatchetBaseline includes dependenciesCount only when a numeric count is supplied", () => {
+  const withDeps = buildRatchetBaseline([], undefined, 3);
+  assert.equal(withDeps.dependenciesCount, 3);
+  const withoutDeps = buildRatchetBaseline([]);
+  assert.equal("dependenciesCount" in withoutDeps, false);
 });
