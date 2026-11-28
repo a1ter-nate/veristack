@@ -1,7 +1,12 @@
 import { getCoreServices, Plugin, type CommandRunContext, type Finding } from "@veristack/plugin";
+import { analyzeErrorAndContractGuards } from "./error-and-contract-guards.ts";
+import { analyzeLiskovSubtyping } from "./liskov-guards.ts";
 import { lintNoComments } from "./no-comments.ts";
 import { analyzeStructure } from "./structure.ts";
 import { analyzeTests } from "./test-analyzer.ts";
+
+export { analyzeErrorAndContractGuards } from "./error-and-contract-guards.ts";
+export { analyzeLiskovSubtyping } from "./liskov-guards.ts";
 
 export { lintNoComments, type CommentHit, type NoCommentsOptions } from "./no-comments.ts";
 export { analyzeOracleAndInstructions } from "./oracle-audit.ts";
@@ -52,7 +57,11 @@ export const antiSlopPlugin = Plugin.define({
       ed.add({
         id: "veristack.anti-slop.structure",
         phase: "lint",
-        run: (runCtx) => analyzeStructure(runCtx.repo, runCtx.activeLanguages),
+        run: (runCtx) => [
+          ...analyzeStructure(runCtx.repo, runCtx.activeLanguages),
+          ...analyzeErrorAndContractGuards(runCtx.repo),
+          ...analyzeLiskovSubtyping(runCtx.repo),
+        ],
       });
       ed.add({
         id: "veristack.anti-slop.tests",

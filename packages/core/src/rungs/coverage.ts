@@ -133,6 +133,8 @@ function buildR2Status(ctx: RungBuildCtx): { status: RungStatus; receipt: RungRe
   else if (r2Files.length >= 3 || prodFiles >= 10) gaps.push("Express multi-case matrices as Tests-as-Data tables");
   if (hasPbt) evidence.push("Property-Based Tests");
   else gaps.push("Add real Property-Based Testing in host tests (fast-check / Hypothesis / FsCheck / proptest)");
+  if (repo.signals.hasErrorBranchCoverage) evidence.push("error-branch coverage");
+  if (repo.signals.hasMetamorphicTests) evidence.push("metamorphic relations");
   if (canaryReport?.passed) evidence.push(`canary kill ${(canaryReport.killRate * 100).toFixed(0)}%`);
   const status = finalizeRung({
     rung: "R2", name: "Pure Logic, Tables & Stateless Oracles", speedBudget: "10 ms–2 s", targetBudget: `>= ${idealR2Files} specs + canary`,
@@ -192,6 +194,7 @@ function buildR3Status(ctx: RungBuildCtx): RungStatus {
 }
 
 function buildR4Status(ctx: RungBuildCtx): RungStatus {
+  if (!ctx.repo) throw new Error("repo is required.");
   const { repo, isLib, isFront, r4Files, isExecuted } = ctx;
   const s = repo.signals;
   const na = isLib || isFront;
@@ -207,6 +210,7 @@ function buildR4Status(ctx: RungBuildCtx): RungStatus {
     else gaps.push("Add isolated real-DB integration slices (Testcontainers / pglite / emulator)");
     if (s.hasMigrationTest) evidence.push("migration check");
     else if (needsMigrations) gaps.push("Verify DB migrations against seeded old-schema rows");
+    if (s.hasDst || s.hasFaultDepthCoverage) evidence.push("Small Bug Depth (d<=3) / LDFI fault sweep");
   }
   return finalizeRung({
     rung: "R4", name: "Real Engines, Migrations, Dry-Run & DST", speedBudget: "2–30 s", targetBudget: na ? "0" : "3–8 slices",

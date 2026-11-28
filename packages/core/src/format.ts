@@ -86,10 +86,13 @@ function appendTerminalDetails(report: ScanReport, out: string[]): void {
     const rank = (sev: Finding["severity"]): number => (sev === "error" ? 0 : sev === "warn" ? 1 : 2);
     const ordered = [...report.findings].sort((a, b) => rank(a.severity) - rank(b.severity));
     const errorCount = ordered.filter((f) => f.severity === "error").length;
+    const witnessCount = ordered.filter((f) => f.soundness === "incorrectness-witness").length;
+    const hygieneCount = ordered.length - witnessCount;
     const displayCap = Math.max(40, errorCount);
-    out.push("", `ANTI-SLOP, NO-COMMENTS & ANTI-CHEAT FINDINGS (${ordered.length}, showing all ${errorCount} error(s) + up to ${displayCap} total)`);
+    out.push("", `ANTI-SLOP, NO-COMMENTS & ANTI-CHEAT FINDINGS (${ordered.length}: ${witnessCount} witness(es), ${hygieneCount} hygiene | showing all ${errorCount} error(s) + up to ${displayCap} total)`);
     for (const f of ordered.slice(0, displayCap)) {
-      out.push(`  - [${f.severity.toUpperCase()}] ${f.rung} ${f.rule} ${f.file}:${f.line} — ${f.message}`, `      Fix: ${f.fix}`);
+      const clsTag = f.soundness === "incorrectness-witness" ? " [WITNESS]" : f.soundness === "hygiene-lint" ? " [HYGIENE]" : "";
+      out.push(`  - [${f.severity.toUpperCase()}] ${f.rung} ${f.rule} ${f.file}:${f.line}${clsTag} — ${f.message}`, `      Fix: ${f.fix}`);
     }
     if (ordered.length > displayCap) out.push(`  ... and ${ordered.length - displayCap} more non-error findings (use --json for complete output).`);
   }

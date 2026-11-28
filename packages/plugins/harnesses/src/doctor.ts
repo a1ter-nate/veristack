@@ -186,6 +186,34 @@ function auditDoctorConfigAndArtifacts(repo: DiscoveredRepo, findings: DoctorFin
   for (const f of evaluateGreenfieldRungGate(repo)) {
     findings.push({ id: `DOC:${f.id}`, level: "route", artifact: f.file, summary: f.message, fix: f.fix });
   }
+  auditEffectiveFpLedger(repo.root, findings);
+}
+
+function auditEffectiveFpLedger(repoRoot: string, findings: DoctorFinding[]): void {
+  const escAbs = path.join(repoRoot, ".verification", "escapes.json");
+  if (!fs.existsSync(escAbs)) return;
+  let parsed: unknown;
+  try { parsed = JSON.parse(fs.readFileSync(escAbs, "utf8")); } catch { return; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+  const stats = (parsed as Record<string, unknown>).ruleFeedback;
+  if (!Array.isArray(stats)) return;
+  for (const entry of stats) {
+    if (!entry || typeof entry !== "object") continue;
+    const rec = entry as Record<string, unknown>;
+    const rule = typeof rec.rule === "string" ? rec.rule : "";
+    const dismissed = typeof rec.dismissed === "number" ? rec.dismissed : 0;
+    const fixed = typeof rec.fixed === "number" ? rec.fixed : 0;
+    const total = dismissed + fixed;
+    if (!rule || total < 5) continue;
+    const fpRate = dismissed / total;
+    if (fpRate > 0.1) {
+      findings.push({
+        id: `DOC:high-fp-rule:${rule}`, level: "mention", artifact: ".verification/escapes.json",
+        summary: `Rule '${rule}' effective FP/dismissal rate is ${(fpRate * 100).toFixed(1)}% (${dismissed}/${total}, Tricorder ceiling: 10%).`,
+        fix: `Tighten '${rule}' precision or reclassify it as hygiene-lint until effective FP rate drops <= 10%.`,
+      });
+    }
+  }
 }
 
 export function runDoctor(repoPath: string): DoctorReport {

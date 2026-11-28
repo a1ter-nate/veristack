@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createPluginHostSync } from "@veristack/core";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createPluginHostSync, discoverRepo } from "@veristack/core";
 import { isVeristackPlugin } from "@veristack/plugin";
-import { analyzeT3TestGuards, langTypescriptPlugin } from "@veristack/plugin-lang-typescript";
+import { analyzeT3TestGuards, analyzeTypestateProtocols, langTypescriptPlugin } from "@veristack/plugin-lang-typescript";
 
 test("lang-typescript plugin defines valid Veristack plugin and registers into languages", () => {
   assert.equal(isVeristackPlugin(langTypescriptPlugin), true);
@@ -52,4 +55,39 @@ test("test-no-test-in-loop ignores RegExp.prototype.test inside loops while catc
     content: badCode,
   });
   assert.equal(badFindings.some((f) => f.rule === "test-no-test-in-loop"), true);
+});
+
+test("Strom & Yemini declarative typestate protocols enforce valid transition order and termination", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-typestate-"));
+  try {
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".verification", "protocols.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        protocols: [{
+          id: "tx-protocol",
+          constructors: ["openTx"],
+          initial: "Unverified",
+          terminal: ["Committed"],
+          transitions: { Unverified: { verify: "Verified" }, Verified: { commit: "Committed" } },
+        }],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(dir, "src", "bad.ts"),
+      "export function bad(): void { const tx = openTx(); tx.commit(); }\n",
+    );
+    fs.writeFileSync(
+      path.join(dir, "src", "good.ts"),
+      "export function good(): void { const tx = openTx(); tx.verify(); tx.commit(); }\n",
+    );
+    const findings = analyzeTypestateProtocols(discoverRepo(dir));
+    assert.equal(findings.some((f) => f.file === "src/bad.ts" && f.rule === "typestate-invalid-transition"), true);
+    assert.equal(findings.some((f) => f.file === "src/bad.ts" && f.rule === "typestate-unterminated-protocol"), true);
+    assert.equal(findings.some((f) => f.file === "src/good.ts"), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

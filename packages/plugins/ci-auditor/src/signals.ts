@@ -6,14 +6,7 @@ import { sanitizeShellBlock } from "@veristack/plugin-control-plane";
 import { isHostRepoFile } from "@veristack/plugin";
 import { auditCodeownersPerimeter, parseGitHubWorkflow } from "./workflow-audit.ts";
 
-const MANIFEST_BASENAMES = new Set([
-  "package.json",
-  "cargo.toml",
-  "pyproject.toml",
-  "go.mod",
-  "directory.build.props",
-  "directory.packages.props",
-]);
+const MANIFEST_BASENAMES = new Set(["package.json", "cargo.toml", "pyproject.toml", "go.mod", "directory.build.props", "directory.packages.props"]);
 
 function isManifestFile(rel: string): boolean {
   const base = path.posix.basename(rel.replace(/\\/g, "/").toLowerCase());
@@ -437,6 +430,9 @@ function buildToolSignalsFromContext(ctx: SignalTextContext): { signals: ToolSig
     hasE2eTool: /@playwright\/test|\b(?:playwright|cypress|selenium|puppeteer)\b/i.test(testImportAndManifest) || hasHostPath(/(?:^|\/)(?:playwright\.config\.[cm]?[jt]s|cypress\.config\.[cm]?[jt]s|maestro\/)/),
     hasProdTelemetryOrCanary: hasHostPath(/(?:^|\/)(?:scripts\/canary\/|production-canar|production-drift|derived-device-drift|synthetic[-_]check|smoke[-_]prod|rehearsal|health[-_]?watch)/) || /@opentelemetry|@sentry|\b(?:opentelemetry|launchdarkly|dd-trace|sentry-sdk|prometheus|goreplay|chaos-mesh)\b/i.test(`${manifestText}\n${prodImportLines}\n${effectiveCiText}`) || /\b(?:canary|production-drift|synthetic|rollback|post-deploy|rehearsal|health[-_]?watch|smoke[-_]|Smoke check production)\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`),
     hasDiffSelection: /\b(?:testscope|--changed|--affected|affected-projects|turbo\s+run[^\n]*--filter)\b/i.test(configAndCi),
+    hasErrorBranchCoverage: /\b(?:toThrow|rejects\.|assert\.throws|assert\.rejects|Assert\.Throws|pytest\.raises|should_panic|is_err\s*\()/i.test(codeTestText),
+    hasMetamorphicTests: /\b(?:checkMetamorphicRelation|checkCrossSurfaceParity|metamorphic)\b/i.test(codeTestText),
+    hasFaultDepthCoverage: /\b(?:extractLdfiMinimalCutSets|faultInject|smallBugDepth|chaosSchedule)\b/i.test(codeTestText),
   };
   return { signals, hasInProcessRealDb };
 }

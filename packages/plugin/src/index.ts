@@ -53,7 +53,9 @@ export {
   applyRepoConfig,
   isRuleDisabled,
   loadRepoConfig,
+  soundnessClassForFinding,
   type AppliedConfigResult,
+  type RetiringImportRule,
   type RuleLevel,
   type VstackConfig,
 } from "./repo-config.ts";

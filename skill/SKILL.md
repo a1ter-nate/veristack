@@ -21,6 +21,8 @@ Use these tokens consistently across plans, PR briefs, and reviews:
 - **Jidoka**: release-active production invariants that fail closed on the first corrupt unit.
 - **Subtraction**: deleting or simplifying code, wrappers, or redundant tests before adding new ones.
 - **Stakes**: blast radius that determines which plan, contract, or diff slice requires direct human judgment.
+- **Gardener Protocol (`uncomplect`)**: every new lint rule or static fence must be proven with a planted fault (**red** → green) before trusting it in CI.
+- **No fence yet**: explicit gap honesty — name every un-fenced approximation or soundiness site verbatim (`No fence yet: ...`) instead of pretending static analysis covers it.
 
 ## The 9-Rung Ladder
 

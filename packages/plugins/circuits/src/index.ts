@@ -15,6 +15,15 @@ export {
   type TestTriageInput,
 } from "./catalog.ts";
 export { createSystem1Engine, formatCircuitReport, listDefaultCircuits, runRepoCircuit } from "./circuits.ts";
+export {
+  checkCrossSurfaceParity,
+  checkMetamorphicRelation,
+  createCorpusSeedStore,
+  type CorpusSeedEntry,
+  type CrossSurfaceParityResult,
+  type MetamorphicCheckResult,
+  type MetamorphicRelationKind,
+} from "./metamorphic.ts";
 export { resolveThreeBandDecision, runCircuit, type CircuitDefinition, type System1DecisionEngine } from "./engine.ts";
 export { buildSystem1Packet, corroborateSystem1Batch } from "./system1-classifier.ts";
 export { runSystem1Provider, type System1ProviderOptions } from "./system1-providers.ts";

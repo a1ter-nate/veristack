@@ -1,7 +1,9 @@
 import { getCoreServices, Plugin, type CommandRunContext } from "@veristack/plugin";
+import { auditBoundedRelationalModels } from "./bounded-model-check.ts";
 import { auditFormalSync, formatFormalSyncReport } from "./formal-sync.ts";
 import { auditLaws, formatLawsReport } from "./laws.ts";
 
+export { auditBoundedRelationalModels, runBoundedRelationalCheck, type BoundedModelCheckResult, type BoundedRelationalModel } from "./bounded-model-check.ts";
 export { auditFormalSync, formatFormalSyncReport } from "./formal-sync.ts";
 export { auditLaws, formatLawsReport } from "./laws.ts";
 
@@ -16,9 +18,12 @@ function runFormalSyncCommand(ctx: CommandRunContext): number {
 function runLawsCommand(ctx: CommandRunContext): number {
   const discover = getCoreServices().discoverRepo;
   if (!discover) throw new Error("Core discoverRepo service is not registered.");
-  const result = auditLaws(discover(ctx.target), { verify: ctx.rest.includes("--verify") });
-  console.log(ctx.asJson ? JSON.stringify(result, null, 2) : formatLawsReport(result));
-  return ctx.rest.includes("--fail") && result.findings.length > 0 ? 1 : 0;
+  const repo = discover(ctx.target);
+  const result = auditLaws(repo, { verify: ctx.rest.includes("--verify") });
+  const bmc = ctx.rest.includes("--verify") ? auditBoundedRelationalModels(repo.root) : [];
+  const allFindings = [...result.findings, ...bmc.flatMap((r) => r.findings)];
+  console.log(ctx.asJson ? JSON.stringify({ ...result, boundedModelChecks: bmc, findings: allFindings }, null, 2) : formatLawsReport({ ...result, findings: allFindings }));
+  return ctx.rest.includes("--fail") && allFindings.length > 0 ? 1 : 0;
 }
 
 export const lawsFormalPlugin = Plugin.define({
@@ -28,7 +33,11 @@ export const lawsFormalPlugin = Plugin.define({
       ed.add({
         id: "veristack.laws-formal.audit",
         phase: "lint",
-        run: (runCtx) => [...auditFormalSync(runCtx.repo), ...auditLaws(runCtx.repo).findings],
+        run: (runCtx) => [
+          ...auditFormalSync(runCtx.repo),
+          ...auditLaws(runCtx.repo).findings,
+          ...auditBoundedRelationalModels(runCtx.repo.root).flatMap((r) => r.findings),
+        ],
       });
     });
     ctx.command.transform((ed) => {

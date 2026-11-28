@@ -121,6 +121,20 @@ function checkEffectRetryAndFail(
       fix: "Halt on programmer invariant violations with Effect.die / Effect.dieMessage / Effect.orDie.",
     });
   }
+  if (
+    (calleeName === "Effect.catchAll" || calleeName === "Effect.catchAllCause" || calleeName === "Effect.catchAllDefect") &&
+    /["'](?:settled|refused|done|closed|completed|cancelled|canceled|rejected|paid|approved)["']/i.test(callText)
+  ) {
+    pushTigerFinding(ctx.findings, {
+      rule: "effect-defect-folded-to-terminal",
+      rung: "R0",
+      severity: "error",
+      file: ctx.file.rel,
+      line: ln,
+      message: `${calleeName} folds unexpected failures/defects into a terminal domain outcome (uncomplect fence).`,
+      fix: "Handle only specific expected domain errors with Effect.catchTag and let unexpected defects propagate or stay pending.",
+    });
+  }
 }
 
 function checkEffectHandlerAllocAndService(file: ScannedFile, lines: readonly string[], findings: Finding[]): void {
@@ -153,6 +167,24 @@ function checkEffectHandlerAllocAndService(file: ScannedFile, lines: readonly st
         line: ln,
         message: `Effect v4 ServiceMap.Service exposes ${methodCount} operations (cap: 8).`,
         fix: "Split cohesive capabilities into smaller Effect v4 ServiceMap.Service interfaces.",
+      });
+    }
+  }
+  for (const m of masked.matchAll(/\bLayer\.(?:succeed|sync)\s*\(\s*([A-Z]\w*)\s*,\s*(?:\(\s*\)\s*=>\s*)?\{([\s\S]{0,400}?)\}\s*\)/g)) {
+    const svcName = m[1] ?? "";
+    const body = m[2] ?? "";
+    const methods = body.match(/\b[a-zA-Z_]\w*\s*:\s*(?:\([^)]*\)\s*=>|async\s*\()/g) ?? [];
+    if (methods.length === 1 && !/\byield\*/.test(body) && /\(\s*\.\.\.args\s*\)\s*=>|\(\s*[a-zA-Z_]\w*\s*\)\s*=>\s*[a-zA-Z_]\w*\.[a-zA-Z_]\w*\s*\(/.test(body)) {
+      const ln = lineAtOffset(file.content, m.index ?? 0);
+      if (hasSafetyDirective(lines, ln)) continue;
+      pushTigerFinding(findings, {
+        rule: "effect-passthrough-service-wrapper",
+        rung: "R1",
+        severity: "warn",
+        file: file.rel,
+        line: ln,
+        message: `Zero-value pass-through Layer wrapper for '${svcName}' forwards 1:1 with zero hidden dependencies (uncomplect fence).`,
+        fix: "Delete the pass-through wrapper and call the underlying module directly unless multiple implementations or test doubles exist.",
       });
     }
   }

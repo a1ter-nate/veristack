@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { createPluginHostSync } from "@veristack/core";
 import { isVeristackPlugin } from "@veristack/plugin";
-import { formatInitReport, harnessesPlugin, initVeristackRepo, manageHooks } from "@veristack/plugin-harnesses";
+import { formatInitReport, formatSingleFileReport, harnessesPlugin, initVeristackRepo, manageHooks, runDoctor, scanSingleFile } from "@veristack/plugin-harnesses";
 
 test("harnesses plugin defines valid Veristack plugin and registers into harnesses", () => {
   assert.equal(isVeristackPlugin(harnessesPlugin), true);
@@ -35,6 +35,36 @@ test("initVeristackRepo and manageHooks honor dryRun without mutating disk", () 
     assert.equal(hooksOnRes.dryRun, true);
     assert.deepEqual(hooksOnRes.touchedManifests, [".claude/settings.local.json", ".cursor/hooks.json"]);
     assert.deepEqual(fs.readdirSync(dir), ["index.ts"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Tricorder effective FP tracking in doctor and compositional summary cache + AutoFix in check-file", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-tricorder-"));
+  try {
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".verification", "escapes.json"),
+      JSON.stringify({
+        escapes: [],
+        ruleFeedback: [
+          { rule: "noisy-rule", dismissed: 3, fixed: 4 },
+          { rule: "clean-rule", dismissed: 0, fixed: 10 },
+        ],
+      }),
+    );
+    fs.writeFileSync(path.join(dir, "src.ts"), "export const v = (1 as any);\n");
+    const doc = runDoctor(dir);
+    assert.equal(doc.findings.some((f) => f.id === "DOC:high-fp-rule:noisy-rule"), true);
+    assert.equal(doc.findings.some((f) => f.id === "DOC:high-fp-rule:clean-rule"), false);
+
+    const first = scanSingleFile(path.join(dir, "src.ts"), { repoRoot: dir });
+    const second = scanSingleFile(path.join(dir, "src.ts"), { repoRoot: dir });
+    assert.equal(first.findings[0]?.soundness, "incorrectness-witness");
+    assert.ok(first.findings[0]?.suggestedFix);
+    assert.equal(second.findings.length, first.findings.length);
+    assert.ok(formatSingleFileReport(first).includes("AutoFix"));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

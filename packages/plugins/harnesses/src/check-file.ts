@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { analyzeImmuneSystemGates } from "@veristack/plugin-control-plane";
@@ -5,8 +6,11 @@ import { analyzeBlackHoleReplayGuards, analyzeT3ProdGuards, analyzeTsAstGuards, 
 import { auditCiWorkflows } from "@veristack/plugin-ci-auditor";
 import { analyzeStructure, analyzeTests, analyzeUniversalAntiSlopProd, analyzeUniversalBendLaws, analyzeUniversalLandminesTest, lintNoComments } from "@veristack/plugin-anti-slop";
 import { lintImplicitStateMachinesInFile } from "@veristack/plugin-state-machines";
-import { applyRepoConfig, createEmptyCiSignals, createEmptySignals, lineOf, loadRepoConfig, maskCode, pathHelpers, type CheckFileOptions, type CheckFileResult, type CheckFileTier, type DiscoveredRepo, type Finding, type Language, type ScannedFile } from "@veristack/plugin";
+import { applyRepoConfig, createEmptyCiSignals, createEmptySignals, lineOf, loadRepoConfig, maskCode, pathHelpers, soundnessClassForFinding, type CheckFileOptions, type CheckFileResult, type CheckFileTier, type DiscoveredRepo, type Finding, type Language, type ScannedFile, type SuggestedFix } from "@veristack/plugin";
 import { analyzeCveAndPostmortemGuards, analyzeOssGuards, analyzePerfHygiene, analyzeRuntimeGuards } from "@veristack/plugin-zero-defect";
+
+const SUMMARY_CACHE = new Map<string, Finding[]>();
+const SUMMARY_CACHE_MAX = 512;
 
 function detectLanguageFast(rel: string): Language | undefined {
   const lower = rel.toLowerCase();
@@ -69,21 +73,25 @@ interface FastFindingSpec {
   severity: Finding["severity"];
   message: string;
   fix: string;
+  suggestedFix?: SuggestedFix;
 }
 
 function pushFast(findings: Finding[], spec: FastFindingSpec): void {
   const line = lineOf(spec.file.content, spec.offset);
-  findings.push({
+  const base: Finding = {
     id: `HF:${spec.rule}:${spec.file.rel}:${line}`,
     rule: spec.rule,
     category: spec.category,
     rung: spec.rung,
     severity: spec.severity,
+    soundness: soundnessClassForFinding(spec),
     file: spec.file.rel,
     line,
     message: spec.message,
     fix: spec.fix,
-  });
+    ...(spec.suggestedFix ? { suggestedFix: spec.suggestedFix } : {}),
+  };
+  findings.push(base);
 }
 
 function scanImmediateProd(file: ScannedFile, code: string, findings: Finding[]): void {
@@ -91,12 +99,22 @@ function scanImmediateProd(file: ScannedFile, code: string, findings: Finding[])
   if (!code) return;
   if (file.language === "typescript") {
     for (const m of code.matchAll(CHAINED_AS)) {
-      pushFast(findings, { file, offset: m.index ?? 0, rule: "no-chained-or-any-cast", category: "structure", rung: "R0", severity: "error", message: `Unsafe type escape hatch (${m[0]}) hides real contract.`, fix: "Parse external data at the boundary with a schema or type guard instead of casting." });
+      pushFast(findings, {
+        file, offset: m.index ?? 0, rule: "no-chained-or-any-cast", category: "structure", rung: "R0", severity: "error",
+        message: `Unsafe type escape hatch (${m[0]}) hides real contract.`,
+        fix: "Parse external data at the boundary with a schema or type guard instead of casting.",
+        suggestedFix: { kind: "replace", target: m[0], replacement: "/* parse at boundary */" },
+      });
     }
   }
   if (file.language === "typescript" || file.language === "javascript" || file.language === "csharp") {
     for (const off of findEmptyCatchOffsets(code)) {
-      pushFast(findings, { file, offset: off, rule: "no-swallowing-catch", category: "structure", rung: "R0", severity: "warn", message: "Empty catch block silently swallows errors.", fix: "Rethrow, return a typed error, or handle the specific expected error explicitly." });
+      pushFast(findings, {
+        file, offset: off, rule: "no-swallowing-catch", category: "structure", rung: "R0", severity: "warn",
+        message: "Empty catch block silently swallows errors.",
+        fix: "Rethrow, return a typed error, or handle the specific expected error explicitly.",
+        suggestedFix: { kind: "replace", target: "catch {}", replacement: "catch (err) { throw err; }" },
+      });
     }
   }
   if (file.language === "csharp") {
@@ -190,6 +208,14 @@ function scanCodeLanguageFile(file: ScannedFile, repoRoot: string, tier: CheckFi
   return rawFindings;
 }
 
+function isCheckFileWorkflow(rel: string): boolean {
+  const low = rel.toLowerCase();
+  return (
+    ((low.startsWith(".github/workflows/") || low.startsWith("ci/") || low.startsWith(".azure-pipelines/") || low.startsWith(".azuredevops/")) && /\.ya?ml$/.test(low)) ||
+    /^(?:\.gitlab-ci\.yml|\.?azure-pipelines(?:[-.][^/]+)?\.ya?ml|\.circleci\/config\.yml|bitbucket-pipelines\.yml)$/.test(low)
+  );
+}
+
 export function scanSingleFile(filePath: string, options: CheckFileOptions = {}): CheckFileResult {
   const started = performance.now();
   const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
@@ -198,22 +224,14 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
   const tier: CheckFileTier = options.tier ?? "immediate";
   const maxLines = options.maxLines ?? 500;
   const language = detectLanguageFast(rel);
-
   let content = options.content;
   if (content === undefined) {
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new Error(`File not found: ${filePath}`);
     content = fs.readFileSync(abs, "utf8");
   }
-
   const isSql = /\.sql$/i.test(rel);
   const isShell = /\.(?:sh|bash)$/i.test(rel);
-  const isWorkflow =
-    ((rel.toLowerCase().startsWith(".github/workflows/") ||
-      rel.toLowerCase().startsWith("ci/") ||
-      rel.toLowerCase().startsWith(".azure-pipelines/") ||
-      rel.toLowerCase().startsWith(".azuredevops/")) &&
-      /\.ya?ml$/i.test(rel)) ||
-    /^(?:\.gitlab-ci\.yml|\.?azure-pipelines\.ya?ml|\.circleci\/config\.yml|bitbucket-pipelines\.yml)$/i.test(rel);
+  const isWorkflow = isCheckFileWorkflow(rel);
   const sfc = extractSfcScript(rel, content);
   const effectiveLang = language ?? sfc?.language;
   const effectiveContent = sfc ? sfc.content : content;
@@ -221,16 +239,15 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
   if (hasPathologicalNesting(content, effectiveLang ?? "typescript")) {
     return {
       file: rel, tier, language: language ?? null, elapsedMs: Number((performance.now() - started).toFixed(2)),
-      findings: [{
-        id: `HF:syntax-bomb:${rel}:1`, rule: "syntax-nesting-bomb", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1,
-        message: `${rel} exceeds safe syntax nesting depth (>128) or size (>2 MiB) — blocked fail-closed.`,
-        fix: "Remove deeply nested expressions or oversized generated payloads.",
-      }],
+      findings: [{ id: `HF:syntax-bomb:${rel}:1`, rule: "syntax-nesting-bomb", category: "cheat", rung: "R0", severity: "error", file: rel, line: 1, message: `${rel} exceeds safe syntax nesting depth (>128) or size (>2 MiB) — blocked fail-closed.`, fix: "Remove deeply nested expressions or oversized generated payloads." }],
     };
   }
   if (!effectiveLang && !isSql && !isShell && !isWorkflow) {
     return { file: rel, tier, language: null, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: [] };
   }
+  const cacheKey = crypto.createHash("sha256").update(`${repoRoot}\0${rel}\0${tier}\0${Boolean(options.strict)}\0${maxLines}\0${content}`).digest("hex");
+  const cached = SUMMARY_CACHE.get(cacheKey);
+  if (cached) return { file: rel, tier, language, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: cached.map((f) => ({ ...f })) };
 
   const file: ScannedFile = {
     rel, abs, language: effectiveLang, isTest: pathHelpers.isTestFilePath(rel), isWorkflow,
@@ -238,7 +255,6 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
     content: effectiveContent, ...(sfc ? { rawContent: content } : {}),
     lines: content.length === 0 ? 0 : content.split(/\r?\n/).length,
   };
-
   const rawFindings: Finding[] = [];
   if (isWorkflow) {
     const singleRepo = makeSingleFileRepo(repoRoot, file);
@@ -251,14 +267,15 @@ export function scanSingleFile(filePath: string, options: CheckFileOptions = {})
   } else if (effectiveLang) {
     rawFindings.push(...scanCodeLanguageFile(file, repoRoot, tier, maxLines));
   }
-
   const deduped = new Map<string, Finding>();
   for (const f of rawFindings) {
     const key = `${f.rule}:${f.file}:${f.line}`;
-    if (!deduped.has(key)) deduped.set(key, f);
+    if (!deduped.has(key)) deduped.set(key, f.soundness ? f : { ...f, soundness: soundnessClassForFinding(f) });
   }
   const unique = [...deduped.values()];
   const finalFindings = options.strict ? unique : applyRepoConfig(unique, loadRepoConfig(repoRoot)).findings;
+  if (SUMMARY_CACHE.size >= SUMMARY_CACHE_MAX) SUMMARY_CACHE.clear();
+  SUMMARY_CACHE.set(cacheKey, finalFindings);
   return { file: rel, tier, language, elapsedMs: Number((performance.now() - started).toFixed(2)), findings: finalFindings };
 }
 
@@ -268,8 +285,10 @@ export function formatSingleFileReport(result: CheckFileResult): string {
   }
   const out = [`check-file (${result.tier}): ${result.file} — ${result.findings.length} issue(s) (${result.elapsedMs}ms)`];
   for (const f of result.findings) {
-    out.push(`  - [${f.severity.toUpperCase()}] ${f.rule} ${f.file}:${f.line} — ${f.message}`);
+    const tag = f.soundness === "incorrectness-witness" ? " [WITNESS]" : f.soundness === "hygiene-lint" ? " [HYGIENE]" : "";
+    out.push(`  - [${f.severity.toUpperCase()}] ${f.rule} ${f.file}:${f.line}${tag} — ${f.message}`);
     out.push(`      Fix: ${f.fix}`);
+    if (f.suggestedFix) out.push(`      AutoFix (${f.suggestedFix.kind}): ${f.suggestedFix.replacement}`);
   }
   return out.join("\n");
 }

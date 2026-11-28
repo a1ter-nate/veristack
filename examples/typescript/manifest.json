@@ -45,7 +45,8 @@
       "no-api-key-as-signing-secret",
       "no-floating-side-effect-promise",
       "unbounded-loop-risk",
-      "no-warn-only-error-catch"
+      "no-warn-only-error-catch",
+      "aspirator-log-and-continue-mutation"
     ],
     "ecosystem_guards.ts": [
       "no-any-type-annotation",

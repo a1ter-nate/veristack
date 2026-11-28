@@ -8,6 +8,13 @@ export type RungId = "R0" | "R1" | "R2" | "R3" | "R4" | "R5" | "R6" | "R7" | "R8
 export type TestBoundary = "unit" | "component" | "host" | "contract" | "integration" | "mbt" | "e2e" | "unknown";
 
 export type Severity = "error" | "warn" | "info";
+export type SoundnessClass = "incorrectness-witness" | "hygiene-lint";
+
+export interface SuggestedFix {
+  readonly kind: "replace" | "insert-before" | "delete-line";
+  readonly target?: string;
+  readonly replacement: string;
+}
 
 export type KnownFindingCategory =
   | "cheat"
@@ -60,10 +67,12 @@ export interface Finding {
   category: FindingCategory;
   rung: RungId;
   severity: Severity;
+  soundness?: SoundnessClass;
   file: string;
   line: number;
   message: string;
   fix: string;
+  suggestedFix?: SuggestedFix;
 }
 
 export interface ScannedFile {
@@ -277,6 +286,9 @@ export interface ToolSignals {
   hasE2eTool: boolean;
   hasProdTelemetryOrCanary: boolean;
   hasDiffSelection: boolean;
+  hasErrorBranchCoverage?: boolean;
+  hasMetamorphicTests?: boolean;
+  hasFaultDepthCoverage?: boolean;
 }
 
 export interface TestFileRecord {

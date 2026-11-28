@@ -12,8 +12,10 @@ import {
   writeInvariantSnapshot,
 } from "./daikon-invariants.ts";
 import { analyzeEcosystemGuards } from "./ecosystem-guards.ts";
+import { analyzeGunawiCloudGuards } from "./ldfi-and-cloud-guards.ts";
 import { analyzeOssGuards } from "./oss-guards.ts";
 import { analyzePerfHygiene } from "./perf-lints.ts";
+import { compareTemporalProtocols, mineTemporalProtocols, writeTemporalProtocols, type TemporalProtocolSnapshot, type TemporalTraceSequence } from "./protocol-miner.ts";
 import { analyzeRuntimeGuards } from "./runtime-guards.ts";
 import {
   auditZeroDefectArtifacts,
@@ -36,9 +38,19 @@ export {
   type TraceSample,
 } from "./daikon-invariants.ts";
 export { analyzeEcosystemGuards } from "./ecosystem-guards.ts";
+export { analyzeGunawiCloudGuards, extractLdfiMinimalCutSets, type FlowDependencySpec, type LdfiCutSet } from "./ldfi-and-cloud-guards.ts";
 export { generateMcdcVectors, type McdcResult, type McdcVector } from "./mcdc.ts";
 export { analyzeOssGuards } from "./oss-guards.ts";
 export { analyzePerfHygiene } from "./perf-lints.ts";
+export {
+  compareTemporalProtocols,
+  mineTemporalProtocols,
+  writeTemporalProtocols,
+  type TemporalProtocolDiff,
+  type TemporalProtocolRule,
+  type TemporalProtocolSnapshot,
+  type TemporalTraceSequence,
+} from "./protocol-miner.ts";
 export { analyzeRuntimeGuards } from "./runtime-guards.ts";
 export {
   auditZeroDefectArtifacts,
@@ -73,7 +85,7 @@ function runZeroDefectAnalyzers(repo: DiscoveredRepo): Finding[] {
     const isStub = Boolean(file.isStub) || pathHelpers.isDeclarationStub(file.rel);
     if (!file.language || file.isTest || isStub) continue;
     if (GENERATED_PATH.test(file.rel) && GENERATED_HEADER.test(file.content.slice(0, 600))) continue;
-    findings.push(...analyzeRuntimeGuards(file), ...analyzeOssGuards(file), ...analyzeCveAndPostmortemGuards(file));
+    findings.push(...analyzeRuntimeGuards(file), ...analyzeOssGuards(file), ...analyzeCveAndPostmortemGuards(file), ...analyzeGunawiCloudGuards(file));
   }
   findings.push(...analyzeEcosystemGuards(repo), ...analyzePerfHygiene(repo), ...auditZeroDefectArtifacts(repo));
   return findings;
@@ -114,14 +126,24 @@ function runInvariantsCommand(ctx: CommandRunContext): number {
   if (!tracesPath || tracesPath === ".") {
     throw new Error("vstack invariants requires a JSON traces file ({ samples: [{ fn, args?, result?, throws? }] }).");
   }
-  const parsed = JSON.parse(fs.readFileSync(tracesPath, "utf8")) as { samples?: TraceSample[] } | TraceSample[];
-  const samples = Array.isArray(parsed) ? parsed : (parsed.samples ?? []);
-  const current = inferDynamicInvariants(samples);
-  const baselinePath = parseFlagValue(ctx.rest, "--baseline");
+  const parsed = JSON.parse(fs.readFileSync(tracesPath, "utf8")) as { samples?: TraceSample[]; sequences?: TemporalTraceSequence[] } | TraceSample[];
+  const protocolsPath = parseFlagValue(ctx.rest, "--protocols");
   const update = ctx.rest.includes("--update");
   if (update && ctx.rest.includes("--fail")) {
     throw new Error("vstack invariants forbids combining --update with --fail (prevents self-passing rebaseline in CI).");
   }
+  if (protocolsPath && !Array.isArray(parsed) && Array.isArray(parsed.sequences)) {
+    const mined = mineTemporalProtocols(parsed.sequences);
+    if (update) { writeTemporalProtocols(protocolsPath, mined); console.log(JSON.stringify({ protocols: mined }, null, 2)); return 0; }
+    if (!fs.existsSync(protocolsPath)) throw new Error(`Protocols baseline not found at '${protocolsPath}'.`);
+    const baseDoc = JSON.parse(fs.readFileSync(protocolsPath, "utf8")) as { temporalProtocols?: TemporalProtocolSnapshot };
+    const diff = compareTemporalProtocols(baseDoc.temporalProtocols ?? { schemaVersion: 1, traceCount: 0, rules: [] }, parsed.sequences, protocolsPath);
+    console.log(JSON.stringify({ protocols: mined, diff }, null, 2));
+    return ctx.rest.includes("--fail") && !diff.passed ? 1 : 0;
+  }
+  const samples = Array.isArray(parsed) ? parsed : (parsed.samples ?? []);
+  const current = inferDynamicInvariants(samples);
+  const baselinePath = parseFlagValue(ctx.rest, "--baseline");
   let diff: ReturnType<typeof compareInvariantSnapshots> | undefined;
   if (baselinePath) {
     if (update) {

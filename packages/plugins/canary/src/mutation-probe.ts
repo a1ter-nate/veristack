@@ -7,17 +7,15 @@ import { isTestFilePath } from "@veristack/plugin";
 import { maskCode } from "@veristack/plugin";
 import type { PlantedFaultReport, PlantedFaultSurvivor } from "@veristack/plugin";
 import { classifyCanaryOutcome, executeCanaryPlanAsync, isRetryableCanarySignal, type AsyncCanaryTask } from "./canary-runner.ts";
+import { isAridMutationLine, parseDiffChangedLines } from "./diff-and-shuffle.ts";
 import { parseAndValidateCommandArgv, runArgvChain, scrubChildEnv } from "@veristack/plugin-control-plane";
 import { runGitClean } from "@veristack/plugin-control-plane";
 import { parseRunnerTestCounts, stripAnsi } from "./runner-metrics.ts";
 
 interface MutantCandidate { file: string; line: number; start: number; end: number; replacement: string; operator: string; original: string; mutated: string; }
-export interface CanaryOptions { repoRoot: string; testCmd: string; targets?: readonly string[]; baseRef?: string; maxMutants?: number; minKillRate?: number; concurrency?: number; }
+export interface CanaryOptions { repoRoot: string; testCmd: string; targets?: readonly string[]; baseRef?: string; diffRef?: string; aridFilter?: boolean; maxMutants?: number; minKillRate?: number; concurrency?: number; }
 
-const BINARY_MUTATIONS: Record<string, string> = {
-  "===": "!==", "!==": "===", "==": "!=", "!=": "==",
-  ">=": "<", ">": "<=", "<=": ">", "<": ">=",
-};
+const BINARY_MUTATIONS: Record<string, string> = { "===": "!==", "!==": "===", "==": "!=", "!=": "==", ">=": "<", ">": "<=", "<=": ">", "<": ">=" };
 const LOGICAL_MUTATIONS: Record<string, string> = { "&&": "||", "||": "&&" };
 
 function lineAt(source: string, offset: number): number {
@@ -27,9 +25,7 @@ function lineAt(source: string, offset: number): number {
 }
 
 function maskCommentsOnly(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:\\])\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, " "));
+  return text.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " ")).replace(/(^|[^:\\])\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, " "));
 }
 
 function seededShuffle<T>(items: readonly T[], seed: number): T[] {
@@ -421,10 +417,16 @@ function prepareCanaryPlan(options: CanaryOptions): {
   const seedHasher = crypto.createHash("sha256").update(options.testCmd).update(process.env.GITHUB_RUN_ID ?? process.env.VSTACK_CANARY_NONCE ?? "");
   for (const rel of targets) seedHasher.update(rel).update(fs.readFileSync(path.join(absRoot, rel), "utf8"));
   const runSeed = seedHasher.digest().readUInt32BE(0);
+  const diffLines = options.diffRef ? parseDiffChangedLines(absRoot, options.diffRef) : null;
+  const filterArid = options.aridFilter ?? Boolean(options.diffRef);
   const perFileBuckets: MutantCandidate[][] = [];
   for (const rel of seededShuffle(targets, runSeed)) {
+    const allowedLines = diffLines?.get(rel);
+    if (diffLines && (!allowedLines || allowedLines.size === 0)) continue;
     const source = fs.readFileSync(path.join(absRoot, rel), "utf8");
-    const found = /\.[cm]?[jt]sx?$/.test(rel) ? collectAstMutants(rel, source, maxMutants, runSeed) : collectFallbackMutants(rel, source, maxMutants, runSeed);
+    const srcLines = filterArid ? source.split(/\r?\n/) : [];
+    const rawFound = /\.[cm]?[jt]sx?$/.test(rel) ? collectAstMutants(rel, source, maxMutants * 3, runSeed) : collectFallbackMutants(rel, source, maxMutants * 3, runSeed);
+    const found = rawFound.filter((c) => (!allowedLines || allowedLines.has(c.line)) && (!filterArid || !isAridMutationLine(srcLines[c.line - 1] ?? ""))).slice(0, maxMutants);
     if (found.length > 0) perFileBuckets.push(found);
   }
   const candidates: MutantCandidate[] = [];

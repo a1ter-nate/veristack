@@ -1,6 +1,7 @@
 import {
   applyRepoConfig,
   loadRepoConfig,
+  soundnessClassForFinding,
   type AnalyzerPluginSpec,
   type AnalyzerRunOutput,
   type CheckFileOptions,
@@ -141,26 +142,21 @@ function finalizeScanReport(input: {
   if (!repo.root) throw new Error("Discovered repo root is required.");
   const config = loadRepoConfig(repo.root, opts.configPath);
   const applied = applyRepoConfig(rawFindings, config, opts.disableRules);
-  const findings = applied.findings;
+  const findings = applied.findings.map((f) => (f.soundness ? f : { ...f, soundness: soundnessClassForFinding(f) }));
   const requireReceipts = Boolean(opts.strict) || Boolean(repo.manifest);
   const rungs = buildRungStatuses(repo, testInventory, { receipts, requireReceipts });
   if (opts.strict) {
     for (const rp of registries.rungs()) {
       if (typeof rp.auditRungCoverage === "function") {
-        findings.push(...rp.auditRungCoverage(repo, rungs, { requireWellCovered: true, respectRatchet: false }));
+        findings.push(...rp.auditRungCoverage(repo, rungs, { requireWellCovered: true, respectRatchet: false }).map((f) => (f.soundness ? f : { ...f, soundness: soundnessClassForFinding(f) })));
       }
     }
   }
   let tigerStyle: TigerStyleReport | undefined;
-  for (const rep of registries.reporters()) {
-    if (typeof rep.buildTigerStyle === "function") tigerStyle = rep.buildTigerStyle(repo, findings, rungs);
-  }
+  for (const rep of registries.reporters()) if (typeof rep.buildTigerStyle === "function") tigerStyle = rep.buildTigerStyle(repo, findings, rungs);
   const workspaces = buildWorkspaceLadders(repo, testInventory, findings);
   const scopeExclusions = filterUnallowlistedExclusions(repo.scopeExclusions, repo.manifest?.allowExcluded ?? []);
-  const hasWeakeningConfig =
-    applied.disabledRules.length > 0 ||
-    config.ignore.length > 0 ||
-    Object.values(config.rules).some((level) => level !== "error");
+  const hasWeakeningConfig = applied.disabledRules.length > 0 || config.ignore.length > 0 || Object.values(config.rules).some((level) => level !== "error");
   const hasActiveConfig = hasWeakeningConfig || Object.keys(config.rules).length > 0;
   const sourceFiles = repo.files.filter((f) => f.language && !f.isTest);
   const testFiles = repo.files.filter((f) => f.language && f.isTest);

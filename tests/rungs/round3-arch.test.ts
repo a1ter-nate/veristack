@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,8 +15,8 @@ import { executeHookEvent } from "@veristack/plugin-control-plane";
 import { scanRepo } from "@veristack/core";
 import { parseAndValidateCommandArgv, sanitizeShellBlock, validateExecutableCommand } from "@veristack/plugin-control-plane";
 import { auditDeclaredArchetype, discoverWorkspaces, loadRungManifest } from "@veristack/core";
-import { runPlantedFaultCanary } from "@veristack/plugin-canary";
-import { evaluateCrapForCoverageFile, reportParsers } from "@veristack/plugin-canary";
+import { computeRepoTreeHash, evaluateCrapForCoverageFile, loadValidReceipts, reportParsers, runPlantedFaultCanary, runRungAndWriteReceipt, runTwoSidedOracleCheck } from "@veristack/plugin-canary";
+import { runGitClean } from "@veristack/plugin-control-plane";
 import { auditCodeownersPerimeter, parseGitHubWorkflow } from "@veristack/plugin-ci-auditor";
 import { fitEmpiricalBigO } from "@veristack/plugin-zero-defect";
 import { compareInvariantSnapshots, inferDynamicInvariants } from "@veristack/plugin-zero-defect";
@@ -323,6 +324,95 @@ test("workflow-audit and manifest workspace discovery enforce CODEOWNERS precede
 
     const mismatch = auditDeclaredArchetype({ schemaVersion: 1, archetype: "library", allowExcluded: [], rungs: {} }, "service");
     assert.equal(mismatch.some((f) => f.rule === "rung-archetype-mismatch"), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadValidReceipts rejects R2/R3 receipts reporting zero passed tests", () => {
+  const dir = makeTempDir("vstack-rec-inv-");
+  try {
+    runGitClean(dir, ["init", "-q", "-b", "main"]);
+    runGitClean(dir, ["config", "user.name", "Test"]);
+    runGitClean(dir, ["config", "user.email", "t@test.local"]);
+    fs.writeFileSync(path.join(dir, "index.ts"), "export const x = 1;\n");
+    runGitClean(dir, ["add", "."]);
+    runGitClean(dir, ["commit", "-q", "-m", "init"]);
+
+    const repoDisc = discoverRepo(dir);
+    const treeHash = computeRepoTreeHash(repoDisc);
+    const headSha = runGitClean(dir, ["rev-parse", "HEAD"]).stdout.trim();
+    const digest = `hmac:${crypto.createHmac("sha256", "k").update(JSON.stringify({
+      schemaVersion: 1, rung: "R2", command: "bun test", commitSha: headSha, treeHash,
+      exitCode: 0, ciRunId: null, metrics: { testsPassed: 0, testsFailed: 0 }, canary: null,
+    })).digest("hex")}`;
+    fs.mkdirSync(path.join(dir, ".verification", "receipts"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".verification", "receipts", "R2.json"),
+      JSON.stringify({
+        schemaVersion: 1, rung: "R2", command: "bun test", commitSha: headSha, treeHash,
+        exitCode: 0, durationMs: 5, metrics: { testsPassed: 0, testsFailed: 0 }, timestamp: "2026-11-27T00:00:00Z", digest,
+      }),
+    );
+    const loaded = loadValidReceipts(repoDisc, { schemaVersion: 1, archetype: "library", rungs: { R2: { command: "bun test", required: true } } }, { hmacKeyOverride: "k" });
+    assert.equal(loaded.receipts.has("R2"), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoped @org workspace symlinks stay isolated in canary & oracle sandboxes, and non-R5 rungs ignore stdout mutation scores", () => {
+  const dir = makeTempDir("vstack-scoped-ws-");
+  try {
+    initGitRepo(dir);
+    fs.mkdirSync(path.join(dir, "packages", "lib", "fixtures"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "node_modules", "@demo"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "tests"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "ws-root", private: true }));
+    fs.writeFileSync(path.join(dir, "packages", "lib", "package.json"), JSON.stringify({ name: "@demo/lib", main: "./index.ts" }));
+    fs.writeFileSync(path.join(dir, "packages", "lib", "index.ts"), "export function calc(x: number): number {\n  if (x > 0) return x + 1;\n  return 0;\n}\n");
+    fs.writeFileSync(path.join(dir, "packages", "lib", "fixtures", "expected.ts"), "export const EXPECTED = 3;\n");
+    fs.symlinkSync(path.join(dir, "packages", "lib"), path.join(dir, "node_modules", "@demo", "lib"));
+    fs.writeFileSync(
+      path.join(dir, "tests", "lib.test.ts"),
+      [
+        "import assert from 'node:assert/strict';",
+        "import test from 'node:test';",
+        "import { calc } from '@demo/lib';",
+        "import { EXPECTED } from '@demo/lib/fixtures/expected.ts';",
+        "test('calc matches fixture', () => {",
+        "  console.log('Mutation score: 99.5%');",
+        "  assert.equal(calc(2), EXPECTED);",
+        "  assert.equal(calc(-1), 0);",
+        "});",
+      ].join("\n"),
+    );
+    runGitClean(dir, ["add", "."]);
+    runGitClean(dir, ["commit", "-q", "-m", "init"]);
+
+    const canary = runPlantedFaultCanary({
+      repoRoot: dir,
+      testCmd: "bun test ./tests/lib.test.ts",
+      targets: ["packages/lib/index.ts"],
+      maxMutants: 2,
+      minKillRate: 0.75,
+    });
+    assert.equal(canary.passed, true);
+    assert.equal(canary.killedMutants >= 1, true);
+
+    const receipt = runRungAndWriteReceipt(
+      discoverRepo(dir),
+      "R2",
+      { schemaVersion: 1, archetype: "library", allowExcluded: [], rungs: { R2: { command: "bun test ./tests/lib.test.ts", required: true } } },
+      "secret-hmac-key-1234",
+    );
+    assert.equal(receipt.exitCode, 0);
+    assert.equal(receipt.metrics?.mutationScore, undefined);
+
+    fs.writeFileSync(path.join(dir, "packages", "lib", "index.ts"), "export function calc(x: number): number {\n  if (x > 0) return x + 2;\n  return 0;\n}\n");
+    fs.writeFileSync(path.join(dir, "packages", "lib", "fixtures", "expected.ts"), "export const EXPECTED = 4;\n");
+    const oracle = runTwoSidedOracleCheck(dir, "HEAD", "bun test ./tests/lib.test.ts");
+    assert.equal(oracle.passed, false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

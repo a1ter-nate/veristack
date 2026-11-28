@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { scanRepo } from "@veristack/core";
+import { analyzeGunawiCloudGuards, compareTemporalProtocols, extractLdfiMinimalCutSets, mineTemporalProtocols } from "@veristack/plugin-zero-defect";
 
 test("TS/Rust/SQL/Python calibration eliminates Bun.serve fetch, URL.port, SQLite migration, lock-clone, and *.test.py FPs", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-zd-cal-"));
@@ -53,4 +54,39 @@ test("TS/Rust/SQL/Python calibration eliminates Bun.serve fetch, URL.port, SQLit
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("Ammons temporal protocol mining, Alvaro LDFI cut-sets, and Gunawi cloud guards detect violations cleanly", () => {
+  const baseline = mineTemporalProtocols([
+    { traceId: "t1", events: ["open", "auth", "commit", "close"] },
+    { traceId: "t2", events: ["open", "auth", "commit", "close"] },
+    { traceId: "t3", events: ["open", "auth", "commit", "close"] },
+  ]);
+  assert.ok(baseline.rules.some((r) => r.kind === "always-precedes" && r.first === "auth" && r.second === "commit"));
+  assert.ok(baseline.rules.some((r) => r.kind === "always-pairs" && r.first === "open" && r.second === "close"));
+  const brokenDiff = compareTemporalProtocols(baseline, [{ traceId: "bad", events: ["open", "commit"] }]);
+  assert.equal(brokenDiff.passed, false);
+  assert.equal(brokenDiff.violations[0]?.rule, "temporal-protocol-violated");
+
+  const cuts = extractLdfiMinimalCutSets({
+    flows: [
+      { id: "checkout", ioDependencies: ["pg", "stripe"] },
+      { id: "refund", ioDependencies: ["pg", "stripe"] },
+      { id: "notify", ioDependencies: ["resend"] },
+    ],
+  }, 2);
+  assert.equal(cuts[0]?.blastRadius, 3);
+
+  const cloudBad = analyzeGunawiCloudGuards({
+    rel: "src/cloud.ts", abs: "/tmp/src/cloud.ts", language: "typescript", isTest: false, isWorkflow: false, lines: 8,
+    content: [
+      "export async function retryCharge(amt: number): Promise<void> { await billing.charge(amt); }",
+      "export async function loadUsers(): Promise<unknown[]> { const res = await api.list({ limit: 100 }); return res.items; }",
+      "export async function callPeer(): Promise<unknown> { return rpcClient.getUser({ id: '1' }); }",
+    ].join("\n"),
+  });
+  const rules = new Set(cloudBad.map((f) => f.rule));
+  assert.equal(rules.has("cloud-non-idempotent-recovery"), true);
+  assert.equal(rules.has("cloud-silent-limit-truncation"), true);
+  assert.equal(rules.has("cloud-rpc-missing-timeout"), true);
 });

@@ -305,5 +305,31 @@ test("control-plane behavioral invariants: fresh disabled hooks, git ls-files tr
     assert.equal(expanded.error, undefined);
     assert.equal(expanded.steps.length, 2);
     assert.equal(expanded.stepCwds?.[0], "apps/web");
+
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "src", "multi.ts"),
+      [
+        "export function first(x: number): number {",
+        "  return x > 0 ? 1 : 0;",
+        "}",
+        "export function second(a: number, b: number, c: number, d: number, e: number): number {",
+        "  let total = 0;",
+        "  if (a > 0) total += 1;",
+        "  if (b > 0) total += 2;",
+        "  if (c > 0) total += 3;",
+        "  if (d > 0) total += 4;",
+        "  if (e > 0) total += 5;",
+        "  return total;",
+        "}",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "ts-multi.info"),
+      "SF:src/multi.ts\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,0\nDA:5,0\nDA:6,0\nDA:7,0\nDA:8,0\nDA:9,0\nDA:10,0\nDA:11,0\nDA:12,0\nend_of_record\n",
+    );
+    const tsCrap = evaluateCrapForCoverageFile(dir, "ts-multi.info", 30);
+    assert.equal(tsCrap.passed, false);
+    assert.ok(tsCrap.worstCrap >= 42);
   });
 });

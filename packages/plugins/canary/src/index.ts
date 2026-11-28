@@ -1,9 +1,11 @@
 import { Plugin, type CommandRunContext } from "@veristack/plugin";
+import { runOrderDependenceGate } from "./diff-and-shuffle.ts";
 import { runPlantedFaultCanaryAsync } from "./mutation-probe.ts";
 import { loadValidReceipts, runAllDeclaredRungsAsync } from "./receipts.ts";
 import { evaluateCrapForCoverageFile } from "./reports.ts";
 
 export { classifyCanaryOutcome, executeCanaryPlanAsync, isRetryableCanarySignal, type AsyncCanaryTask } from "./canary-runner.ts";
+export { isAridMutationLine, parseDiffChangedLines, runOrderDependenceGate, synthesizeLawMutants, type LawTargetedMutant, type OrderDependenceResult } from "./diff-and-shuffle.ts";
 export {
   insertSemanticNoOp,
   runPlantedFaultCanary,
@@ -34,14 +36,23 @@ function parseFlagValue(args: readonly string[], flag: string): string | undefin
 async function runCanaryCommand(ctx: CommandRunContext): Promise<number> {
   const testCmd = parseFlagValue(ctx.rest, "--test-cmd");
   if (!testCmd) throw new Error("vstack canary requires --test-cmd <command>.");
+  const shuffleRaw = parseFlagValue(ctx.rest, "--shuffle-orders");
+  if (shuffleRaw !== undefined) {
+    const od = runOrderDependenceGate({ repoRoot: ctx.target, testCmd, orders: Number(shuffleRaw) || 3 });
+    console.log(ctx.asJson ? JSON.stringify(od, null, 2) : `order-dependence [${od.passed ? "PASS" : "FAIL"}]: ${od.detail}`);
+    return ctx.rest.includes("--fail") && !od.passed ? 1 : 0;
+  }
   const targetsRaw = parseFlagValue(ctx.rest, "--targets");
   const maxRaw = parseFlagValue(ctx.rest, "--max-mutants");
   const minRateRaw = parseFlagValue(ctx.rest, "--min-kill-rate");
+  const diffRef = parseFlagValue(ctx.rest, "--diff");
   const report = await runPlantedFaultCanaryAsync({
     repoRoot: ctx.target,
     testCmd,
     targets: targetsRaw ? targetsRaw.split(",").map((t) => t.trim()).filter(Boolean) : undefined,
     baseRef: parseFlagValue(ctx.rest, "--base"),
+    diffRef,
+    aridFilter: diffRef ? true : ctx.rest.includes("--arid-filter"),
     maxMutants: maxRaw ? Number(maxRaw) : undefined,
     minKillRate: minRateRaw ? Number(minRateRaw) : undefined,
   });

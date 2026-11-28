@@ -1,8 +1,14 @@
 import path from "node:path";
 import { scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
 import { pathHelpers } from "@veristack/plugin";
-import { runGitClean } from "@veristack/plugin";
+import { runGitClean, soundnessClassForFinding } from "@veristack/plugin";
 import type { Finding } from "@veristack/plugin";
+import {
+  collectSoundinessLedger,
+  computeEmpiricalPrRisk,
+  type EmpiricalPrRiskReport,
+  type SoundinessSite,
+} from "./empirical-risk.ts";
 
 export type ReviewStakesTier = "critical" | "core" | "verify" | "low";
 
@@ -66,6 +72,8 @@ export interface ReviewBriefReport {
     lowStakes: ReviewFileItem[];
   };
   blindSpots: string[];
+  soundinessLedger?: SoundinessSite[];
+  empiricalRisk?: EmpiricalPrRiskReport;
   ownershipChecklist: string[];
 }
 
@@ -272,24 +280,39 @@ export function buildReviewBrief(repoPath: string, options: ReviewBriefOptions =
   const workaroundsByFile = new Map<string, number>();
   for (const w of workaroundSignals) workaroundsByFile.set(w.file, (workaroundsByFile.get(w.file) ?? 0) + 1);
   const stats = parseDiffNumstat(numstat.stdout, cheatsByFile, workaroundsByFile);
-  const { breaches, additionBias } = evaluateReviewBudgets({ cheatFindings, workaroundSignals, stats, budgets });
+  const soundinessLedger = collectSoundinessLedger(repoRoot, stats.items.map((i) => i.file));
+  const empiricalRisk = computeEmpiricalPrRisk(repoRoot, stats.items.filter((i) => !LOCK_OR_GENERATED.test(i.file)));
+  const hotspotByFile = new Map(empiricalRisk.files.map((f) => [f.file, f.hotspotPriority]));
+  const sortedItems = [...stats.items].sort((a, b) =>
+    TIER_ORDER[a.tier] - TIER_ORDER[b.tier] ||
+    (hotspotByFile.get(b.file) ?? 0) - (hotspotByFile.get(a.file) ?? 0) ||
+    b.added + b.deleted - (a.added + a.deleted),
+  );
+  const stampedCheats = cheatFindings.map((f) => (f.soundness ? f : { ...f, soundness: soundnessClassForFinding(f) }));
+  const { breaches, additionBias } = evaluateReviewBudgets({ cheatFindings: stampedCheats, workaroundSignals, stats, budgets });
+  const blindSpots = buildBlindSpots(sortedItems, stats.docLinesAdded, additionBias);
+  if (soundinessLedger.length > 0) {
+    blindSpots.push(`No fence yet on ${soundinessLedger.length} soundiness approximation site(s) (see Soundiness Ledger below).`);
+  }
   return {
     schemaVersion: 1, repo: repoRoot, baseRef, passed: breaches.length === 0,
     metrics: {
-      filesChanged: stats.items.length, dirsTouched: stats.dirsTouched,
+      filesChanged: sortedItems.length, dirsTouched: stats.dirsTouched,
       linesAdded: stats.linesAdded, linesDeleted: stats.linesDeleted,
       netLines: stats.linesAdded - stats.linesDeleted,
       nonLockfileLinesAdded: stats.nonLockfileLinesAdded,
       docLinesAdded: stats.docLinesAdded, deletionRatio: stats.deletionRatio,
     },
-    budgets, budgetBreaches: breaches, cheatFindings, workaroundSignals,
+    budgets, budgetBreaches: breaches, cheatFindings: stampedCheats, workaroundSignals,
     reviewQueue: {
-      mustReview: stats.items.filter((i) => i.tier === "critical"),
-      coreLogic: stats.items.filter((i) => i.tier === "core"),
-      verifyOracles: stats.items.filter((i) => i.tier === "verify"),
-      lowStakes: stats.items.filter((i) => i.tier === "low"),
+      mustReview: sortedItems.filter((i) => i.tier === "critical"),
+      coreLogic: sortedItems.filter((i) => i.tier === "core"),
+      verifyOracles: sortedItems.filter((i) => i.tier === "verify"),
+      lowStakes: sortedItems.filter((i) => i.tier === "low"),
     },
-    blindSpots: buildBlindSpots(stats.items, stats.docLinesAdded, additionBias),
+    blindSpots,
+    soundinessLedger,
+    empiricalRisk,
     ownershipChecklist: [
       "Problem & prior art understood before generation (no unreviewed first-draft pass-through).",
       "High-stakes slice (Must-Review queue above) verified directly by a human owner.",
@@ -306,6 +329,10 @@ export function formatReviewBriefTerminal(report: ReviewBriefReport): string {
   out.push(
     `Scope: ${m.filesChanged} file(s) across ${m.dirsTouched} dir(s) | +${m.linesAdded} / -${m.linesDeleted} (net ${m.netLines >= 0 ? "+" : ""}${m.netLines}, deletion ratio ${(m.deletionRatio * 100).toFixed(1)}%) | docs +${m.docLinesAdded}`,
   );
+  if (report.empiricalRisk) {
+    const er = report.empiricalRisk;
+    out.push(`Empirical JIT Risk: entropy=${er.changeEntropy} | prior-fixes(NFIX)=${er.totalNfix} | max-hotspot=${er.maxHotspotPriority} | diffused-ownership=${er.ownershipDiffusionFiles}${er.shallowHistoryFallback ? " (shallow-clone fallback)" : ""}`);
+  }
   if (report.budgetBreaches.length > 0) {
     out.push("");
     out.push(`SLOP-ASYMMETRY & BUDGET BREACHES (${report.budgetBreaches.length})`);
@@ -330,6 +357,10 @@ export function formatReviewBriefTerminal(report: ReviewBriefReport): string {
   out.push("");
   out.push("WHERE AUTOMATED CHECKS ARE BLIND (HUMAN JUDGMENT REQUIRED)");
   for (const spot of report.blindSpots) out.push(`  - ${spot}`);
+  if (report.soundinessLedger && report.soundinessLedger.length > 0) {
+    out.push("", `SOUNDINESS LEDGER (${report.soundinessLedger.length} approximation site(s) — No fence yet)`);
+    for (const s of report.soundinessLedger.slice(0, 15)) out.push(`  - [${s.kind}] ${s.file}:${s.line} — ${s.snippet}`);
+  }
   return out.join("\n");
 }
 

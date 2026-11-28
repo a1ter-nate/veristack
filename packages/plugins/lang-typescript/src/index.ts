@@ -8,6 +8,7 @@ import { extractSfcScript } from "./sfc.ts";
 import { scanTsJsStructure } from "./structure-ts.ts";
 import { analyzeT3ProdGuards } from "./t3-immune-rules.ts";
 import { analyzeTsAstGuards, parseTsAst } from "./ts-ast.ts";
+import { analyzeTypestateProtocols } from "./typestate-protocols.ts";
 import { analyzeWave5AiFirstGuards } from "./wave5-ai-first.ts";
 import { analyzeWave6TitansAGuards } from "./wave6-titans-a.ts";
 import { analyzeWave7TitansBGuards } from "./wave7-titans-b.ts";
@@ -34,6 +35,7 @@ export {
   walkAst,
   type AstNode,
 } from "./ts-ast.ts";
+export { analyzeTypestateProtocols, loadTypestateProtocols, type TypestateProtocolDef, type TypestateProtocolFile } from "./typestate-protocols.ts";
 export { analyzeWave5AiFirstGuards } from "./wave5-ai-first.ts";
 export { analyzeWave6TitansAGuards } from "./wave6-titans-a.ts";
 export { analyzeWave7TitansBGuards } from "./wave7-titans-b.ts";
@@ -73,7 +75,7 @@ function runTsAstAndWaveAnalyzers(repo: DiscoveredRepo): Finding[] {
       ...analyzeInvariantGuards(file),
     );
   }
-  findings.push(...analyzeBlackHoleArchGates(repo), ...analyzeDeviantInvariants(repo));
+  findings.push(...analyzeBlackHoleArchGates(repo), ...analyzeDeviantInvariants(repo), ...analyzeTypestateProtocols(repo));
   return findings;
 }
 

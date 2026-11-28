@@ -11,8 +11,9 @@ import { lintCsharpStateMachines } from "@veristack/plugin-lang-csharp";
 import { lintPythonStateMachines } from "@veristack/plugin-lang-python";
 import { lintRustStateMachines } from "@veristack/plugin-lang-rust";
 import { lintTsJsStateMachines } from "./ts-sm.ts";
+import { lintStatechartCompletenessAndCrashFolding } from "./statechart-guards.ts";
 
-export { lintTsJsStateMachines };
+export { lintStatechartCompletenessAndCrashFolding, lintTsJsStateMachines };
 
 const GENERATED_PATH = /(?:^|\/)(?:generated|generated-clients?|codegen|__snapshots__)\/|\.(?:gen|generated)\.[cm]?[jt]sx?$/i;
 const GENERATED_HEADER = /(?:@generated|auto-generated|do\s+not\s+edit|generated\s+by\b)/i;
@@ -27,13 +28,13 @@ export function lintImplicitStateMachinesInFile(
     const spec = activeLanguages.find((l) => l.id === file.language);
     if (!spec) return [];
     if (typeof spec.scanStateMachines === "function") return spec.scanStateMachines(file);
-    if (file.language === "typescript" || file.language === "javascript") return lintTsJsStateMachines(file);
+    if (file.language === "typescript" || file.language === "javascript") return [...lintTsJsStateMachines(file), ...lintStatechartCompletenessAndCrashFolding(file)];
     return [];
   }
   if (file.language === "csharp") return lintCsharpStateMachines(file);
   if (file.language === "rust") return lintRustStateMachines(file);
   if (file.language === "python") return lintPythonStateMachines(file);
-  if (file.language === "typescript" || file.language === "javascript") return lintTsJsStateMachines(file);
+  if (file.language === "typescript" || file.language === "javascript") return [...lintTsJsStateMachines(file), ...lintStatechartCompletenessAndCrashFolding(file)];
   return [];
 }
 
