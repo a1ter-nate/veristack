@@ -69,6 +69,10 @@ function checkIpv6TemplateHost(file: ScannedFile, node: AstNode, findings: Findi
     const chain = getMemberChain(expr);
     const rawNext = String((nextQuasi.value as { raw?: unknown }).raw ?? "");
     if (!chain.endsWith(".hostname") || !rawNext.startsWith(":")) continue;
+    if (/^:\s/.test(rawNext)) continue;
+    const beforeTmpl = file.content.slice(Math.max(0, (node.start ?? 0) - 80), node.start ?? 0);
+    const tmplRaw = file.content.slice(node.start ?? 0, node.end ?? 0);
+    if (/(?:new\s+\w*Error|console\.\w+|logger\.\w+)\s*\([^)]*$/.test(beforeTmpl) && !/(?:https?|wss?):\/\/|\bhost\b/i.test(tmplRaw)) continue;
     const ctx = file.content.slice(Math.max(0, (node.start ?? 0) - 260), (node.end ?? 0) + 60);
     if (!/includes\s*\(\s*["']:["']\s*\)/.test(ctx)) {
       push(findings, {

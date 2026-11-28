@@ -139,7 +139,8 @@ function checkLoopRules(file: ScannedFile, raw: string, masked: string): Finding
         pushOnce("perf-quadratic-loop-scan", span.start + (m.index ?? 0), `Potential O(N^2) collection operation inside loop (${m[0].trim()}).`, "Index lookups with a Set/HashSet/Map/dict or use an O(1) deque/ring-buffer instead of scanning or shifting inside a loop.");
       }
     }
-    if (nplus1Pattern && !isBenchScript && !/\b(?:performance\.now|Instant::now|hrtime)\s*\(/.test(span.body)) {
+    const isBatchedConcurrent = /\bPromise\.(?:all|allSettled)\s*\(/.test(span.body) && /\b(?:chunk|batch|slice\s*\(|splice\s*\()|\+=\s*[A-Za-z0-9_]+/i.test(`${headerSlice}\n${span.body}`);
+    if (nplus1Pattern && !isBenchScript && !isBatchedConcurrent && !/\b(?:performance\.now|Instant::now|hrtime)\s*\(/.test(span.body)) {
       for (const m of span.body.matchAll(nplus1Pattern)) {
         pushOnce("perf-nplus1-io-in-loop", span.start + (m.index ?? 0), `Potential N+1 database/network I/O call inside loop (${m[0].trim()}).`, "Batch queries with IN (...)/JOIN or bounded concurrent batching outside the loop.");
       }

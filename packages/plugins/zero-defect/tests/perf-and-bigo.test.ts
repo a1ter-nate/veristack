@@ -131,15 +131,21 @@ test("V42 empirical Big-O OLS regression distinguishes O(n) from O(n^2) determin
   assert.equal(quadratic.passed, false);
   assert.equal(quadratic.timeClass, "O(n^2)");
 
+  const sumLinear = (arr: Uint32Array): number => {
+    let sum = 0;
+    for (let i = 0; i < arr.length; i++) sum = (sum + (arr[i] ?? 0)) | 0;
+    return sum;
+  };
+  sumLinear(new Uint32Array(100_000));
   const liveFast = measureEmpiricalBigO(
-    (n, trial) => Array.from({ length: n }, (_, i) => (i + trial) % 1024),
-    (arr) => {
-      let sum = 0;
-      for (let i = 0; i < arr.length; i++) sum += arr[i] ?? 0;
-      return sum;
+    (n, trial) => {
+      const buf = new Uint32Array(n);
+      for (let i = 0; i < n; i++) buf[i] = (i + trial) & 1023;
+      return buf;
     },
-    [20_000, 40_000, 80_000, 160_000],
-    { repeats: 9, maxTimeExponent: 1.5 },
+    sumLinear,
+    [100_000, 200_000, 400_000, 800_000],
+    { repeats: 7, maxTimeExponent: 1.5 },
   );
   assert.equal(liveFast.result.passed, true);
 

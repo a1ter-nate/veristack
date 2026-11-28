@@ -41,10 +41,11 @@ jobs:
         run: node scripts/check-max-lines.mjs
       - name: Enforce R6 performance and Big-O scaling budget
         run: bun run perf:check
-      - name: Typecheck & lint host TypeScript
+      - name: Typecheck, lint, & FeatLock strict-drift guard
         run: |
           bun run typecheck
           bun run lint:oxlint
+          bun run check:features
       - if: github.event_name == 'pull_request'
         name: Fetch PR base ref before strict control-plane verification
         env:

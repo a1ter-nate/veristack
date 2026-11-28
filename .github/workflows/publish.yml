@@ -19,7 +19,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,8 +43,7 @@ jobs:
             exit 1
           fi
           node scripts/check-max-lines.mjs
-      - run: bun run check
-      - run: bun src/cli.ts bench . --fail
+      - run: bun run typecheck && bun run lint:oxlint && bun run perf:check && bun run check:features && bun run lint:no-comments && bun run lint:state-machines && bun src/cli.ts formal-sync . --fail && bun src/cli.ts laws . --fail && bun src/cli.ts perimeter . --fail && bun src/cli.ts bench . --fail
       - run: bun run build && node bin/vstack.mjs verify . --strict
       - name: Ensure npm supports Trusted Publishing OIDC
         run: npm install -g npm@latest

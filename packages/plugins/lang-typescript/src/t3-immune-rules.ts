@@ -55,11 +55,15 @@ function checkTsTestAstGuards(file: ScannedFile, raw: string, findings: Finding[
       }
     }
     if (!isNodeTestOnly && (node.type === "ForStatement" || node.type === "ForOfStatement" || node.type === "ForInStatement" || node.type === "WhileStatement")) {
+      const rightName = node.type === "ForOfStatement" && isAstNode(node.right) && node.right.type === "Identifier" && typeof node.right.name === "string" ? node.right.name : "";
+      const isNamedCasesTable = /(?:cases|table|rows|fixtures|scenarios|vectors|matrix|specs|examples|inputs)/i.test(rightName);
       const body = isAstNode(node.body) ? node.body : null;
       if (!body) return;
       walkAst(body, (inner) => {
         if (inner.type === "CallExpression" && isAstNode(inner.callee) && inner.callee.type === "Identifier") {
           const name = typeof inner.callee.name === "string" ? inner.callee.name : "";
+          const firstArg = Array.isArray(inner.arguments) && isAstNode(inner.arguments[0]) ? inner.arguments[0] : null;
+          if (isNamedCasesTable && firstArg && firstArg.type !== "Literal") return;
           if (name === "test" || name === "it") {
             push(findings, {
               file: file.rel, line: lineOf(raw, inner.start ?? 0), rule: "test-no-test-in-loop", category: "test-smell", rung: "R2", severity: "warn",

@@ -7,6 +7,11 @@
         "command": "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); node \"$r/bin/vstack.mjs\" hook pre-edit --harness cursor || exit 2'",
         "failClosed": true
       }
+    ],
+    "stop": [
+      {
+        "command": "node .cursor/hooks/feature-guard.mjs"
+      }
     ]
   }
 }

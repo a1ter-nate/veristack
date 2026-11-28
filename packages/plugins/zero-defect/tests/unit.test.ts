@@ -90,3 +90,65 @@ test("Ammons temporal protocol mining, Alvaro LDFI cut-sets, and Gunawi cloud gu
   assert.equal(rules.has("cloud-silent-limit-truncation"), true);
   assert.equal(rules.has("cloud-rpc-missing-timeout"), true);
 });
+
+test("audit round 4 calibration: IPv6 error msg, table-driven loops, dedup clock smells, injected spawn, batched Promise.all, and double-escaped regex literal", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-round4-cal-"));
+  try {
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "tests"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "src", "clean.ts"),
+      [
+        'import type { ChildProcess } from "node:child_process";',
+        "export function formatDiag(url: URL): Error {",
+        "  return new Error(`Bad host ${url.hostname}: unsupported`);",
+        "}",
+        "export function launch(spawn: (c: string) => ChildProcess, cmd: string): ChildProcess {",
+        "  return spawn(cmd);",
+        "}",
+        "export async function fetchBatched(urls: string[]): Promise<Response[]> {",
+        "  const out: Response[] = [];",
+        "  for (let i = 0; i < urls.length; i += 4) {",
+        "    const batch = urls.slice(i, i + 4);",
+        "    const res = await Promise.all(batch.map((u) => fetch(u, { signal: AbortSignal.timeout(5000) })));",
+        "    out.push(...res);",
+        "  }",
+        "  return out;",
+        "}",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "src", "bad-regex.ts"),
+      "export function stripBrackets(host: string): string { return host.replace(/^\\\\[|\\\\]$/gu, ''); }\n",
+    );
+    fs.writeFileSync(
+      path.join(dir, "tests", "table.test.ts"),
+      [
+        'import { test, expect } from "vitest";',
+        "const CASES = [{ name: 'a', v: 1 }];",
+        "for (const row of CASES) {",
+        "  test(`case ${row.name}`, () => {",
+        "    const claims = { exp: Math.floor(Date.now() / 1000) + 60 };",
+        "    expect(claims.exp).toBeGreaterThan(0);",
+        "  });",
+        "}",
+        "test('elapsed dedup', () => {",
+        "  const t0 = Date.now();",
+        "  expect(Date.now() - t0).toBeLessThan(1000);",
+        "});",
+      ].join("\n"),
+    );
+    const report = scanRepo(dir);
+    const cleanRules = new Set(report.findings.filter((f) => f.file === "src/clean.ts").map((f) => f.rule));
+    assert.equal(cleanRules.has("http-ipv6-unbracketed-host-header"), false);
+    assert.equal(cleanRules.has("agent-subprocess-missing-error-handler"), false);
+    assert.equal(cleanRules.has("perf-nplus1-io-in-loop"), false);
+    assert.equal(report.findings.some((f) => f.file === "src/bad-regex.ts" && f.rule === "regex-double-escaped-literal"), true);
+    const testFindings = report.findings.filter((f) => f.file === "tests/table.test.ts");
+    assert.equal(testFindings.some((f) => f.rule === "test-no-test-in-loop"), false);
+    assert.equal(testFindings.some((f) => f.line === 5 && f.rule === "no-test-nondeterminism"), false);
+    assert.equal(testFindings.filter((f) => f.line === 11 && (f.rule === "no-elapsed-time-bound" || f.rule === "no-test-nondeterminism")).length <= 1, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

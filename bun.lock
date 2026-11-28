@@ -32,7 +32,7 @@
         "@veristack/plugin-tigerstyle": "workspace:*",
         "@veristack/plugin-zero-defect": "workspace:*",
         "fast-check": "^4.11.0",
-        "featlock": "github:a1ter-nate/featlock#v0.1.0-pre",
+        "featlock": "^0.1.1",
         "oxlint": "^1.95.0",
         "typescript": "^7.0.2",
       },
@@ -384,7 +384,7 @@
 
     "fast-check": ["fast-check@4.11.0", "", { "dependencies": { "pure-rand": "^8.0.0" } }, "sha512-V4Uc238rhQOdQlc+Gz7JG6SGBtrWnWL8d/6RyiBeCMcNKMhF6DZ0KkAVHJSyNV5r4lA0PmIpZ6iRpTVoz4qjoA=="],
 
-    "featlock": ["featlock@github:a1ter-nate/featlock#e84e24b", { "dependencies": { "oxc-parser": "^0.160.0" }, "bin": { "featlock": "bin/featlock.mjs", "flk": "bin/featlock.mjs" } }, "a1ter-nate-featlock-e84e24b", "sha512-75a86EjJItkifKr/nBopgBop+7ZW32jv3kNPlkVD+27iGPM6iboBgHgnjjgHrsy4Jn13BuX1VKrB3WTR92wDPQ=="],
+    "featlock": ["featlock@0.1.1", "", { "dependencies": { "oxc-parser": "^0.160.0" }, "bin": { "flk": "bin/featlock.mjs", "featlock": "bin/featlock.mjs" } }, "sha512-J6858vk3xheSU+jJfRaY+hsBA5iY1cYSwNS5BGAjK9e20anaS0J3qI1/qvKndvnnbwdHd48NrBr3Bi0uqdbz7w=="],
 
     "oxc-parser": ["oxc-parser@0.160.0", "", { "dependencies": { "@oxc-project/types": "^0.160.0" }, "optionalDependencies": { "@oxc-parser/binding-android-arm-eabi": "0.160.0", "@oxc-parser/binding-android-arm64": "0.160.0", "@oxc-parser/binding-darwin-arm64": "0.160.0", "@oxc-parser/binding-darwin-x64": "0.160.0", "@oxc-parser/binding-freebsd-x64": "0.160.0", "@oxc-parser/binding-linux-arm-gnueabihf": "0.160.0", "@oxc-parser/binding-linux-arm-musleabihf": "0.160.0", "@oxc-parser/binding-linux-arm64-gnu": "0.160.0", "@oxc-parser/binding-linux-arm64-musl": "0.160.0", "@oxc-parser/binding-linux-ppc64-gnu": "0.160.0", "@oxc-parser/binding-linux-riscv64-gnu": "0.160.0", "@oxc-parser/binding-linux-riscv64-musl": "0.160.0", "@oxc-parser/binding-linux-s390x-gnu": "0.160.0", "@oxc-parser/binding-linux-x64-gnu": "0.160.0", "@oxc-parser/binding-linux-x64-musl": "0.160.0", "@oxc-parser/binding-openharmony-arm64": "0.160.0", "@oxc-parser/binding-win32-arm64-msvc": "0.160.0", "@oxc-parser/binding-win32-ia32-msvc": "0.160.0", "@oxc-parser/binding-win32-x64-msvc": "0.160.0" } }, "sha512-IIc9PydmdnTcH1hucWCHfTUbAuHWPDEs8+WlmW7td3jJnaYrbzvPQgcc99FEJc0gURrVU8EskpAr2VMyJ8VbzA=="],
 

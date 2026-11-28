@@ -75,7 +75,7 @@ function buildR0Status(ctx: RungBuildCtx): RungStatus {
     observedCount: evidence.length, evidence, gaps, executedInCi: exec.executed, receiptVerified: Boolean(exec.receipt),
     checks: [
       { id: "r0-formatter", label: "Formatter configured", weight: 20, passed: s.hasFormatter, executed: exec.executed, detail: s.hasFormatter ? "present" : "missing" },
-      { id: "r0-linter", label: "Fast linter + anti-slop", weight: 25, passed: s.hasLinter && antiSlopOk, executed: exec.executed, detail: s.hasLinter && antiSlopOk ? "present" : "missing" },
+      { id: "r0-linter", label: "Fast linter + anti-slop", weight: 25, passed: s.hasLinter && antiSlopOk, executed: exec.executed, detail: s.hasLinter && antiSlopOk ? "present" : s.hasLinter ? "linter present; missing anti-slop/landmines" : "missing" },
       { id: "r0-precommit", label: "Pre-commit hook", weight: 15, passed: s.hasPreCommitHook, executed: s.hasPreCommitHook, detail: s.hasPreCommitHook ? "present" : "missing" },
       { id: "r0-codeowners", label: "CODEOWNERS perimeter", weight: 10, passed: s.hasCodeowners, executed: s.hasCodeowners, detail: s.hasCodeowners ? "locked" : "incomplete/missing" },
       { id: "r0-ci", label: "Executed in CI / receipt", weight: 30, passed: exec.executed, executed: exec.executed, detail: exec.receipt ? "receipt verified" : exec.executed ? "active CI" : "not verified" },

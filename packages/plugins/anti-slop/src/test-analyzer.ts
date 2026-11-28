@@ -143,8 +143,10 @@ const STATIC_TEST_RULES: readonly TestMatchSpec[] = [
     limit: 3,
     skip: (m, code) => {
       const idx = m.index ?? 0;
-      const after = code.slice(idx + m[0].length, idx + m[0].length + 40);
-      return /^Date\.now\b/.test(m[0]) && /^\s*[+-]\s*(?:\d|[A-Z_]{3,}|[a-z]+Ms\b)/.test(after);
+      const before = code.slice(Math.max(0, idx - 80), idx);
+      const after = code.slice(idx + m[0].length, idx + m[0].length + 50);
+      if (/^Date\.now\b/.test(m[0]) && /^\s*(?:[+-]\s*(?:\d|[A-Z_]{3,}|[a-z]+Ms\b)|\/\s*1000\b)/.test(after)) return true;
+      return /^Date\.now\b/.test(m[0]) && /\b(?:exp|iat|nbf|deadline|expiresAt|expires_at)\b\s*[:=]/i.test(before);
     },
   },
   {
@@ -173,9 +175,10 @@ function applyTestMatchSpec(
     const idx = m.index ?? 0;
     if (spec.source === "raw" && ctx.code[idx] === " ") continue;
     if (spec.skip?.(m, ctx.code, ctx.file)) continue;
+    const line = lineOf(target, idx);
+    if (spec.rule === "no-test-nondeterminism" && ctx.findings.some((f) => f.rule === "no-elapsed-time-bound" && f.line === line)) continue;
     count += 1;
     if (count > limit) break;
-    const line = lineOf(target, idx);
     ctx.findings.push({
       id: `TS:${spec.rule}:${ctx.file.rel}:${line}`, rule: spec.rule, category: spec.category,
       rung: "R0", severity: spec.severity, file: ctx.file.rel, line, message: spec.message, fix: spec.fix,

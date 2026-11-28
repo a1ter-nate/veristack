@@ -245,6 +245,25 @@ function scanGoOss(file: ScannedFile, raw: string, masked: string, findings: Fin
   }
 }
 
+function hasDoubleEscapedBracketInRegex(body: string): boolean {
+  let inClass = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === "\\") {
+      if (!inClass && body[i + 1] === "\\") {
+        const after = body[i + 2];
+        if (after === "]" && body[i + 3] !== "\\") return true;
+        if (after === "[" && (i + 3 >= body.length || ")|$*+?".includes(body[i + 3] ?? "") || body.slice(i + 3).includes("\\\\]"))) return true;
+      }
+      i += 1;
+      continue;
+    }
+    if (ch === "[" && !inClass) inClass = true;
+    else if (ch === "]" && inClass) inClass = false;
+  }
+  return false;
+}
+
 function scanTsJsOssSecurity(file: ScannedFile, raw: string, masked: string, findings: Finding[]): void {
   if (!raw) return;
   if (!file.rel) throw new Error("ScannedFile must have rel.");
@@ -288,8 +307,13 @@ function scanTsJsOssSecurity(file: ScannedFile, raw: string, masked: string, fin
     push(findings, { file: file.rel, line: lineOf(raw, idx), rule: "regex-empty-alternation-or-unescaped", rung: "R1", severity: "warn", message: "Unescaped template interpolation inside new RegExp(`...${...}`) risks ReDoS or metacharacter injection.", fix: "Escape dynamic segments with RegExp.escape / an explicit regex-escape helper before compiling." });
   }
   for (const sp of scanLexical(raw, true, file.language).regexSpans) {
-    if (!EMPTY_ALT_INSIDE.test(raw.slice(sp.start + 1, sp.end))) continue;
-    push(findings, { file: file.rel, line: lineOf(raw, sp.start), rule: "regex-empty-alternation-or-unescaped", rung: "R1", severity: "warn", message: "Regex contains an empty alternation branch (|| or (?:| / |)), silently matching empty strings or causing backtracking.", fix: "Replace empty alternation branches with an explicit optional '?' quantifier." });
+    const body = raw.slice(sp.start + 1, sp.end);
+    if (EMPTY_ALT_INSIDE.test(body)) {
+      push(findings, { file: file.rel, line: lineOf(raw, sp.start), rule: "regex-empty-alternation-or-unescaped", rung: "R1", severity: "warn", message: "Regex contains an empty alternation branch (|| or (?:| / |)), silently matching empty strings or causing backtracking.", fix: "Replace empty alternation branches with an explicit optional '?' quantifier." });
+    }
+    if (hasDoubleEscapedBracketInRegex(body)) {
+      push(findings, { file: file.rel, line: lineOf(raw, sp.start), rule: "regex-double-escaped-literal", rung: "R1", severity: "warn", message: "Regex literal double-escapes '[' or ']' (\\\\[ / \\\\]), matching a literal backslash plus bracket instead of a bracket character.", fix: "Use a single backslash (\\[ or \\]) inside /.../ regex literals; double backslashes are only for new RegExp('...')." });
+    }
   }
 }
 

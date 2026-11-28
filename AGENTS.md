@@ -6,3 +6,10 @@
 4. Zero `as any` or `as unknown as` casts in TS, zero `dynamic` or `<NoWarn>` in C#, zero prod `.unwrap()` or unjustified `unsafe` in Rust, and zero prod bare `assert` or `Any` in Python.
 5. Never pipe tests into `tail` or `head`, never use `--no-verify`, never add `continue-on-error: true` or `|| true` after checks.
 6. Keep modules deep and interfaces narrow (<= 6 runtime exports per module, <= 500 lines per file).
+
+<!-- featlock:start -->
+## FeatLock Feature & Invariant Guard Rules
+- Before implementing any new capability, run `featlock query <topic>` and `featlock check-dup "<summary>"` so you do not duplicate an existing feature.
+- On every change that adds or improves product behavior, automatically record it with `featlock record-new` or `featlock record-improvement` in `features/registry.sql`.
+- NEVER delete an active feature, unlink its tests, or delete an active invariant without explicit human confirmation, an ADR reference, and `ALLOW_FEATURE_REMOVAL=1`.
+<!-- featlock:end -->

@@ -34,6 +34,14 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .codex/hooks/feature-guard.mjs"
+          }
+        ]
       }
     ]
   }
