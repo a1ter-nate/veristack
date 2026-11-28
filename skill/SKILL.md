@@ -87,6 +87,12 @@ For every requirement, bugfix, or check above `R2`:
 
 - **Done when:** `vstack verify . --strict` and `vstack doctor . --fail` exit `0` with zero uncovered rungs, zero zero-test repos, zero cheats/prose-comments/implicit-state-machines, controlled-fault **red**→green is recorded, redundant tests are deleted, and the human reviewer receives a bounded, **stakes**-ranked brief.
 
+## Reporting False Positives or Tool Bugs Upstream
+
+1. **Never** leak proprietary client code, internal paths, customer names, or secrets in bug/FP reports.
+2. Run `vstack report --rule <id> --file <path:line> --anonymize --reason "<why>"` to preview a redacted, anonymized report (or append `--local` during offline/multi-repo sweeps to queue into `.verification/tool-feedback.jsonl` with zero network calls).
+3. Inspect the scrubbed preview (or roll up queued entries via `vstack report --flush`), then file via `--submit` (when `gh` is available & approved) or `--url` (or clear the queue explicitly with `--flush --clear`).
+
 ## Disclosed References (Load Only the Active Branch)
 
 Load **only** the language guide for the active repository:

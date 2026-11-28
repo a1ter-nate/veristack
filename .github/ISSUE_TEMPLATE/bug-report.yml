@@ -1,0 +1,39 @@
+name: Bug / Crash Report
+description: Report a Veristack crash, false negative, or CLI defect (privacy-safe; prefer `vstack report`).
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Generate a redacted, pre-filled report directly from the CLI:
+        `vstack report --kind bug --command "<cmd>" --reason "<what failed>" --url`
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Issue Kind
+      options:
+        - bug
+        - crash
+        - fn (false negative / missed bug)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Veristack Version & Environment
+      placeholder: e.g. veristack@0.1.27 (bun 1.4.4, darwin/arm64)
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command Run
+      placeholder: e.g. vstack verify . --strict
+  - type: textarea
+    id: details
+    attributes:
+      label: Expected vs Actual Behavior & Minimal Repro
+      description: Never include proprietary code, secrets, or internal user paths.
+    validations:
+      required: true

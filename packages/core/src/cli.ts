@@ -18,7 +18,7 @@ function resolvePackageVersion(): string {
       if (doc.name === "veristack" && typeof doc.version === "string") return doc.version;
     } catch { continue; }
   }
-  return "0.1.22";
+  return "0.1.27";
 }
 
 const CLI_VALUE_FLAGS = new Set([
@@ -27,12 +27,14 @@ const CLI_VALUE_FLAGS = new Set([
   "--max-time-exp", "--max-space-exp", "--ratchet", "--ratchet-base", "--config",
   "--disable", "--corpus", "--replay", "--baseline", "--tier", "--harness", "--targets",
   "--max-mutants", "--min-kill-rate", "--coverage", "--max-crap", "--plugin", "--disable-plugin",
+  "--rule", "--file", "--kind", "--reason", "--out",
 ]);
 
 const CLI_BOOL_FLAGS = new Set([
   "--json", "--md", "--strict", "--fail", "--allow-missing-rungs", "--update-ratchet",
   "--fail-on-poor-coverage", "--fail-on-errors", "--fail-on-cheats", "--force", "--no-hooks",
   "--dry-run", "--verify", "--update", "--check-github", "--emit-requests", "-h", "--help", "-V", "--version",
+  "--anonymize", "--submit", "--url", "--no-rerun", "--local", "--flush", "--clear",
 ]);
 
 function findUnknownCliFlag(args: readonly string[], extraUsage?: string): string | null {

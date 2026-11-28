@@ -1,0 +1,39 @@
+name: False Positive Report
+description: Report a Veristack rule firing on valid code (privacy-safe; prefer `vstack report --anonymize`).
+title: "[FP] "
+labels: ["false-positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Generate a redacted, pre-filled report directly from the CLI:
+        `vstack report --rule <id> --file <path:line> --anonymize --reason "<why>" --url`
+  - type: input
+    id: rule
+    attributes:
+      label: Rule ID
+      placeholder: e.g. perf-nplus1-io-in-loop
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Veristack Version & Runtime
+      placeholder: e.g. veristack@0.1.27 (bun 1.4.4, darwin/arm64)
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Why this is a false positive (Expected vs Actual)
+      placeholder: Explain why the pattern is safe and what Veristack reported.
+    validations:
+      required: true
+  - type: textarea
+    id: snippet
+    attributes:
+      label: Minimal Redacted / Anonymized Repro Snippet
+      description: Never include proprietary code, secrets, or internal user paths.
+      render: text
+    validations:
+      required: true

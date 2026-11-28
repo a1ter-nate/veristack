@@ -290,5 +290,7 @@ export function formatSingleFileReport(result: CheckFileResult): string {
     out.push(`      Fix: ${f.fix}`);
     if (f.suggestedFix) out.push(`      AutoFix (${f.suggestedFix.kind}): ${f.suggestedFix.replacement}`);
   }
+  const first = result.findings[0];
+  if (first) out.push(`False positive or tool bug? Run: vstack report --rule ${first.rule} --file ${first.file}:${first.line}`);
   return out.join("\n");
 }

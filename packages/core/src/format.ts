@@ -122,6 +122,10 @@ export function formatTerminalReport(report: ScanReport): string {
   appendTerminalRungs(report, out);
   appendTigerStyleTerminal(report, out);
   appendTerminalDetails(report, out);
+  const firstFinding = report.findings[0];
+  if (firstFinding) {
+    out.push("", `False positive or tool bug? Run: vstack report --rule ${firstFinding.rule} --file ${firstFinding.file}:${firstFinding.line}`);
+  }
   return out.join("\n");
 }
 
@@ -172,6 +176,8 @@ export function formatFindingsList(title: string, findings: readonly Finding[], 
     lines.push(`  - [${f.severity.toUpperCase()}] ${f.rule} ${f.file}:${f.line} — ${f.message}`);
     lines.push(`      Fix: ${f.fix}`);
   }
+  const first = findings[0];
+  if (first) lines.push(`False positive or tool bug? Run: vstack report --rule ${first.rule} --file ${first.file}:${first.line}`);
   return lines.join("\n");
 }
 
