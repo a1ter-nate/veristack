@@ -127,14 +127,19 @@ function checkLoopRules(file: ScannedFile, raw: string, masked: string): Finding
     findings.push({ id: `PF:${rule}:${file.rel}:${line}`, rule, category: "structure", rung: "R1", severity: "warn", file: file.rel, line, message, fix });
   };
 
+  const isBenchScript = /(?:^|\/)(?:benches|benchmarks|bench|load[-_]?tests?|rehearsals?)\/|(?:\.bench|check-perf-budget|perf-bench|perf-budget)\.[cm]?[jt]sx?$/i.test(file.rel);
   const { quadPattern, nplus1Pattern, compileCopyPattern } = selectLoopPatterns(file.language);
   for (const span of spans) {
-    if (quadPattern) {
+    const headerSlice = masked.slice(Math.max(0, span.start - 140), span.start);
+    const hasTinyBound = /<\s*(?:[1-9]|[12]\d|3[0-2])\b|\bmax(?:Queue|Items|Entries|Retries|Attempts)\s*(?:=|<=?)\s*(?:[1-9]|[12]\d|3[0-2])\b/i.test(`${headerSlice}\n${span.body}`);
+    if (quadPattern && !hasTinyBound) {
       for (const m of span.body.matchAll(quadPattern)) {
+        const afterMatch = span.body.slice(m.index ?? 0, (m.index ?? 0) + 40);
+        if (/^\.\s*splice\s*\(\s*0\s*,\s*(?:[A-Za-z_$][A-Za-z0-9_$]*|[2-9]\d*)/.test(afterMatch)) continue;
         pushOnce("perf-quadratic-loop-scan", span.start + (m.index ?? 0), `Potential O(N^2) collection operation inside loop (${m[0].trim()}).`, "Index lookups with a Set/HashSet/Map/dict or use an O(1) deque/ring-buffer instead of scanning or shifting inside a loop.");
       }
     }
-    if (nplus1Pattern) {
+    if (nplus1Pattern && !isBenchScript && !/\b(?:performance\.now|Instant::now|hrtime)\s*\(/.test(span.body)) {
       for (const m of span.body.matchAll(nplus1Pattern)) {
         pushOnce("perf-nplus1-io-in-loop", span.start + (m.index ?? 0), `Potential N+1 database/network I/O call inside loop (${m[0].trim()}).`, "Batch queries with IN (...)/JOIN or bounded concurrent batching outside the loop.");
       }

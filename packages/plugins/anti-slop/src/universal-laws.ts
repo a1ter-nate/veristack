@@ -110,7 +110,8 @@ function checkTerminalAndCounterLaws(file: ScannedFile, code: string, findings: 
   }
   for (const m of code.matchAll(UNGUARDED_COUNTER_SUB)) {
     const idx = m.index ?? 0;
-    if (SATURATING_OR_GUARD.test(code.slice(Math.max(0, idx - 220), idx + 180))) continue;
+    const win = code.slice(Math.max(0, idx - 260), idx + 180);
+    if (SATURATING_OR_GUARD.test(win) || /\bwhile\s*\([^)]*[A-Za-z_]\w*\s*(?:>|>=|!==?)\s*0|\bif\s*\([^)]*[A-Za-z_]\w*\s*(?:<=?|<|===?)\s*0[^)]*\)\s*(?:\{\s*)?(?:break|return)\b/.test(win)) continue;
     pushLaw(findings, {
       file, offset: idx, rule: "law-saturating-underflow", rung: "R1", severity: "warn",
       message: `Unguarded subtraction on non-negative counter '${m[1]}' can underflow below zero (violates Bend 2 sat_sub_zero_left law).`,

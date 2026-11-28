@@ -218,7 +218,7 @@ function checkTsTestLandmines(file: ScannedFile, code: string, ast: AstNode | nu
     });
   }
   for (const m of code.matchAll(COLD_IMPORT_IN_TEST)) {
-    if (/\bresetModules\b/.test(m[0])) continue;
+    if (/\b(?:resetModules|process\.env|stubEnv|globalThis|window|document|jsdom|happy-dom|DOMParser)\b/.test(m[0])) continue;
     pushFinding(findings, {
       file, offset: m.index ?? 0, rule: "no-cold-import-in-test", category: "test-smell", rung: "R0", severity: "warn",
       message: "Dynamic await import() inside a test body pays cold-module startup cost inside the test timer.",

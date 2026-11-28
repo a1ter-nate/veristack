@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { sanitizeShellBlock } from "./command-audit.ts";
 import { auditBunfigContent, runGitClean, VERIFICATION_TOOLS } from "./config-audit.ts";
+import { isManifestChangeApproved, isSafePinnedToolUpgrade } from "./manifest-approval.ts";
 import type { Finding, RungId, RungManifest } from "@veristack/plugin";
 
 export interface DiffLineEvent {
@@ -421,7 +422,14 @@ function auditPackageAndControlPlane(
       const baseTools = collectToolDeps(basePkg); const headTools = collectToolDeps(headPkg);
       for (const [k, bVal] of baseTools.entries()) {
         const hVal = headTools.get(k);
-        if (hVal !== bVal && (!downgradeOnly || (hVal !== undefined && UNTRUSTED_SPEC_RE.test(hVal)))) findings.push(makeManifestErr(`pkg-tool-${k}`, "package.json", `Modified verification tool dependency '${k}' in package.json vs ${baseRef}.`));
+        if (hVal === bVal) continue;
+        const isSafeUp = hVal !== undefined && !UNTRUSTED_SPEC_RE.test(hVal) && isSafePinnedToolUpgrade(bVal, hVal);
+        if (isSafeUp && !downgradeOnly) {
+          findings.push({ id: `DIFF:manifest:pkg-upgrade-${k}`, rule: "diff-manifest-upgrade", category: "oracle-lock", rung: "R0", severity: "info", file: "package.json", line: 1, message: `Upgraded verification tool dependency '${k}' (${bVal} -> ${hVal}) vs ${baseRef}.`, fix: "Review changelog when upgrading verification tooling; exact/monotonic upgrades do not block CI." });
+          continue;
+        }
+        if (isSafeUp) continue;
+        if (!downgradeOnly || (hVal !== undefined && UNTRUSTED_SPEC_RE.test(hVal))) findings.push(makeManifestErr(`pkg-tool-${k}`, "package.json", `Modified verification tool dependency '${k}' (${bVal} -> ${hVal ?? "removed"}) in package.json vs ${baseRef}.`));
       }
       for (const [k, hVal] of headTools.entries()) if (!baseTools.has(k) && (UNTRUSTED_SPEC_RE.test(hVal) || k.includes("patchedDependencies:"))) findings.push(makeManifestErr(`pkg-tool-shadow-${k}`, "package.json", `Added untrusted/patched verification tool dependency '${k}=${hVal}' in package.json vs ${baseRef}.`));
     } catch { findings.push(makeManifestErr("pkg-json-invalid", "package.json", "Modified package.json is not valid JSON.")); }
@@ -458,6 +466,7 @@ function auditPackageAndControlPlane(
 }
 
 export function auditManifestDowngrade(repoRoot: string, baseRef: string, options: { failClosedOnMissingBase?: boolean; downgradeOnly?: boolean } = {}): Finding[] {
+  if (!options.downgradeOnly && isManifestChangeApproved(repoRoot, baseRef)) return [];
   if (runGitClean(repoRoot, ["rev-parse", "--verify", `${baseRef}^{commit}`]).status !== 0) {
     return options.failClosedOnMissingBase ? [makeManifestErr("missing-base", ".git", `Base ref '${baseRef}' could not be resolved for control-plane lock — failing closed.`)] : [];
   }

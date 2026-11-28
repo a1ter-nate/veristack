@@ -21,7 +21,7 @@ export function isTestFilePath(rel: string, hasLanguage?: boolean): boolean {
   const lower = norm.toLowerCase();
   const base = path.posix.basename(lower);
   if (/\.(?:test|spec|e2e|cy|int|integration|contract)\.[cm]?[jt]sx?$/.test(base)) return true;
-  if (/(?:^|[-_])tests?\.py$|^test[-_].*\.py$|^conftest\.py$/.test(base)) return true;
+  if (/(?:^|[-_.])tests?\.py$|^test[-_.].*\.py$|^conftest\.py$/.test(base)) return true;
   if (/_test\.go$|(?:^|[-_])tests?\.rs$|^test[-_].*\.rs$/.test(base)) return true;
   if (/tests?\.cs$|specs?\.cs$/.test(base)) return true;
   if (/(?:^|\/)[^/]+\.(?:tests?|unittests|integrationtests|specs?)\//.test(lower) && lower.endsWith(".cs")) return true;

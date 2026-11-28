@@ -305,17 +305,29 @@ export function loadValidReceipts(
 
   const activeKey = options?.hmacKeyOverride ?? process.env.VSTACK_RECEIPT_KEY;
   const requireHmac = Boolean(options?.strict);
+  const dir = path.join(repo.root, RECEIPTS_REL_DIR);
   if (requireHmac && (!activeKey || activeKey.length < 8)) {
+    const hasExistingHmac =
+      fs.existsSync(dir) &&
+      fs.readdirSync(dir).some((name) => {
+        if (!name.endsWith(".json")) return false;
+        try {
+          const raw = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as { digest?: unknown };
+          return typeof raw.digest === "string" && raw.digest.startsWith("hmac:");
+        } catch { return false; }
+      });
+    const msg = hasExistingHmac
+      ? "Strict scan cannot verify existing HMAC receipts with the current key (ephemeral keys written by 'vstack verify --strict' are in-memory only)."
+      : "Strict scan requires HMAC-authenticated receipts (unkeyed SHA-256 receipts are forgeable offline).";
     findings.push({
       id: "RCPT:unsigned-strict:.verification/receipts", rule: "receipt-unsigned-strict", category: "oracle-lock", rung: "R0", severity: "error",
       file: ".verification/receipts", line: 1,
-      message: "Strict scan requires HMAC-authenticated receipts (unkeyed SHA-256 receipts are forgeable offline).",
+      message: msg,
       fix: "Run 'vstack verify . --strict' (ephemeral in-memory HMAC key) or set VSTACK_RECEIPT_KEY in the parent CI orchestrator.",
     });
     return { receipts: valid, findings };
   }
 
-  const dir = path.join(repo.root, RECEIPTS_REL_DIR);
   if (!fs.existsSync(dir)) return { receipts: valid, findings };
 
   const expectedTreeHash = computeRepoTreeHash(repo);

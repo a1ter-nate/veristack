@@ -118,8 +118,8 @@ function expandFrontierItem(
 function isAzurePipelinePath(rel: string): boolean {
   const lower = rel.replace(/\\/g, "/").toLowerCase();
   return (
-    /^\.?azure-pipelines\.ya?ml$/.test(lower) ||
-    ((lower.startsWith("ci/") || lower.startsWith(".azure-pipelines/") || lower.startsWith(".azuredevops/")) && /\.ya?ml$/.test(lower))
+    /^\.?azure-pipelines(?:[-.][^/]+)?\.ya?ml$/.test(lower) ||
+    ((lower.startsWith("ci/") || lower.startsWith("pipelines/") || lower.startsWith(".azure/") || lower.startsWith(".azure-pipelines/") || lower.startsWith(".azuredevops/")) && /\.ya?ml$/.test(lower))
   );
 }
 
@@ -142,10 +142,14 @@ function extractAzureStepCommands(step: Record<string, unknown>): string[] {
   if (!task || !inputs) return out;
   if (task.startsWith("dotnetcorecli@") && typeof inputs.command === "string") {
     const cmd = inputs.command.trim().toLowerCase();
+    const custom = typeof inputs.custom === "string" ? inputs.custom.trim() : "";
     const args = typeof inputs.arguments === "string" ? inputs.arguments.trim() : "";
     if (cmd === "build" || cmd === "test" || cmd === "run" || cmd === "format") out.push(`dotnet ${cmd}${args ? ` ${args}` : ""}`);
-  } else if ((task.startsWith("bash@") || task.startsWith("cmdline@") || task.startsWith("powershell@")) && typeof inputs.script === "string") {
-    out.push(...sanitizeShellBlock(inputs.script));
+    else if (cmd === "custom" && custom) out.push(`dotnet ${custom}${args ? ` ${args}` : ""}`);
+  } else if (task.startsWith("bash@") || task.startsWith("cmdline@") || task.startsWith("powershell@")) {
+    if (typeof inputs.script === "string") out.push(...sanitizeShellBlock(inputs.script));
+    if (typeof inputs.filePath === "string" && inputs.filePath.trim()) out.push(inputs.filePath.trim());
+    if (typeof inputs.scriptPath === "string" && inputs.scriptPath.trim()) out.push(inputs.scriptPath.trim());
   } else if (task.startsWith("npm@") && inputs.command === "custom" && typeof inputs.customCommand === "string") {
     out.push(`npm ${inputs.customCommand.trim()}`);
   }
@@ -165,13 +169,13 @@ function parseAzurePipeline(
   filesByRel: ReadonlyMap<string, ScannedFile>,
 ): { isPrBlocking: boolean; hasSchedules: boolean; commands: string[] } {
   let rootDoc: unknown;
-  try { rootDoc = YAML.parse(wf.content); } catch { return { isPrBlocking: false, hasSchedules: false, commands: [] }; }
+  try { rootDoc = YAML.parse(wf.content); } catch {
+    return { isPrBlocking: !(/^\s*trigger\s*:\s*(?:none|false)\b/im.test(wf.content) && /^\s*pr\s*:\s*(?:none|false)\b/im.test(wf.content)), hasSchedules: /^\s*schedules\s*:/im.test(wf.content), commands: sanitizeShellBlock(wf.content) };
+  }
   if (!rootDoc || typeof rootDoc !== "object" || Array.isArray(rootDoc)) return { isPrBlocking: false, hasSchedules: false, commands: [] };
   const doc = rootDoc as Record<string, unknown>;
-  const triggerOff = doc.trigger === "none" || doc.trigger === false;
-  const prOff = doc.pr === "none" || doc.pr === false;
+  const isPrBlocking = !((doc.trigger === "none" || doc.trigger === false) && (doc.pr === "none" || doc.pr === false));
   const hasSchedules = Array.isArray(doc.schedules) && doc.schedules.length > 0;
-  const isPrBlocking = !(triggerOff && prOff);
   const commands: string[] = [];
   const stack: Array<{ fileRel: string; node: Record<string, unknown>; depth: number; visited: ReadonlySet<string> }> = [
     { fileRel: wf.rel, node: doc, depth: 0, visited: new Set([wf.rel]) },
@@ -186,22 +190,28 @@ function parseAzurePipeline(
         const nextVisited = new Set(cur.visited); nextVisited.add(f.rel);
         stack.push({ fileRel: f.rel, node: parsed as Record<string, unknown>, depth: cur.depth + 1, visited: nextVisited });
       }
-    } catch { void 0; }
+    } catch { commands.push(...sanitizeShellBlock(f.content)); }
+  };
+  const pushItems = (cur: { fileRel: string; depth: number; visited: ReadonlySet<string> }, arr: unknown[]): void => {
+    for (const item of arr) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const rec = item as Record<string, unknown>;
+      if (isAzureDisabled(rec)) continue;
+      commands.push(...extractAzureStepCommands(rec));
+      enqueueTpl(cur, rec.template);
+      stack.push({ fileRel: cur.fileRel, node: rec, depth: cur.depth, visited: cur.visited });
+    }
   };
   while (stack.length > 0) {
     const cur = stack.pop();
     if (!cur || isAzureDisabled(cur.node)) continue;
     enqueueTpl(cur, cur.node.template);
-    for (const key of ["stages", "jobs", "steps"] as const) {
-      const arr = cur.node[key];
-      if (!Array.isArray(arr)) continue;
-      for (const item of arr) {
-        if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-        const rec = item as Record<string, unknown>;
-        if (isAzureDisabled(rec)) continue;
-        if (key === "steps") commands.push(...extractAzureStepCommands(rec));
-        enqueueTpl(cur, rec.template);
-        if (rec.jobs || rec.steps) stack.push({ fileRel: cur.fileRel, node: rec, depth: cur.depth, visited: cur.visited });
+    const ext = cur.node.extends;
+    if (ext && typeof ext === "object" && !Array.isArray(ext)) enqueueTpl(cur, (ext as Record<string, unknown>).template);
+    for (const [key, val] of Object.entries(cur.node)) {
+      if ((key === "stages" || key === "jobs" || key === "steps" || key.startsWith("${{")) && Array.isArray(val)) pushItems(cur, val);
+      else if ((key === "strategy" || key === "runOnce" || key === "canary" || key === "rolling" || key === "deploy" || key === "preDeploy" || key.startsWith("${{")) && val && typeof val === "object" && !Array.isArray(val)) {
+        stack.push({ fileRel: cur.fileRel, node: val as Record<string, unknown>, depth: cur.depth, visited: cur.visited });
       }
     }
   }
@@ -372,6 +382,7 @@ interface SignalTextContext {
   effectiveCiText: string;
   scheduledOrDeployText: string;
   codeownersPassed: boolean;
+  codeownersUncovered: string[];
 }
 
 function buildToolSignalsFromContext(ctx: SignalTextContext): { signals: ToolSignals; hasInProcessRealDb: boolean } {
@@ -399,14 +410,16 @@ function buildToolSignalsFromContext(ctx: SignalTextContext): { signals: ToolSig
     hasTsgo: /\btsgo\b|@typescript\/native-preview/i.test(configAndCi),
     hasKnipOrDeadCode: hasHostPath(/(?:^|\/)knip\.jsonc?$/) || /\b(?:knip|vulture|deadcode|cargo-udeps|cargo-machete)\b|"noUnusedLocals"\s*:\s*true|CS0162|IDE0051|dead_code|<AnalysisLevel>latest|\bclippy\b|\bruff\s+check\b|\bgo\s+vet\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`),
     hasJscpd: hasHostPath(/jscpd/) || /\bjscpd\b/i.test(configAndCi),
-    hasArchFitness: /\b(?:dependency-cruiser|archunit|netarchtest|import-linter|deptrac|packwerk|turbo\s+boundaries|check-max-lines)\b/i.test(`${configAndCi}\n${testImportLines}`) || hasHostPath(/(?:check-boundaries|arch-fitness|architecture.*test|clippy\.toml|\.golangci\.ya?ml|(?:^|\/)internal\/.+\.go$)/),
+    hasArchFitness: /\b(?:dependency-cruiser|archunit|netarchtest|import-linter|deptrac|packwerk|turbo\s+boundaries|check-max-lines|file-length|max-lines|line-ratchet|VStack\.Analyzers)\b/i.test(`${configAndCi}\n${testImportLines}`) || hasHostPath(/(?:check-boundaries|arch-fitness|architecture.*test|clippy\.toml|\.golangci\.ya?ml|(?:^|\/)internal\/.+\.go$|\.analyzers\.csproj$)/),
     hasPreCommitHook: hasNonEmptyLefthook(hostFiles) || hasHostPath(/(?:^|\/)(?:\.husky\/pre-commit|\.githooks\/pre-commit|\.pre-commit-config\.ya?ml|git-hooks\/pre-commit)/) || /core\.hooksPath/.test(configText),
     hasCodeowners: ctx.codeownersPassed,
+    ...(ctx.codeownersUncovered.length > 0 ? { codeownersUncovered: ctx.codeownersUncovered } : {}),
+    hasDatastore: hasInProcessRealDb || hasMigrationTest || hasHostPath(/(?:^|\/)(?:migrations?|prisma|drizzle|alembic|flyway)\/|schema\.sql$|\.sql$/i) || /\b(?:postgres|pg\b|mysql|mariadb|sqlite|mongodb|mongoose|prisma|drizzle-orm|typeorm|sequelize|knex|sqlalchemy|alembic|sqlx|diesel|sea-orm|EntityFramework|Npgsql|Microsoft\.Data\.SqlClient|Dapper|Firestore|DynamoDB|CosmosClient|Supabase)\b/i.test(`${manifestText}\n${prodImportLines}\n${testImportLines}`),
     hasReviewMd: hasHostPath(/(?:^|\/)review\.md$/),
     hasAgentsMd: hasHostPath(/(?:^|\/)(?:agents|claude)\.md$/),
     hasPbt: /(?:\bfc\.property\s*\(|\bfc\.asyncProperty\s*\(|\bproptest!\s*\{|@(?:hypothesis\.)?given\s*\(|\[Property\b|\brapid\.Check\s*\(|\bquick\.Check\s*\()/m.test(codeTestText),
     hasMbt: /\bfc\.commands\s*\(\s*\[(?!\s*\])/.test(codeTestText) || /\b(?:RuleBasedStateMachine|FsCheck\.Experimental|proptest_state_machine|ReferenceStateMachine|state_machine_test!|rapid\.StateMachine)\b/.test(codeTestText) || /\bstateright\b/i.test(testImportLines),
-    hasContractTool: /@pact-foundation|\b(?:pactnet|pact-go|schemathesis|openapi|asyncapi)\b/i.test(`${manifestAndConfig}\n${testImportLines}`) || hasHostPath(/(?:^|\/)(?:buf\.yaml|openapi\.(?:ya?ml|json)|asyncapi\.(?:ya?ml|json)|.*\.contract\.[cm]?[jt]sx?)$/),
+    hasContractTool: /@pact-foundation|\b(?:pactnet|pact-go|schemathesis|openapi|asyncapi|ajv|jsonschema|schemars|NJsonSchema)\b/i.test(`${manifestAndConfig}\n${testImportLines}`) || hasHostPath(/(?:^|\/)(?:buf\.yaml|openapi\.(?:ya?ml|json)|asyncapi\.(?:ya?ml|json)|.*\.contract\.[cm]?[jt]sx?|.*\.schema\.json)$/),
     hasComponentUiTool: /@testing-library|playwright\/experimental-ct|\bstorybook\b/i.test(testImportAndManifest),
     hasMsw: /\bmsw\b/i.test(testImportAndManifest) || /\b(?:setupServer|setupWorker)\s*\(/.test(codeTestText),
     hasMswStrict: /onUnhandledRequest\s*:\s*["']error["']/.test(`${configText}\n${rawTestText}`),
@@ -415,14 +428,14 @@ function buildToolSignalsFromContext(ctx: SignalTextContext): { signals: ToolSig
     hasBusDlqTest: /\b(?:DeadLetter|MaxDeliveryCount|ServiceBusClient|RabbitMQ|Kafka)\b/.test(`${manifestText}\n${codeTestText}`),
     hasDst: /\b(?:turmoil|antithesis)\b/i.test(testImportAndManifest) || /\b(?:deterministicSimulation|virtualClock)\b/.test(codeTestText),
     hasDryRun: /--dry-run|terraform\s+plan|ansible[^\n]*--check/i.test(configAndCi),
-    hasMutationTool: hasValidStrykerConfig(hostFiles) || hasHostPath(/(?:^|\/)(?:mutants\.toml|stryker\.conf(?:ig)?\.[cm]?[jt]s)$/) || /@stryker-mutator|\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|pitest|gremlins|go-mutesting|(?:vstack(?:\.mjs)?|cli\.ts)\s+canary)\b/i.test(configAndCi),
+    hasMutationTool: hasValidStrykerConfig(hostFiles) || hasHostPath(/(?:^|\/)(?:mutants\.toml|stryker\.conf(?:ig)?\.[cm]?[jt]s)$/) || /@stryker-mutator|\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo[- ]mutants|pitest|gremlins|go-mutesting|(?:vstack(?:\.mjs)?|cli\.ts)\s+canary)\b/i.test(`${configAndCi}\n${scheduledOrDeployText}`),
     hasFormalTool: hasNonEmptyFormalSpec(files) || hasHostPath(/(?:^|\/)test_formal_model_check\.py$/) || /\b(?:everystate|z3-solver|Microsoft\.Z3|stateright|kani|verus|loom|shuttle|cargo\s+(?:\+\w+\s+)?miri|quint\s+(?:verify|run)|dafny\s+verify|crosshair)\b/i.test(`${testImportLines}\n${effectiveCiText}\n${scheduledOrDeployText}`) || (hasAnyPath(/(?:^|\/)\.verification\/control-plan\.json$/) && hasAnyPath(/(?:^|\/)\.verification\/laws\/.+\.laws\.json$/)),
-    hasFuzzTool: /\b(?:cargo-fuzz|libFuzzer|jazzer|atheris|SharpFuzz|go\s+test[^\n]*-fuzz)\b/i.test(`${manifestAndConfig}\n${effectiveCiText}`) || /\bfuzzTest\s*\(|\bfunc\s+Fuzz[A-Z]\w*\s*\(/.test(codeTestText),
+    hasFuzzTool: /\b(?:cargo[- ]fuzz|libFuzzer|jazzer|atheris|SharpFuzz|go\s+test[^\n]*-fuzz)\b/i.test(`${manifestAndConfig}\n${effectiveCiText}\n${scheduledOrDeployText}`) || /\bfuzzTest\s*\(|\bfunc\s+Fuzz[A-Z]\w*\s*\(/.test(codeTestText),
     hasBombadil: /\bbombadil\b/i.test(`${configAndCi}\n${scheduledOrDeployText}`) || hasHostPath(/(?:^|\/)tests\/bombadil\//),
     hasVisualTool: /@argos-ci|\b(?:chromatic|percy|argos)\b/i.test(configAndCi) || /\btoHaveScreenshot\s*\(/.test(codeTestText),
     hasPerfOrLoadTool: hasHostPath(/(?:^|\/)(?:check-perf-budget\.[cm]?[jt]s|(?:scripts|tools)\/(?:bench|perf)[a-z0-9_.-]*\.[cm]?[jt]sx?|k6\.config\.[cm]?[jt]s|lighthouserc\.(?:json|ya?ml|[cm]?js)|(?:tests\/load|k6)\/[^/]+\.(?:[cm]?[jt]s|py|go))$/) || /@lhci\/cli|\b(?:k6\s+run|BenchmarkDotNet|NBomber|criterion|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|vitest\s+bench|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*--?bench|dotnet\s+test[^\n]*--filter[^\n]*(?:Benchmark|Perf)|web-vitals|lighthouse\s+(?:https?:|--)|check-perf-budget|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc))\b/i.test(`${manifestAndConfig}\n${effectiveCiText}\n${testImportLines}`),
     hasE2eTool: /@playwright\/test|\b(?:playwright|cypress|selenium|puppeteer)\b/i.test(testImportAndManifest) || hasHostPath(/(?:^|\/)(?:playwright\.config\.[cm]?[jt]s|cypress\.config\.[cm]?[jt]s|maestro\/)/),
-    hasProdTelemetryOrCanary: hasHostPath(/(?:^|\/)(?:scripts\/canary\/|production-canar|production-drift|derived-device-drift|synthetic[-_]check|smoke[-_]prod)/) || /@opentelemetry|@sentry|\b(?:opentelemetry|launchdarkly|dd-trace|sentry-sdk|prometheus|goreplay|chaos-mesh)\b/i.test(`${manifestText}\n${prodImportLines}\n${effectiveCiText}`) || /\b(?:canary|production-drift|synthetic|rollback|post-deploy|smoke[-_]|Smoke check production)\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`),
+    hasProdTelemetryOrCanary: hasHostPath(/(?:^|\/)(?:scripts\/canary\/|production-canar|production-drift|derived-device-drift|synthetic[-_]check|smoke[-_]prod|rehearsal|health[-_]?watch)/) || /@opentelemetry|@sentry|\b(?:opentelemetry|launchdarkly|dd-trace|sentry-sdk|prometheus|goreplay|chaos-mesh)\b/i.test(`${manifestText}\n${prodImportLines}\n${effectiveCiText}`) || /\b(?:canary|production-drift|synthetic|rollback|post-deploy|rehearsal|health[-_]?watch|smoke[-_]|Smoke check production)\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`),
     hasDiffSelection: /\b(?:testscope|--changed|--affected|affected-projects|turbo\s+run[^\n]*--filter)\b/i.test(configAndCi),
   };
   return { signals, hasInProcessRealDb };
@@ -436,15 +449,15 @@ function buildCiSignalsFromContext(ctx: SignalTextContext, signals: ToolSignals,
   return {
     hasCiWorkflows,
     workflowFiles,
-    runsFormatterOrLint: runsVerifyAll || (hasCiWorkflows && /\b(?:oxlint|oxfmt|eslint|prettier|biome|vp\s+(?:check|lint|fmt)|lint-ratchet|pr-lint-format|ruff\s+(?:check|format)|cargo\s+(?:fmt|clippy)|dotnet\s+(?:format|build\b[^\n]*warnaserror)|TreatAllWarningsAs|StyleCop|gofmt|golangci-lint|govulncheck|go\s+vet|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines|run-rung))\b/i.test(effectiveCiText)),
-    runsTypeOrStructureCheck: runsVerifyAll || (hasCiWorkflows && /\b(?:tsc\b|tsgo\b|vp\s+check|typecheck|type-ratchet|dotnet\s+build|cargo\s+(?:check|clippy|build)|mypy\b|pyright\b|basedpyright\b|go\s+(?:vet|build)|golangci-lint|knip\b|vulture\b|deadcode\b|deslop-please|check-max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(effectiveCiText)),
+    runsFormatterOrLint: runsVerifyAll || (hasCiWorkflows && /\b(?:oxlint|oxfmt|eslint|prettier|biome|vp\s+(?:check|lint|fmt)|lint-ratchet|pr-lint-format|ruff\s+(?:check|format)|cargo\s+(?:fmt|clippy|xtask)|dotnet\s+(?:format|build\b[^\n]*warnaserror)|TreatAllWarningsAs|StyleCop|gofmt|golangci-lint|govulncheck|go\s+vet|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|no-comments|state-machines|run-rung))\b/i.test(effectiveCiText)),
+    runsTypeOrStructureCheck: runsVerifyAll || (hasCiWorkflows && /\b(?:tsc\b|tsgo\b|vp\s+check|typecheck|type-ratchet|dotnet\s+build|cargo\s+(?:check|clippy|build|xtask)|mypy\b|pyright\b|basedpyright\b|go\s+(?:vet|build)|golangci-lint|knip\b|vulture\b|deadcode\b|deslop-please|check-max-lines|file-length|max-lines|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:scan|run-rung))\b/i.test(effectiveCiText)),
     runsUnitTests,
     runsBoundaryOrMbtTests: runsVerifyAll || (hasCiWorkflows && /\b(?:pact|pact-go|schemathesis|oasdiff|storybook|test:contract|test:component|test:mbt|mobile-contracts|bun\s+test|vitest|jest|node\s+--test|vp\s+test|deno\s+test|dotnet\s+test|pytest\b|cargo\s+(?:test|nextest)|go\s+test|run-rung\s+(?:R3|all))\b/i.test(effectiveCiText)),
     runsIntegrationOrDbTests: runsVerifyAll || (hasCiWorkflows && (((hasInProcessRealDb || (signals.hasMigrationTest && /(?:bun:sqlite|better-sqlite3|sqlite|drizzle)/i.test(`${manifestAndConfig}\n${codeTestText}`))) && runsUnitTests) || (/\bdocker(?:\s+compose|-compose)\s+up\b/i.test(effectiveCiText) && (runsUnitTests || /\b(?:test|e2e|adapter|integration)\b/i.test(effectiveCiText))) || /\b(?:testcontainers|test:int|test:integration|cloud-integration|conformance|pytest[^\n]*-m\s+["']?integration|dotnet\s+test[^\n]*--filter[^\n]*Integration|cargo\s+(?:test|nextest)[^\n]*--test\s+integration|go\s+test[^\n]*-tags=integration|firebase\s+emulators:exec|prisma\s+migrate|alembic\s+upgrade|flyway\s+migrate|goose\s+up|run-rung\s+(?:R4|all))\b/i.test(effectiveCiText))),
-    runsMutationOrFormal: runsVerifyAll || (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo\s+mutants|cargo\s+(?:\+\w+\s+)?miri|pitest|gremlins|go-mutesting|go\s+test[^\n]*-fuzz|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|mutation(?:tests)?|run-rung\s+(?:R5|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`) || (hasCiWorkflows && (/\bbend\b[^\n]*--check-only/i.test(effectiveCiText) || /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText)))),
+    runsMutationOrFormal: runsVerifyAll || (/\b(?:stryker\s+run|dotnet\s+stryker|mutmut\s+run|cargo[- ]mutants|cargo[- ]fuzz|cargo\s+(?:\+\w+\s+)?miri|pitest|gremlins|go-mutesting|go\s+test[^\n]*-fuzz|crosshair|quint\s+(?:verify|run)|dafny\s+verify|kani\b|stateright|loom\b|z3\b|formal-sync|chromatic|percy|argos|bombadil|mutation(?:tests)?|run-rung\s+(?:R5|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`) || (hasCiWorkflows && (/\bbend\b[^\n]*--check-only/i.test(effectiveCiText) || /\b(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:laws|canary|formal-sync)\b/i.test(effectiveCiText)))),
     runsPerfOrBench: runsVerifyAll || (hasCiWorkflows && /\b(?:k6\s+run|BenchmarkDotNet|NBomber|cargo\s+bench|cargo\s+(?:\+\w+\s+)?test[^\n]*--benches|vitest\s+bench|codspeed|divan|locust|tinybench|mitata|pytest-benchmark|pytest[^\n]*--benchmark|go\s+test[^\n]*--?bench|dotnet\s+test[^\n]*--filter[^\n]*(?:Benchmark|Perf)|lighthouse\s+(?:https?:|--)|lhci|check-perf-budget|perf:check|(?:scripts|tools)\/(?:bench|perf)[a-z0-9_.-]*\.[cm]?[jt]sx?|(?:vstack(?:\.mjs)?|cli\.ts)\s+(?:big-o|spc)|run-rung\s+(?:R6|all))\b/i.test(effectiveCiText)),
     runsE2eTests: runsVerifyAll || (hasCiWorkflows && /\b(?:playwright\s+test|playwright-go|cypress\s+run|maestro\s+test|test:e2e|dashboard-e2e|pytest[^\n]*-m\s+["']?(?:e2e|chrome|browser|playwright)|dotnet\s+test[^\n]*--filter[^\n]*E2E|cargo\s+(?:test|nextest)[^\n]*--test\s+e2e|go\s+test[^\n]*\/e2e|run-rung\s+(?:R7|all))\b/i.test(effectiveCiText)),
-    runsProdVerification: runsVerifyAll || /\b(?:synthetic|canary|production-canar|production-drift|rollback|smoke-prod|smoke-event-assets|post-deploy|healthcheck|run-rung\s+(?:R8|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`),
+    runsProdVerification: runsVerifyAll || /\b(?:synthetic|canary|production-canar|production-drift|rollback|rehearsal|health[-_]?watch|smoke-prod|smoke-event-assets|post-deploy|healthcheck|run-rung\s+(?:R8|all))\b/i.test(`${effectiveCiText}\n${scheduledOrDeployText}`),
   };
 }
 
@@ -461,6 +474,7 @@ export function extractSignals(
   const allLowerPaths = allRelPaths.map((p) => p.toLowerCase());
   const hostTestFiles = hostFiles.filter((f) => f.isTest);
   const prCi = buildActivePrCiText(files, defaultBranch);
+  const coRes = auditCodeownersPerimeter(hostFiles, allRelPaths);
   const ctx: SignalTextContext = {
     files,
     hostFiles,
@@ -474,7 +488,8 @@ export function extractSignals(
     testImportLines: hostTestFiles.flatMap((f) => f.content.split(/\r?\n/)).filter((l) => /^\s*(?:import|from|use|using|require\s*\(|const\s+\w+\s*=\s*require\()/.test(l)).join("\n"),
     prodImportLines: hostFiles.filter((f) => f.language && !f.isTest && !f.rel.startsWith("src/rungs/")).flatMap((f) => f.content.split(/\r?\n/)).filter((l) => /^\s*(?:import|from|use|using)\b/.test(l)).join("\n"),
     ...prCi,
-    codeownersPassed: auditCodeownersPerimeter(hostFiles, allRelPaths).passed,
+    codeownersPassed: coRes.passed,
+    codeownersUncovered: coRes.uncoveredSurfaces,
   };
   const { signals, hasInProcessRealDb } = buildToolSignalsFromContext(ctx);
   const ci = buildCiSignalsFromContext(ctx, signals, hasInProcessRealDb);

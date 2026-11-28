@@ -64,7 +64,10 @@ function buildR0Status(ctx: RungBuildCtx): RungStatus {
   if (s.hasPreCommitHook) evidence.push("pre-commit hook");
   else gaps.push("Wire non-empty pre-commit hook (Lefthook) < 2s");
   if (s.hasCodeowners) evidence.push("CODEOWNERS");
-  else gaps.push("Lock .github/workflows/, .verification/, and CODEOWNERS in CODEOWNERS");
+  else {
+    const missing = s.codeownersUncovered?.length ? ` (uncovered: ${s.codeownersUncovered.slice(0, 6).join(", ")})` : "";
+    gaps.push(`Lock workflow, .verification/, and CODEOWNERS surfaces in CODEOWNERS${missing}`);
+  }
   return finalizeRung({
     rung: "R0", name: "Instant Static, Anti-Slop & Locks", speedBudget: "< 2 s", targetBudget: "100% files",
     idealCoverage: "Formatter + fast linter/anti-slop + pre-commit hook + CODEOWNERS, receipt-verified in CI",
@@ -193,6 +196,8 @@ function buildR4Status(ctx: RungBuildCtx): RungStatus {
   const s = repo.signals;
   const na = isLib || isFront;
   const hasReal = r4Files.length > 0 || s.hasTestcontainersOrRealDb;
+  const needsMigrations = s.hasDatastore !== false;
+  const migrationsOk = !needsMigrations || s.hasMigrationTest;
   const exec = isExecuted("R4", !na && repo.ci.runsIntegrationOrDbTests && hasReal);
   const evidence: string[] = [];
   const gaps: string[] = [];
@@ -201,16 +206,16 @@ function buildR4Status(ctx: RungBuildCtx): RungStatus {
     if (hasReal) evidence.push(`${r4Files.length} real-engine integration file(s)`);
     else gaps.push("Add isolated real-DB integration slices (Testcontainers / pglite / emulator)");
     if (s.hasMigrationTest) evidence.push("migration check");
-    else gaps.push("Verify DB migrations against seeded old-schema rows");
+    else if (needsMigrations) gaps.push("Verify DB migrations against seeded old-schema rows");
   }
   return finalizeRung({
     rung: "R4", name: "Real Engines, Migrations, Dry-Run & DST", speedBudget: "2–30 s", targetBudget: na ? "0" : "3–8 slices",
     idealCoverage: na ? "Not applicable" : ">= 3 real-engine integration slices + migration verification, receipt-verified",
-    observedCoverage: na ? "not applicable" : `${r4Files.length} file(s), migrations=${s.hasMigrationTest ? "yes" : "no"} | CI: ${exec.executed ? (exec.receipt ? "receipt" : "yes") : "no"}`,
+    observedCoverage: na ? "not applicable" : `${r4Files.length} file(s), migrations=${s.hasMigrationTest ? "yes" : needsMigrations ? "no" : "n/a"} | CI: ${exec.executed ? (exec.receipt ? "receipt" : "yes") : "no"}`,
     observedCount: r4Files.length, evidence, gaps, executedInCi: exec.executed, receiptVerified: Boolean(exec.receipt), notApplicable: na,
     checks: na ? [] : [
       { id: "r4-real-engine", label: "Real-engine integration slices", weight: 40, passed: hasReal, executed: exec.executed, detail: `${r4Files.length} file(s)` },
-      { id: "r4-migrations", label: "Migration verification", weight: 30, passed: s.hasMigrationTest, executed: exec.executed, detail: s.hasMigrationTest ? "present" : "missing" },
+      { id: "r4-migrations", label: "Migration verification", weight: 30, passed: migrationsOk, executed: exec.executed, detail: s.hasMigrationTest ? "present" : needsMigrations ? "missing" : "no datastore" },
       { id: "r4-ci", label: "Executed in CI / receipt", weight: 30, passed: exec.executed, executed: exec.executed, detail: exec.receipt ? "receipt verified" : exec.executed ? "active CI" : "not verified" },
     ],
   });
@@ -316,6 +321,30 @@ function buildR8Status(ctx: RungBuildCtx): RungStatus {
   });
 }
 
+function applyManifestRungMappings(
+  hostInventory: readonly TestFileRecord[],
+  manifest: DiscoveredRepo["manifest"],
+): TestFileRecord[] {
+  if (!manifest?.rungs) return [...hostInventory];
+  const targetRungs: readonly RungId[] = ["R3", "R4", "R7"];
+  const pathMatchers: Array<{ rung: RungId; token: string }> = [];
+  for (const r of targetRungs) {
+    const cmd = manifest.rungs[r]?.command ?? "";
+    for (const rawTok of cmd.split(/\s+/)) {
+      const tok = rawTok.replace(/^["']|["']$/g, "").replace(/^\.\//, "");
+      if (!tok || tok.startsWith("-") || !tok.includes("/") || tok.startsWith("node_modules/")) continue;
+      pathMatchers.push({ rung: r, token: tok.replace(/\/+$/, "") });
+    }
+  }
+  if (pathMatchers.length === 0) return [...hostInventory];
+  return hostInventory.map((rec) => {
+    if (rec.rung !== "R2") return rec;
+    const norm = rec.file.replace(/\\/g, "/");
+    const hit = pathMatchers.find((m) => norm === m.token || norm.startsWith(`${m.token}/`));
+    return hit ? { ...rec, rung: hit.rung } : rec;
+  });
+}
+
 export function buildRungStatuses(
   repo: DiscoveredRepo,
   inventory: readonly TestFileRecord[],
@@ -323,7 +352,7 @@ export function buildRungStatuses(
 ): RungStatus[] {
   const receipts = options.receipts ?? new Map<RungId, RungReceipt>();
   const requireReceipts = Boolean(options.requireReceipts);
-  const hostInventory = inventory.filter((t) => isHostRepoFile(t.file));
+  const hostInventory = applyManifestRungMappings(inventory.filter((t) => isHostRepoFile(t.file)), repo.manifest);
   const r2Files = hostInventory.filter((t) => t.rung === "R2");
   const e2eFiles = hostInventory.filter((t) => t.rung === "R7");
   const ctx: RungBuildCtx = {

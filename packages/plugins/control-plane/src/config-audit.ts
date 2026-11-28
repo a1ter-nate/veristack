@@ -287,6 +287,7 @@ const JS_TEST_CONFIG_FILES = [
 export const VERIFICATION_TOOLS = new Set([
   "vitest", "jest", "mocha", "ava", "oxlint", "oxfmt", "eslint", "prettier", "biome",
   "typescript", "tsc", "tsgo", "veristack", "vstack", "playwright", "cypress", "knip", "stryker",
+  "repospec", "@stryker-mutator/core", "fast-check", "k6", "tsrs", "smoke-prod", "synthetic", "healthcheck",
 ]);
 
 function auditJsTestConfig(rel: string, raw: string): string | null {

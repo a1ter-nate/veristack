@@ -10,7 +10,7 @@ import {
   type TigerLang,
 } from "./helpers.ts";
 
-const STARTUP_FN_RE = /^(?:main|init|new|default|build|create|setup|configure|from_|New[A-Z])/;
+const STARTUP_FN_RE = /^(?:main|init|new|default|build|create|setup|configure|from_|New[A-Z]|reset|Reset|dispose|Dispose|clear|Clear|close|Close|teardown|Teardown|shutdown|Shutdown)/;
 
 interface TypesCtx {
   file: ScannedFile;
@@ -121,6 +121,13 @@ function checkExplicitOverImplicit(ctx: TypesCtx): void {
       const idx = m.index ?? 0;
       const ln = lineAtOffset(ctx.file.content, idx);
       if (hasSafetyDirective(ctx.lines, ln)) continue;
+      if (c.re.source === "\\bfetch\\s*\\(") {
+        const before = ctx.masked.slice(Math.max(0, idx - 40), idx);
+        const afterSig = ctx.masked.slice(idx, idx + 120);
+        if (/(?:\.|function\s+|async\s+|,\s*|\{\s*)$/.test(before) && /\)\s*(?::\s*[^{\n]+)?\s*(?:\{|;)/.test(afterSig)) continue;
+        if (/\.\s*$/.test(before) && !/(?:globalThis|window)\s*\.\s*$/.test(before)) continue;
+        if (/\b(?:AbortSignal|AbortController)\b/.test(ctx.masked.slice(Math.max(0, idx - 320), idx + 260))) continue;
+      }
       if (c.guard && c.guard.test(ctx.masked.slice(idx, idx + 260))) continue;
       pushTigerFinding(ctx.findings, { rule: "tiger-explicit-over-implicit", rung: "R0", severity: c.sev, file: ctx.file.rel, line: ln, message: c.msg, fix: c.fix });
     }

@@ -19,7 +19,7 @@ const SVC_RUNTIME_DEP_MAX = 40;
 function checkFunctionSignatures(file: ScannedFile, lines: readonly string[], findings: Finding[]): void {
   const units = extractFunctionUnits(file);
   for (const unit of units) {
-    if (hasSafetyDirective(lines, unit.startLine)) continue;
+    if (hasSafetyDirective(lines, unit.startLine) || unit.isOverrideOrInterfaceImpl) continue;
     if (unit.paramCount > MAX_PARAMS) {
       pushTigerFinding(findings, {
         rule: "tiger-interface-surface",

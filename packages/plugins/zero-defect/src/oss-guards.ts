@@ -187,6 +187,9 @@ function scanRustOss(file: ScannedFile, raw: string, _masked: string, findings: 
   for (const m of prodMasked.matchAll(/\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;\n]+\.(?:lock|write)\s*\(\s*\)/g)) {
     const guardName = m[1] ?? ""; const idx = m.index ?? 0;
     const rawAfter = prodMasked.slice(idx + m[0].length, idx + m[0].length + 280);
+    const semiPos = rawAfter.indexOf(";");
+    const initTail = semiPos >= 0 ? rawAfter.slice(0, semiPos).trim() : "";
+    if (initTail && !/^(?:\.await|\?|\.unwrap\s*\(\s*\)|\.expect\s*\([^)]*\)|\s)+$/.test(initTail)) continue;
     let scopeEnd = rawAfter.length; let bDepth = 0;
     for (let k = 0; k < rawAfter.length; k++) { if (rawAfter[k] === "{") bDepth += 1; else if (rawAfter[k] === "}" && --bDepth < 0) { scopeEnd = k; break; } }
     const after = rawAfter.slice(0, scopeEnd);
@@ -264,15 +267,23 @@ function scanTsJsOssSecurity(file: ScannedFile, raw: string, masked: string, fin
     }
   }
   const literalConstNames = new Set<string>();
-  for (const cm of raw.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:"[^"\n]*"|'[^'\n]*')/g)) { if (cm[1]) literalConstNames.add(cm[1]); }
+  for (const cm of raw.matchAll(/\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:"[^"\n]*"|'[^'\n]*'|\[(?:\s*(?:"[^"\n]*"|'[^'\n]*')\s*,?\s*)+\])/g)) { if (cm[1]) literalConstNames.add(cm[1]); }
+  const hasFileRegexEscaper = /\\\$&|escapeRegExp|escapeRegex|RegExp\.escape/.test(raw);
   for (const m of masked.matchAll(/\bnew\s+RegExp\s*\(/g)) {
-    const idx = m.index ?? 0; const rawSlice = raw.slice(idx, idx + 180);
-    if (/\\\$&|escapeRegExp|RegExp\.escape/.test(raw.slice(Math.max(0, idx - 320), idx)) || !UNESCAPED_REGEXP_TEMPLATE.test(rawSlice)) continue;
+    const idx = m.index ?? 0; const rawSlice = raw.slice(idx, idx + 220);
+    if (/\\\$&|escapeRegExp|escapeRegex|RegExp\.escape/.test(raw.slice(Math.max(0, idx - 420), idx + 180)) || !UNESCAPED_REGEXP_TEMPLATE.test(rawSlice)) continue;
     UNESCAPED_REGEXP_TEMPLATE.lastIndex = 0;
     const tmplStart = rawSlice.indexOf("`"); const tmplEnd = tmplStart >= 0 ? rawSlice.indexOf("`", tmplStart + 1) : -1;
     if (tmplStart >= 0 && tmplEnd > tmplStart) {
       const exprs = [...rawSlice.slice(tmplStart + 1, tmplEnd).matchAll(/\$\{\s*([^}]+?)\s*\}/g)].map((x) => x[1] ?? "");
-      if (exprs.length > 0 && exprs.every((e) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(e) && literalConstNames.has(e))) continue;
+      const allSafe = exprs.length > 0 && exprs.every((e) => {
+        if (/^[A-Za-z_$][A-Za-z0-9_$]*\.source$/.test(e)) return true;
+        if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(e) && (literalConstNames.has(e) || hasFileRegexEscaper)) return true;
+        const joinMatch = /^([A-Za-z_$][A-Za-z0-9_$]*)\.join\s*\(/.exec(e);
+        if (joinMatch?.[1] && literalConstNames.has(joinMatch[1])) return true;
+        return /\b(?:escapeRegExp|escapeRegex|RegExp\.escape)\s*\(/.test(e);
+      });
+      if (allSafe) continue;
     }
     push(findings, { file: file.rel, line: lineOf(raw, idx), rule: "regex-empty-alternation-or-unescaped", rung: "R1", severity: "warn", message: "Unescaped template interpolation inside new RegExp(`...${...}`) risks ReDoS or metacharacter injection.", fix: "Escape dynamic segments with RegExp.escape / an explicit regex-escape helper before compiling." });
   }

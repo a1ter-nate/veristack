@@ -64,7 +64,27 @@ function containsIdentifier(text: string, ident: string): boolean {
   return false;
 }
 
-function collectCalledNames(body: string, selfName: string, lang: TigerLang): Set<string> {
+function countCallArgs(slice: string, openParenIdx: number): number {
+  let depth = 0;
+  let angle = 0;
+  let hasContent = false;
+  let commas = 0;
+  for (let i = openParenIdx + 1; i < slice.length && i < openParenIdx + 400; i++) {
+    const ch = slice[i] ?? "";
+    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      if (depth === 0 && ch === ")") return hasContent ? commas + 1 : 0;
+      if (depth > 0) depth -= 1;
+    } else if (ch === "<") angle += 1;
+    else if (ch === ">" && angle > 0) angle -= 1;
+    else if (ch === "," && depth === 0 && angle === 0) commas += 1;
+    else if (!/\s/.test(ch)) hasContent = true;
+  }
+  return -1;
+}
+
+function collectCalledNames(body: string, selfName: string, lang: TigerLang, selfParamCount = -1): Set<string> {
+  if (!body) return new Set<string>();
   const masked = maskTigerCode(body, lang);
   const firstBrace = masked.indexOf("{");
   const nlIdx = masked.indexOf("\n");
@@ -81,9 +101,13 @@ function collectCalledNames(body: string, selfName: string, lang: TigerLang): Se
   const names = new Set<string>();
   for (const m of slice.matchAll(/(?:(?<![.\w$])|this\.)([A-Za-z_]\w*)\s*\(/g)) {
     const callee = m[1] ?? "";
-    if (callee && callee !== "if" && callee !== "for" && callee !== "while" && callee !== "switch" && callee !== "catch") {
-      names.add(callee);
+    if (!callee || callee === "if" || callee === "for" || callee === "while" || callee === "switch" || callee === "catch") continue;
+    if (lang === "csharp" && callee === selfName && selfParamCount >= 0) {
+      const openIdx = (m.index ?? 0) + m[0].length - 1;
+      const argCount = countCallArgs(slice, openIdx);
+      if (argCount >= 0 && argCount !== selfParamCount) continue;
     }
+    names.add(callee);
   }
   if (lang === "shell" && selfName && containsIdentifier(slice, selfName)) {
     names.add(selfName);
@@ -116,7 +140,7 @@ function checkRecursion(ctx: CfCtx): void {
   const byName = new Map<string, { unit: FunctionUnit; calls: Set<string> }>();
   for (const u of ctx.units) {
     if (u.name === "<anonymous>") continue;
-    byName.set(u.name, { unit: u, calls: collectCalledNames(u.bodyText, u.name, ctx.lang) });
+    byName.set(u.name, { unit: u, calls: collectCalledNames(u.bodyText, u.name, ctx.lang, u.paramCount) });
   }
   const reported = new Set<string>();
   for (const [name, entry] of byName.entries()) {
@@ -177,8 +201,17 @@ function checkBoundedLoopsAndQueues(ctx: CfCtx): void {
     const idx = m.index ?? 0;
     const ln = lineAtOffset(ctx.file.content, idx);
     if (hasSafetyDirective(ctx.lines, ln)) continue;
-    const win = masked.slice(idx, idx + 450);
-    if (/\b(?:MAX_|max[A-Z]|limit|attempts|iterations|remaining|budget|deadline|ctx\.Done)\b/.test(win)) continue;
+    const rawAfter = masked.slice(idx, idx + 520);
+    const nextDecl = rawAfter.slice(20).search(/\n(?:export\s+|async\s+|pub\s+|def\s+|func\s+|function\s+)/);
+    const afterScoped = nextDecl >= 0 ? rawAfter.slice(0, nextDecl + 20) : rawAfter;
+    const rawBefore = masked.slice(Math.max(0, idx - 220), idx);
+    const prevDecl = rawBefore.lastIndexOf("\nexport ");
+    const beforeScoped = prevDecl >= 0 ? rawBefore.slice(prevDecl) : rawBefore;
+    const win = `${beforeScoped}${afterScoped}`;
+    if (
+      /\b(?:MAX_|max[A-Z]|[A-Z0-9_]+_LIMIT\b|limit|attempts|iterations|remaining|budget|fuel|deadline|timeout|ctx\.Done|visited\.len|seen\.(?:insert|contains)|page_?count|pages)\b/i.test(win) ||
+      /\.\s*(?:next|recv|try_recv)\s*\(\s*\)|tokio::select!|\bselect!?\s*\{|\b(?:shutdown|cancel)\b[\s\S]{0,80}\bbreak\b|\b(?:None|Err\s*\([^)]*\))\s*=>\s*(?:\{\s*)?(?:break|return)\b/.test(win)
+    ) continue;
     pushTigerFinding(ctx.findings, {
       rule: "tiger-unbounded-loop",
       rung: "R0",

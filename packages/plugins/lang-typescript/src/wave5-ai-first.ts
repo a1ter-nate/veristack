@@ -178,20 +178,20 @@ function scanTsWave5(file: ScannedFile, prodCode: string, findings: Finding[]): 
     }
   }
   const isCloudflareWorker = /(?:^|\/)workers?\//i.test(file.rel) || /\b(?:ExportedHandler|ExecutionContext|DurableObject|caches\.default|@cloudflare\/workers-types)\b/.test(raw);
-  if (!isCloudflareWorker) {
-    for (const m of prodCode.matchAll(MCP_BODY_CANCEL)) {
-      push(findings, {
-        file: file.rel, line: lineOf(raw, m.index ?? 0), rule: "mcp-body-cancel-hang", rung: "R1", severity: "warn",
-        message: "Calling response.body.cancel() on HTTP/SSE responses can stall keep-alive connection pools.",
-        fix: "Drain unread response bodies via await response.text() / arrayBuffer() (with a size cap) or close the controller cleanly.",
-      });
-    }
+  const isBrowserBundle = /\b(?:document\.|window\.|HTMLElement|localStorage|addEventListener)\b/.test(prodCode);
+  const isMcpOrSseContext = MCP_PATH.test(file.rel) || /@modelcontextprotocol/i.test(raw) || /(?:mcp|sse|agent|ai[-_]first)/i.test(file.rel) || /\b(?:EventSource|text\/event-stream|McpServer|StdioServerTransport|SSEClientTransport)\b/i.test(raw);
+  if (!isCloudflareWorker && !isBrowserBundle && isMcpOrSseContext) {
+    for (const m of prodCode.matchAll(MCP_BODY_CANCEL)) push(findings, { file: file.rel, line: lineOf(raw, m.index ?? 0), rule: "mcp-body-cancel-hang", rung: "R1", severity: "warn", message: "Calling response.body.cancel() on HTTP/SSE responses can stall keep-alive connection pools.", fix: "Drain unread response bodies via await response.text() / arrayBuffer() (with a size cap) or close the controller cleanly." });
   }
   const usesNodeChildProcess = /\bchild_process\b|\bimport\s*\{[^}]*\bspawn\b[^}]*\}\s*from\s*["'](?:node:)?child_process["']/.test(raw);
   for (const m of prodCode.matchAll(AGENT_SPAWN_CALL)) {
     const idx = m.index ?? 0;
     if ((!usesNodeChildProcess && !m[0].startsWith("child_process.")) || (idx > 0 && prodCode[idx - 1] === "." && !m[0].startsWith("child_process."))) continue;
-    if (!/\.on\s*\(\s*["']error["']|\.once\s*\(\s*["']error["']/.test(raw.slice(idx, idx + 450)) && !/\bspawnSync\b/.test(prodCode.slice(idx, idx + 450))) {
+    const afterSpawn = raw.slice(idx, idx + 2400);
+    const hasErrHandler =
+      /\.(?:on|once|addListener|prependListener)\s*\(\s*["']error["']/.test(afterSpawn) ||
+      /\b(?:events\.)?once\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\s*,\s*["'](?:close|exit|error)["']/.test(afterSpawn);
+    if (!hasErrHandler && !/\bspawnSync\b/.test(prodCode.slice(idx, idx + 450))) {
       push(findings, {
         file: file.rel, line: lineOf(raw, idx), rule: "agent-subprocess-missing-error-handler", rung: "R1", severity: "warn",
         message: "Child process spawn() without an .on('error', ...) listener throws an uncaught ENOENT crash.",

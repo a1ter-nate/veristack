@@ -12,7 +12,7 @@ import {
 
 const MIN_LINES_FOR_ASSERT_DENSITY = 30;
 const ASSERT_OR_GUARD_GLOBAL_RE =
-  /\b(?:assert|invariant|expect|panic!|unreachable!|assert_eq!|assert_ne!|Effect\.die|Effect\.dieMessage|orDie|ThrowIf|ArgumentException|InvalidOperationException|UnreachableException|throw\s+new\b|raise\s+\w+|if\s*\([^)]*\)\s*(?:\{\s*)?(?:return|throw)|if\s+[^\n:]+:\s*(?:return|raise)|if\s+err\s*!=\s*nil|errors\.New|fmt\.Errorf)\b/g;
+  /\b(?:assert|invariant|expect|panic!|unreachable!|assert_eq!|assert_ne!|Effect\.die|Effect\.dieMessage|orDie|ThrowIf|Contract\.Requires|ArgumentException|InvalidOperationException|UnreachableException|throw\s+new\b|throw\s+[A-Z][A-Za-z0-9_]*\s*\(|raise\s+\w+|if\s*\([^)]*\)\s*(?:\{\s*)?(?:return|throw)|if\s+[^\n:]+:\s*(?:return|raise)|if\s+err\s*!=\s*nil|errors\.New|fmt\.Errorf)\b/g;
 
 interface AssertCtx {
   file: ScannedFile;
@@ -93,9 +93,19 @@ function checkAssertionDensity(ctx: AssertCtx): void {
     return;
   }
   const units = extractFunctionUnits(ctx.file);
+  const findEnclosing = (target: (typeof units)[number]): (typeof units)[number] | undefined =>
+    units.find((u) => u !== target && u.startLine <= target.startLine && u.endLine >= target.endLine);
   for (const unit of units) {
     if (unit.codeLines < MIN_LINES_FOR_ASSERT_DENSITY) continue;
     if (hasSafetyDirective(ctx.lines, unit.startLine)) continue;
+    if (unit.name === "<anonymous>" && /^\s*(?:async\s+)?\(\s*resolve\s*,\s*reject\b/.test(unit.bodyText)) {
+      const enclosing = findEnclosing(unit);
+      if (enclosing && ASSERT_OR_GUARD_GLOBAL_RE.test(maskTigerCode(enclosing.bodyText, ctx.lang))) {
+        ASSERT_OR_GUARD_GLOBAL_RE.lastIndex = 0;
+        continue;
+      }
+      ASSERT_OR_GUARD_GLOBAL_RE.lastIndex = 0;
+    }
     const maskedBody = maskTigerCode(unit.bodyText, ctx.lang);
     const guardMatches = maskedBody.match(ASSERT_OR_GUARD_GLOBAL_RE);
     if (!guardMatches || guardMatches.length === 0) {

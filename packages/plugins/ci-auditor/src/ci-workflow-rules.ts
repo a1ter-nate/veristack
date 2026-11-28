@@ -4,7 +4,7 @@ import type { Finding } from "@veristack/plugin";
 const TWO_DOT_PR_DIFF = /\bgit\s+diff\b[^\n]*(?:\$\{?[A-Z_]*(?:BASE|MAIN|TARGET)[A-Z0-9_]*\}?|\borigin\/main\b)\s+(?:\$\{?[A-Z_]*(?:HEAD|SHA|COMMIT)[A-Z0-9_]*\}?|\bHEAD\b)/;
 const UNBOUNDED_BG_WORKERS = /\b(?:vitest|jest)\b[^\n]*&\s*$|\b--maxWorkers(?:=|\s+)(?:[89]|\d{2,})\b/;
 const HARDCODED_LOCAL_PORT =
-  /(?:--port(?:=|\s+)|(?:localhost|127\.0\.0\.1):)(?:300\d|417\d|517\d|808\d|809\d|900\d|909\d|919\d|929\d)\b/;
+  /(?:--port(?:=|\s+)|(?:localhost|127\.0\.0\.1):)(?:300\d|417\d|517\d|808\d|809\d|900\d|909\d|919\d|929\d|1808\d|1809\d)\b/;
 const COMBINED_BUILD_TEST = /\bturbo\s+run\s+build\s+test\b|\bpnpm\s+-r\s+(?:--parallel\s+)?build\s+test\b/;
 const MAESTRO_SCROLL_BLOCK = /^\s*-\s*scrollUntilVisible\s*:/gm;
 
@@ -38,6 +38,9 @@ function parseWorkflowJobs(content: string): JobSpan[] {
 function auditCiLineRules(file: ScannedFile, findings: Finding[]): void {
   if (!file.content) return;
   const lines = file.content.split(/\r?\n/);
+  const isEphemeralHosted =
+    /(?:runs-on\s*:\s*(?:ubuntu|macos|windows)-(?:latest|\d)|vmImage\s*:\s*["']?(?:ubuntu|macOS|windows)-)/i.test(file.content) &&
+    !/self-hosted/i.test(file.content);
   for (let idx = 0; idx < lines.length; idx++) {
     const raw = lines[idx] ?? "";
     const stripped = raw.replace(/\s+#.*$/, "");
@@ -49,7 +52,7 @@ function auditCiLineRules(file: ScannedFile, findings: Finding[]): void {
       findings.push({ id: `CI:unbounded-workers:${file.rel}:${idx + 1}`, rule: "ci-unbounded-test-workers", category: "ci-hygiene", rung: "R6", severity: "warn", file: file.rel, line: idx + 1, message: "CI step oversubscribes test workers (backgrounded vitest/jest or --maxWorkers >= 8), causing event-loop timeout flakes.", fix: "Cap --maxWorkers to runner vCPUs (e.g. 2-4) and avoid parallel background test runners on shared slots." });
     }
     if (HARDCODED_LOCAL_PORT.test(stripped) && !/\$\{?[A-Za-z_]*PORT/.test(stripped)) {
-      findings.push({ id: `CI:static-port:${file.rel}:${idx + 1}`, rule: "ci-hardcoded-service-port", category: "ci-hygiene", rung: "R4", severity: "warn", file: file.rel, line: idx + 1, message: "Hardcoded localhost service/emulator port in CI risks cross-slot port collisions on shared runners.", fix: "Allocate ports dynamically or parameterize via an environment variable with a per-slot offset." });
+      findings.push({ id: `CI:static-port:${file.rel}:${idx + 1}`, rule: "ci-hardcoded-service-port", category: "ci-hygiene", rung: "R4", severity: isEphemeralHosted ? "info" : "warn", file: file.rel, line: idx + 1, message: "Hardcoded localhost service/emulator port in CI risks cross-slot port collisions on shared runners.", fix: "Allocate ports dynamically or parameterize via an environment variable with a per-slot offset." });
     }
     if (COMBINED_BUILD_TEST.test(stripped)) {
       findings.push({ id: `CI:build-test-wave:${file.rel}:${idx + 1}`, rule: "ci-combined-build-test-wave", category: "ci-hygiene", rung: "R6", severity: "warn", file: file.rel, line: idx + 1, message: "Running monorepo build and test concurrently in one command starves runner CPU/RAM and causes timeout flakes.", fix: "Separate build and test into sequential steps or cap task concurrency explicitly." });

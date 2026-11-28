@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createPluginHostSync } from "@veristack/core";
+import { createPluginHostSync, scanRepo } from "@veristack/core";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { isVeristackPlugin } from "@veristack/plugin";
 import { analyzeTigerControlFlow, tigerstylePlugin } from "@veristack/plugin-tigerstyle";
 
@@ -38,4 +41,34 @@ test("tiger-function-length ignores multi-line template literal payloads while s
     content: longCodeFn,
   });
   assert.equal(realFindings.some((f) => f.rule === "tiger-function-length"), true);
+});
+
+test("C# generic commas, records, overrides, overload forwarding, and Dispose/Reset do not trigger TigerStyle false positives", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vstack-cs-tiger-"));
+  try {
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "src", "Service.cs"),
+      [
+        "public sealed record OrderDto(string Id, string CustomerId, int Qty, decimal Price, string Currency);",
+        "public sealed class Service {",
+        "    private List<int> items = new List<int>();",
+        "    public int Compute(Dictionary<string, int> map, Dictionary<string, string> meta, int limit) {",
+        "        ArgumentNullException.ThrowIfNull(map);",
+        "        return map.Count + meta.Count + limit;",
+        "    }",
+        "    public int Forward(int a) => Forward(a, 1);",
+        "    public int Forward(int a, int b) => a + b;",
+        "    public void Reset() { items = new List<int>(); }",
+        "}",
+      ].join("\n"),
+    );
+    const report = scanRepo(dir);
+    const rules = new Set(report.findings.map((f) => f.rule));
+    assert.equal(rules.has("tiger-interface-surface"), false);
+    assert.equal(rules.has("tiger-no-recursion"), false);
+    assert.equal(rules.has("tiger-hot-path-allocation"), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

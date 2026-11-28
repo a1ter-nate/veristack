@@ -212,6 +212,9 @@ function auditAddedDiffLine(ctx: {
   if (isTestFilePath(currentFile) && /\b(?:describe|test|it)(?:\.concurrent)?\.(?:skip|only|todo|fixme)\s*\(|\b(?:xdescribe|xit|xtest|fdescribe|fit)\s*\(/.test(codeLine) && /\.[cm]?[jt]sx?$/.test(lowerFile)) pushCheat("ts-skip", "diff-ts-skipped-test", "Added skipped/focused TS/JS test (.skip/.only/.todo) in diff.", "Fix or delete the test instead of skipping or focusing it.");
   if (/\bgc\.disable\s*\(\s*\)|#\s*pragma\s+GCC\s+optimize\b|\bGC\.TryStartNoGCRegion\s*\(/.test(codeLine)) pushCheat("perf-cheat", "diff-perf-benchmark-tampering", "Added GC-disabling or compiler-pragma benchmark tampering in diff.", "Remove benchmark tampering and optimize the actual algorithm or data layout.");
   if ((/\bgit\s+(?:log\s+--all|show\s+origin\/|rev-list\s+--all)\b/.test(added) && /test|spec/i.test(lowerFile)) || /\bprocess\.env\.NODE_ENV\s*===?\s*["']test["']\s*&&\s*[A-Za-z0-9_.]+\s*===?\s*["']/.test(added)) pushCheat("agent-cheat", "diff-agent-oracle-tampering", "Added agent reward-hacking pattern (test-specific input hardcoding in prod or git history mining in tests).", "Implement the genuine general fix without branching on test inputs or inspecting git history.");
+  if (isWorkflowOrScript && /\.(?:ya?ml)$/i.test(lowerFile) && /(?:azure-pipelines|^ci\/)/i.test(lowerFile) && /^\s*(?:trigger|pr)\s*:\s*none\b/i.test(stripped)) {
+    pushCheat("ado-trigger-none", "diff-ci-safety-gate-removed", "Disabled Azure Pipelines trigger/pr gate ('trigger: none' or 'pr: none') in diff.", "Keep PR and branch triggers active so CI verification gates cannot be bypassed.");
+  }
   if (!isWorkflowOrScript) return;
   for (const rule of WORKFLOW_CHEATS) {
     if (!rule.regex.test(stripped)) continue;
@@ -242,7 +245,7 @@ function auditDeletedDiffFiles(
         message: `Entire test file '${delFile}' was deleted in diff.`,
         fix: "Restore or replace deleted test coverage instead of deleting test files to silence failures.",
       });
-    } else if (/^\.github\/workflows\/.+\.ya?ml$/i.test(delFile)) {
+    } else if (/^(?:\.github\/workflows\/|ci\/|azure-pipelines).*\.ya?ml$/i.test(delFile)) {
       findings.push({
         id: `DIFF:workflow-deleted:${delFile}`,
         rule: "diff-ci-safety-gate-removed",
@@ -279,6 +282,40 @@ function handleRenameToLine(
       line: 1,
       message: `Test file '${renameFrom}' was renamed out of test discovery to '${renameTo}'.`,
       fix: "Keep test files matching test discovery globs so they stay executed in CI.",
+    });
+  }
+}
+
+function auditRemovedWorkflowChecks(diffEvents: readonly DiffLineEvent[], findings: Finding[]): void {
+  if (!Array.isArray(diffEvents)) throw new Error("diffEvents must be an array.");
+  const isWf = (f: string): boolean => /^(?:\.github\/workflows\/|ci\/|pipelines\/|\.azure\/|\.azure-pipelines\/|\.azuredevops\/|\.?azure-pipelines).*\.ya?ml$/i.test(f);
+  const addedByFile = new Map<string, string>();
+  for (const ev of diffEvents) {
+    if (ev.kind === "add" && isWf(ev.file)) addedByFile.set(ev.file, `${addedByFile.get(ev.file) ?? ""}\n${ev.raw}`);
+  }
+  const reported = new Set<string>();
+  for (const ev of diffEvents) {
+    if (ev.kind !== "del" || !isWf(ev.file)) continue;
+    const stripped = ev.raw.replace(/\s+#.*$/, "").trim();
+    if (!stripped || stripped.startsWith("#")) continue;
+    const toolMatch = /\b(vstack|oxlint|eslint|tsc|tsgo|ruff|mypy|clippy|stryker|playwright|pytest|vitest|jest|bun\s+test|dotnet\s+test|cargo\s+test|go\s+test)\b/i.exec(stripped);
+    if (!toolMatch?.[1]) continue;
+    const tool = toolMatch[1].toLowerCase().replace(/\s+/g, " ");
+    const addedText = (addedByFile.get(ev.file) ?? "").toLowerCase().replace(/\s+/g, " ");
+    if (addedText.includes(tool)) continue;
+    const key = `${ev.file}:${tool}`;
+    if (reported.has(key)) continue;
+    reported.add(key);
+    findings.push({
+      id: `DIFF:ci-step-removed:${ev.file}:${ev.line}`,
+      rule: "diff-ci-safety-gate-removed",
+      category: "cheat",
+      rung: "R0",
+      severity: "error",
+      file: ev.file,
+      line: ev.line,
+      message: `CI workflow '${ev.file}' removed verification check '${tool}' without a replacement.`,
+      fix: "Restore the verification step in CI or get explicit maintainer sign-off.",
     });
   }
 }
@@ -339,6 +376,7 @@ export function scanGitDiffCheats(repoPath: string, baseRef = "HEAD"): Finding[]
   const { events: normalizedEvents, migratedJsToTsFiles } = normalizeDiffMigrationPairs(diffEvents);
   for (const f of renamedJsToTsFiles) migratedJsToTsFiles.add(f);
   auditDeletedDiffFiles(deletedFiles, migratedJsToTsFiles, findings);
+  auditRemovedWorkflowChecks(normalizedEvents, findings);
   findings.push(...auditDiffAntiEvasion(normalizedEvents, { migratedJsToTsFiles }));
   findings.push(...auditDiffInvariantLoss(normalizedEvents, { allowTestedPredicateRefactor: true, migratedJsToTsFiles }));
   findings.push(...auditManifestDowngrade(repoPath, baseRef));

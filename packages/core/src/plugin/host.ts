@@ -157,7 +157,11 @@ function finalizeScanReport(input: {
   }
   const workspaces = buildWorkspaceLadders(repo, testInventory, findings);
   const scopeExclusions = filterUnallowlistedExclusions(repo.scopeExclusions, repo.manifest?.allowExcluded ?? []);
-  const hasActiveConfig = Boolean(config.configPath) || applied.disabledRules.length > 0 || config.ignore.length > 0;
+  const hasWeakeningConfig =
+    applied.disabledRules.length > 0 ||
+    config.ignore.length > 0 ||
+    Object.values(config.rules).some((level) => level !== "error");
+  const hasActiveConfig = hasWeakeningConfig || Object.keys(config.rules).length > 0;
   const sourceFiles = repo.files.filter((f) => f.language && !f.isTest);
   const testFiles = repo.files.filter((f) => f.language && f.isTest);
   const prodLines = sourceFiles.reduce((s, f) => s + f.lines, 0);
@@ -173,7 +177,7 @@ function finalizeScanReport(input: {
     schemaVersion: 1, repo: repo.root, archetype: repo.archetype,
     ...(repo.manifest ? { declaredArchetype: repo.manifest.archetype } : {}),
     languages: repo.languages,
-    ...(hasActiveConfig ? { config: { path: config.configPath, disabledRules: applied.disabledRules, suppressedCount: applied.suppressedCount } } : {}),
+    ...(hasActiveConfig ? { config: { path: config.configPath, disabledRules: applied.disabledRules, suppressedCount: applied.suppressedCount, ...(hasWeakeningConfig ? {} : { monotonicStrengthenOnly: true }) } } : {}),
     summary: {
       sourceFiles: sourceFiles.length, testFiles: testFiles.length, prodLines, testLines,
       testToProdRatio: prodLines > 0 ? Number((testLines / prodLines).toFixed(2)) : 0,

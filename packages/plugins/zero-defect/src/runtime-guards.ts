@@ -158,7 +158,9 @@ function scanHttpAndSchemaGuards(file: ScannedFile, raw: string, code: string, f
   for (const re of [FALSY_NUMERIC_IF, FALSY_NUMERIC_OR]) {
     for (const m of code.matchAll(re)) {
       const ident = m[1] ?? "";
-      if (BOOLEAN_PREFIX.test(ident) || ++falsyCount > 5) continue;
+      if (BOOLEAN_PREFIX.test(ident)) continue;
+      if (/^port$/i.test(ident) && /\b(?:url|parsed|uri|location|origin|endpoint)\s*\.\s*port\b/i.test(m[0])) continue;
+      if (++falsyCount > 5) continue;
       push(findings, { file, raw, offset: m.index ?? 0, rule: "no-falsy-check-on-number", rung: "R1", severity: "warn", message: `Falsy check/coalescing on numeric-named value '${ident}' rejects or overwrites valid 0.`, fix: "Use explicit nullish checks (val == null / val ?? fallback) instead of !val or val || fallback." });
     }
   }
@@ -240,7 +242,10 @@ function scanSecurityAndAsyncGuards(file: ScannedFile, raw: string, code: string
     }
   }
   for (const m of code.matchAll(PASSTHROUGH_SCHEMA)) {
-    push(findings, { file, raw, offset: m.index ?? 0, rule: "no-passthrough-patch-schema", rung: "R1", severity: "warn", message: "Permissive schema (.passthrough() / .catchall()) allows unvalidated or dotted keys past boundary checks.", fix: "Use strict schemas (.strict() or default strip) with an explicit allowlist of accepted fields." });
+    const idx = m.index ?? 0;
+    const before = code.slice(Math.max(0, idx - 220), idx);
+    if (/(?:Response|Reply|Output|Result|Event|Dto|Read|View|Wire|External|Upstream|Envelope|Record|Snapshot|Manifest|Telemetry|Webhook)Schema\b/i.test(before)) continue;
+    push(findings, { file, raw, offset: idx, rule: "no-passthrough-patch-schema", rung: "R1", severity: "warn", message: "Permissive schema (.passthrough() / .catchall()) allows unvalidated or dotted keys past boundary checks.", fix: "Use strict schemas (.strict() or default strip) with an explicit allowlist of accepted fields." });
   }
   if (!DB_ADAPTER_PATH.test(file.rel)) {
     for (const m of raw.matchAll(RAW_DB_REEXPORT)) {

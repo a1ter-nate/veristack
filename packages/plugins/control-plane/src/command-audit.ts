@@ -431,7 +431,10 @@ function validateExpandedCommandSteps(command: string, steps: readonly string[][
     if (error) return `Rung ${rung}: ${error}`;
     const isRepoVerify = rung !== "canary" && REPO_VERIFY_SCRIPT_RE.test(head);
     const isRepoBench = rung === "R6" && REPO_BENCH_SCRIPT_RE.test(head);
-    if (!isRepoVerify && !allowed.some((re) => re.test(head))) return `Rung ${rung}: executable '${head}' is not an allowed ${rung} verification tool.`;
+    if (!isRepoVerify && !allowed.some((re) => re.test(head))) {
+      const hint = /^(?:bun|node)\s+/.test(head) ? " (use 'scripts/verify-*.ts' or 'scripts/verify-*.mjs' for custom verification scripts)" : "";
+      return `Rung ${rung}: executable '${head}' is not an allowed ${rung} verification tool.${hint}`;
+    }
     if ((head === "node bin/vstack.mjs" || head === "bun src/cli.ts") && repoRoot && !isOwnVeristackBin(repoRoot, head === "node bin/vstack.mjs" ? "bin/vstack.mjs" : "src/cli.ts")) return `Rung ${rung}: local '${head}' is only allowed inside the veristack repository (binary realpath mismatch).`;
     const ownScriptMatch = /^(?:bun|node)\s+(scripts\/check-(?:max-lines|perf-budget)\.mjs)$/.exec(head);
     if (ownScriptMatch?.[1] && repoRoot && !isOwnVeristackBin(repoRoot, ownScriptMatch[1])) return `Rung ${rung}: '${head}' is only allowed inside the veristack repository (use 'vstack big-o', 'k6', 'hyperfine', etc.).`;

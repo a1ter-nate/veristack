@@ -24,7 +24,7 @@ const CS_STREAMWRITER_UTF8_BOM = /\bnew\s+StreamWriter\s*\([^)\n]*\bEncoding\.UT
 const CS_GETORADD_ASYNC = /\.GetOrAdd\s*\([^)\n]*=>[^;\n]*Async\s*\(/g;
 const TS_CACHE_SET_ASYNC = /\b(?:cache|inFlight|inflight|pending|promises)\s*\.\s*set\s*\([^,\n]+,\s*(?:fetch\s*\(|[A-Za-z_$][A-Za-z0-9_$.]*Async\s*\(|new\s+Promise\s*\()/g;
 
-const RUNNER_PATH = /(?:^|[/_-])(?:runner|harness|scheduler|watchdog|reporter|plugin)[^/]*\.[cm]?[jt]s$/i;
+const RUNNER_PATH = /(?:^|[/_-])(?:test[-_]?runner|test[-_]?harness|vitest|jest|mocha|playwright[-_]?reporter)[^/]*\.[cm]?[jt]s$/i;
 const BARE_TIMER_CALL = /\b(?:setTimeout|setInterval)\s*\(/g;
 
 const SH_SOURCE_TEST_LIB = /^\s*(?:\.|source)\s+["']?[^"'\n]*test-lib\.sh["']?/m;

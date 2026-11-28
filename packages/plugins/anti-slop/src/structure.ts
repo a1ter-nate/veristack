@@ -32,10 +32,16 @@ function scanCommonProdGuards(file: ScannedFile, findings: Finding[]): void {
   const masked = maskCode(raw, file.language, true);
   for (const match of masked.matchAll(UNBOUNDED_LOOP)) {
     const idx = match.index ?? 0;
-    const window = masked.slice(Math.max(0, idx - 220), idx + 450);
+    const rawAfter = masked.slice(idx, idx + 520);
+    const nextDecl = rawAfter.slice(20).search(/\n(?:export\s+|async\s+|pub\s+|def\s+|func\s+|function\s+)/);
+    const afterScoped = nextDecl >= 0 ? rawAfter.slice(0, nextDecl + 20) : rawAfter;
+    const rawBefore = masked.slice(Math.max(0, idx - 220), idx);
+    const prevDecl = rawBefore.lastIndexOf("\nexport ");
+    const beforeScoped = prevDecl >= 0 ? rawBefore.slice(prevDecl) : rawBefore;
+    const window = `${beforeScoped}${afterScoped}`;
     if (
-      /\b(?:maxIter|max_iter|maxAttempts|max_attempts|maxRetries|max_retries|maxPages|max_pages|deadline|timeout|limit|fuel|budget|countdown)\b/i.test(window) ||
-      /\b(?:if\s*\([^)]*(?:done|eof|empty|null|err)|if\s*\(\s*!\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)|if\s+not\s+\w+|if\s+\w+\s+is\s+None\b|if\s+[A-Za-z_]\w*\s*>=\s*[^\n{]+\.len\s*\(|Err\s*\([^)]*\)\s*=>|None\s*=>)[\s\S]{0,60}\b(?:break|return)\b/i.test(window)
+      /\b(?:maxIter|max_iter|maxAttempts|max_attempts|maxRetries|max_retries|maxPages|max_pages|[A-Z0-9_]+_LIMIT\b|deadline|timeout|limit|fuel|budget|countdown|visited\.len|seen\.(?:insert|contains))\b/i.test(window) ||
+      /\.\s*(?:next|recv|try_recv)\s*\(\s*\)|tokio::select!|\bselect!\s*\{|\b(?:if\s*\([^)]*(?:done|eof|empty|null|err)|if\s*\(\s*!\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)|if\s+not\s+\w+|if\s+\w+\s+is\s+None\b|if\s+[A-Za-z_]\w*\s*>=\s*[^\n{]+\.len\s*\(|Err\s*\([^)]*\)\s*=>|None\s*=>)[\s\S]{0,60}\b(?:break|return)\b/i.test(window)
     ) continue;
     const line = lineOf(raw, idx);
     findings.push({ id: `ZD:unbounded-loop:${file.rel}:${line}`, rule: "unbounded-loop-risk", category: "structure", rung: "R1", severity: "warn", file: file.rel, line, message: `Unbounded loop (${match[0].trim()}) has no visible static iteration cap or fuel bound (V31 JPL Power of 10).`, fix: "Bound the loop with an explicit maxIterations/fuel ceiling or finite iterator." });

@@ -5,7 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { createPluginHostSync } from "@veristack/core";
 import { isVeristackPlugin } from "@veristack/plugin";
-import { auditRunnerConfigs, controlPlanePlugin } from "@veristack/plugin-control-plane";
+import { auditRunnerConfigs, controlPlanePlugin, validateExecutableCommand } from "@veristack/plugin-control-plane";
+import { isSafePinnedToolUpgrade } from "../src/manifest-approval.ts";
 
 test("control-plane plugin defines valid Veristack plugin and registers into rungs", () => {
   assert.equal(isVeristackPlugin(controlPlanePlugin), true);
@@ -37,4 +38,17 @@ test("auditRunnerConfigs allows Bun monorepo workspace node_modules/.bin symlink
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("isSafePinnedToolUpgrade permits clean monotonic semver upgrades and blocks downgrades or untrusted specs", () => {
+  assert.equal(isSafePinnedToolUpgrade("0.1.22", "0.1.23"), true);
+  assert.equal(isSafePinnedToolUpgrade("^5.8.0", "^5.9.3"), true);
+  assert.equal(isSafePinnedToolUpgrade("0.1.23", "0.1.22"), false);
+  assert.equal(isSafePinnedToolUpgrade("0.1.22", "file:./fake"), false);
+  assert.equal(isSafePinnedToolUpgrade("^5.8.0", "*"), false);
+});
+
+test("validateExecutableCommand hints scripts/verify-*.ts when rejecting arbitrary R0 bun scripts", () => {
+  const err = validateExecutableCommand("R0", "bun scripts/custom-check.ts");
+  assert.ok(err && err.includes("scripts/verify-*.ts"));
 });

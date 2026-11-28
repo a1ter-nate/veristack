@@ -98,7 +98,17 @@ interface TestMatchSpec {
 
 const STATIC_TEST_RULES: readonly TestMatchSpec[] = [
   { source: "raw", regex: FETCH_STUB, rule: "no-fetch-stub", category: "test-smell", severity: "error", message: "Replacing global fetch hides unhandled network calls.", fix: "Serve HTTP through a shared strict MSW server (onUnhandledRequest: 'error') instead of stubbing fetch." },
-  { source: "code", regex: FIXED_SLEEP, rule: "no-fixed-sleep", category: "cheat", severity: "error", message: "Fixed sleep or networkidle wait introduces flakiness and slows CI.", fix: "Await an explicit completion event, emitted signal, or web-first locator assertion." },
+  {
+    source: "code", regex: FIXED_SLEEP, rule: "no-fixed-sleep", category: "cheat", severity: "error",
+    message: "Fixed sleep or networkidle wait introduces flakiness and slows CI.",
+    fix: "Await an explicit completion event, emitted signal, or web-first locator assertion.",
+    skip: (m, code, file) => {
+      if (file.language === "rust" && /start_paused\s*=\s*true/.test(file.content)) return true;
+      const idx = m.index ?? 0;
+      const surround = code.slice(Math.max(0, idx - 260), idx + 180);
+      return /\b(?:for|while)\b[^{]*\{[\s\S]{0,220}\b(?:break|return)\b/.test(surround);
+    },
+  },
   {
     source: "code", regex: SKIP_OR_ONLY, rule: "test-discipline", category: "cheat", severity: "error",
     message: "Focused (.only) or disabled (.todo/.fixme/Ignore) test committed.",
@@ -114,10 +124,39 @@ const STATIC_TEST_RULES: readonly TestMatchSpec[] = [
     skip: (m, code) => /^Assert\.Pass\b/.test(m[0]) && /\bAssert\.Fail\s*\(/.test(code.slice(Math.max(0, (m.index ?? 0) - 300), (m.index ?? 0) + 300)),
   },
   { source: "code", regex: SAME_CALL_EXPECT, rule: "self-derived-expectation", category: "test-smell", severity: "error", message: "Actual and expected values invoke the exact same function call.", fix: "Replace the expected side with a known literal or independent oracle." },
-  { source: "code", regex: CONDITIONAL_EXPECT, rule: "no-conditional-expect", category: "test-smell", severity: "error", message: "Assertion inside conditional branch silently passes if branch is skipped.", fix: "Split into explicit test cases with unconditional assertions." },
+  {
+    source: "code", regex: CONDITIONAL_EXPECT, rule: "no-conditional-expect", category: "test-smell", severity: "error",
+    message: "Assertion inside conditional branch silently passes if branch is skipped.",
+    fix: "Split into explicit test cases with unconditional assertions.",
+    skip: (m, code) => {
+      if (/\bfc\.(?:commands|asyncModelRun|modelRun)\b|implements\s+fc\.(?:Async)?Command\b/.test(code)) return true;
+      const idx = m.index ?? 0;
+      const after = code.slice(idx, idx + 260);
+      return /\breturn\b[\s\S]{0,120}\b(?:expect|assert|Assert)\s*\(/.test(after);
+    },
+  },
   { source: "code", regex: WALL_CLOCK, rule: "no-elapsed-time-bound", category: "test-smell", severity: "warn", message: "Wall-clock elapsed-time assertion flakes on shared CI runners.", fix: "Assert logical ordering or move performance bounds to a dedicated R6 benchmark." },
-  { source: "code", regex: TEST_NONDETERMINISM, rule: "no-test-nondeterminism", category: "test-smell", severity: "warn", message: "Bare Math.random(), Date.now(), or new Date() introduces nondeterminism and defeats content-addressed test caching.", fix: "Use a seeded RNG, fixed ISO date literal, or vi.setSystemTime / injectable clock to keep tests hermetic and cacheable.", limit: 3 },
-  { source: "code", regex: IMPORTED_MUTATION, rule: "no-imported-mutation", category: "test-smell", severity: "warn", message: "Direct process.env/imported-object mutation leaks state across tests and breaks test-cache hermeticity.", fix: "Pass configuration through options/bindings or a scoped override helper so tests remain hermetic and cacheable." },
+  {
+    source: "code", regex: TEST_NONDETERMINISM, rule: "no-test-nondeterminism", category: "test-smell", severity: "warn",
+    message: "Bare Math.random(), Date.now(), or new Date() introduces nondeterminism and defeats content-addressed test caching.",
+    fix: "Use a seeded RNG, fixed ISO date literal, or vi.setSystemTime / injectable clock to keep tests hermetic and cacheable.",
+    limit: 3,
+    skip: (m, code) => {
+      const idx = m.index ?? 0;
+      const after = code.slice(idx + m[0].length, idx + m[0].length + 40);
+      return /^Date\.now\b/.test(m[0]) && /^\s*[+-]\s*(?:\d|[A-Z_]{3,}|[a-z]+Ms\b)/.test(after);
+    },
+  },
+  {
+    source: "code", regex: IMPORTED_MUTATION, rule: "no-imported-mutation", category: "test-smell", severity: "warn",
+    message: "Direct process.env/imported-object mutation leaks state across tests and breaks test-cache hermeticity.",
+    fix: "Pass configuration through options/bindings or a scoped override helper so tests remain hermetic and cacheable.",
+    skip: (m, code) => {
+      const idx = m.index ?? 0;
+      const around = code.slice(Math.max(0, idx - 180), idx + 120);
+      return /\b(?:finally|afterEach|afterAll)\b/.test(around) && /=\s*(?:prev|saved|orig|original|before|old)[A-Za-z0-9_]*/i.test(code.slice(idx, idx + 80));
+    },
+  },
   { source: "raw", regex: TAILWIND_ASSERT, rule: "no-styling-class-assertion", category: "test-smell", severity: "warn", message: "Asserting Tailwind/CSS utility classes couples tests to styling refactors.", fix: "Assert accessible role, ARIA state, or visible text; use R5 visual diff for layout." },
   { source: "raw", regex: XPATH_OR_CSS, rule: "ui-brittle-selector", category: "test-smell", severity: "warn", message: "XPath or deep CSS chain breaks on harmless layout refactors.", fix: "Prefer getByRole / getByLabel / getByText semantic locators." },
   { source: "code", regex: PARAM_BRANCH, rule: "no-parameter-branch", category: "test-smell", severity: "warn", message: "Conditional branching inside test.each body obscures expected outcomes.", fix: "Put expected outputs directly in the Tests-as-Data table rows." },
@@ -217,7 +256,7 @@ function scanSingleTestFile(file: ScannedFile, repoHasEmulator: boolean): {
     findings.push({ id: `TS:overheavy-mocks:${file.rel}:1`, rule: "overheavy-mocks", category: "test-smell", rung: "R0", severity: "error", file: file.rel, line: 1, message: `${doubleCount} test doubles in one file — tests the mock graph instead of real behavior.`, fix: "Deepen the module and test at the outer public seam with real collaborators or boundary adapters." });
   }
   const existenceCount = code.match(EXISTENCE_ONLY)?.length ?? 0;
-  if (existenceCount >= 2 && !/\.(?:toBe|toEqual|toStrictEqual|toHaveText|toHaveURL)\s*\(/.test(code)) {
+  if (existenceCount >= 2 && !/\.(?:toBe|toEqual|toStrictEqual|toHaveText|toHaveURL)\s*\(|\bAssert\.(?:Equal|StrictEqual|AreEqual|Contains|Same|Throws|ThrowsAsync|IsType|Single|Collection|Empty|False|True)\s*[<(]/.test(code)) {
     findings.push({ id: `TS:existence-only:${file.rel}:1`, rule: "weak-asserts-existence", category: "test-smell", rung: "R0", severity: "warn", file: file.rel, line: 1, message: "Test file relies only on truthy/defined/not-null assertions.", fix: "Assert exact expected output values or externally observable state." });
   }
 

@@ -373,8 +373,13 @@ export function auditCodeownersPerimeter(
   const coFile =
     files.find((f) => f.rel === ".github/CODEOWNERS") ??
     files.find((f) => f.rel === "CODEOWNERS") ??
-    files.find((f) => f.rel === "docs/CODEOWNERS");
+    files.find((f) => f.rel === "docs/CODEOWNERS") ??
+    files.find((f) => f.rel === ".azuredevops/CODEOWNERS");
+  const isAzureWf = (p: string): boolean => /^\.?azure-pipelines(?:[-.][^/]+)?\.ya?ml$/i.test(p) || /^(?:ci|pipelines|\.azure|\.azure-pipelines|\.azuredevops)\/.*\.ya?ml$/i.test(p);
+  const hasGhaWf = allRelPaths.some((p) => p.startsWith(".github/workflows/") && /\.ya?ml$/i.test(p));
+  const hasAdoWf = allRelPaths.some((p) => isAzureWf(p));
   if (!coFile) {
+    if (hasAdoWf && !hasGhaWf) return { hasFile: false, uncoveredSurfaces: [], passed: true };
     return { hasFile: false, uncoveredSurfaces: [".github/CODEOWNERS"], passed: false };
   }
 
@@ -385,60 +390,32 @@ export function auditCodeownersPerimeter(
     const parts = line.split(/\s+/);
     const pattern = parts[0] ?? "";
     if (!pattern) continue;
-    const owners = parts.slice(1).filter((p) => VALID_OWNER_TOKEN.test(p));
-    rules.push({ pattern, owners });
+    rules.push({ pattern, owners: parts.slice(1).filter((p) => VALID_OWNER_TOKEN.test(p)) });
   }
-
   if (!rules.some((r) => r.owners.length > 0)) {
     return { hasFile: true, file: coFile.rel, uncoveredSurfaces: ["CODEOWNERS has zero valid owners"], passed: false };
   }
 
   const allSet = new Set(allRelPaths);
-  const surfaces: string[] = [
-    ".github/workflows/ci.yml",
-    ".verification/rungs.json",
-    ".verification/behavior-changes.json",
-    coFile.rel,
-  ];
+  const surfaces: string[] = [".verification/rungs.json", coFile.rel];
+  if (!hasGhaWf && !hasAdoWf && allSet.has(".github/workflows/ci.yml")) surfaces.push(".github/workflows/ci.yml");
   for (const wf of allRelPaths) {
-    if (wf.startsWith(".github/workflows/") && (wf.endsWith(".yml") || wf.endsWith(".yaml"))) {
-      surfaces.push(wf);
-    }
+    if ((wf.startsWith(".github/workflows/") && /\.ya?ml$/i.test(wf)) || isAzureWf(wf)) surfaces.push(wf);
   }
   const optionalSurfaces = [
-    ".vstackignore",
-    ".vstack.json",
-    "lefthook.yml",
-    "package.json",
-    ".verification/control-plan.json",
-    ".verification/escapes.json",
-    ".verification/invariants.json",
-    ".verification/chokepoints.json",
+    ".verification/behavior-changes.json", ".verification/manifest-approvals.json", ".vstackignore", ".vstack.json",
+    "lefthook.yml", "package.json", ".verification/control-plan.json", ".verification/escapes.json",
+    ".verification/invariants.json", ".verification/chokepoints.json",
   ];
-  for (const opt of optionalSurfaces) {
-    if (allSet.has(opt)) surfaces.push(opt);
-  }
-  for (const p of allRelPaths) {
-    if (p.startsWith(".verification/laws/") && p.endsWith(".laws.json")) surfaces.push(p);
-  }
+  for (const opt of optionalSurfaces) if (allSet.has(opt)) surfaces.push(opt);
+  for (const p of allRelPaths) if (p.startsWith(".verification/laws/") && p.endsWith(".laws.json")) surfaces.push(p);
 
-  const uniqueSurfaces = [...new Set(surfaces)];
-  const uncovered = uniqueSurfaces.filter((surf) => {
+  const uncovered = [...new Set(surfaces)].filter((surf) => {
     let lastOwners: string[] = [];
-    for (const rule of rules) {
-      if (globMatchesPath(rule.pattern, surf)) {
-        lastOwners = rule.owners;
-      }
-    }
+    for (const rule of rules) if (globMatchesPath(rule.pattern, surf)) lastOwners = rule.owners;
     return lastOwners.length === 0;
   });
-
-  return {
-    hasFile: true,
-    file: coFile.rel,
-    uncoveredSurfaces: uncovered,
-    passed: uncovered.length === 0,
-  };
+  return { hasFile: true, file: coFile.rel, uncoveredSurfaces: uncovered, passed: uncovered.length === 0 };
 }
 
 export function checkGitHubBranchProtection(repoRoot: string): {

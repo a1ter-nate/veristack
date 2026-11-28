@@ -24,7 +24,11 @@ export function scanTsJsStructure(file: ScannedFile): Finding[] {
       findings.push({ id: `ST:test-seam:${file.rel}:${line}`, rule: "no-test-only-production-seam", category: "structure", rung: "R1", severity: "warn", file: file.rel, line, message: `Test-only export detected in production file: ${match[0].trim()}.`, fix: "Remove test-only production exports and verify behavior through the real public interface." });
     }
     for (const match of codeOnly.matchAll(SWALLOWING_CATCH)) {
-      const line = lineOf(file.content, match.index ?? 0);
+      const idx = match.index ?? 0;
+      const rawCatch = file.content.slice(idx, idx + match[0].length + 40);
+      const afterCatch = codeOnly.slice(idx + match[0].length, idx + match[0].length + 140);
+      if (/\/\*[\s\S]*?\*\/|\/\//.test(rawCatch) && /\b(?:if\s*\(|return\b|throw\b)/.test(afterCatch)) continue;
+      const line = lineOf(file.content, idx);
       findings.push({ id: `ST:swallow-catch:${file.rel}:${line}`, rule: "no-swallowing-catch", category: "structure", rung: "R0", severity: "warn", file: file.rel, line, message: "Empty catch block silently swallows errors.", fix: "Rethrow, return a typed failure result, or handle the specific expected error explicitly." });
     }
     if (file.language === "typescript") {
@@ -34,7 +38,7 @@ export function scanTsJsStructure(file: ScannedFile): Finding[] {
       }
     }
     for (const match of codeOnly.matchAll(CDC_WALL_CLOCK_TS)) {
-      if (/(?:retention|ttl|window|max_?age|lookback|stale|grace|cooldown|expir|cutoff|days?_?ms|hours?_?ms|minutes?_?ms|seconds?_?ms|interval_?ms)/i.test(match[0])) continue;
+      if (/(?:retention|ttl|window|max_?age|lookback|stale|grace|cooldown|expir|cutoff|days?_?ms|hours?_?ms|minutes?_?ms|seconds?_?ms|interval_?ms|mtimeMs|ctimeMs|birthtimeMs|atimeMs|createdAt|updatedAt|expiresAt|timestamp|epoch|lastSeen|syncedAt|recordedAt)/i.test(match[0])) continue;
       const line = lineOf(file.content, match.index ?? 0);
       findings.push({ id: `ZD:cdc-clock:${file.rel}:${line}`, rule: "cdc-wall-clock-duration", category: "structure", rung: "R1", severity: "warn", file: file.rel, line, message: `Wall-clock timestamp used for duration/elapsed math (${match[0].trim()}) breaks on NTP jumps or DST (V30 Clock CDC).`, fix: "Use a monotonic clock (performance.now)." });
     }

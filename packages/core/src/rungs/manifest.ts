@@ -98,10 +98,11 @@ export function loadRungManifest(
   }
   const rawRungs = isRecord(parsed.rungs) ? parsed.rungs : {};
   const rungs: Partial<Record<RungId, RungManifestEntry>> = {};
+  const errors: string[] = [];
   for (const [key, val] of Object.entries(rawRungs)) {
     if (!VALID_RUNGS.has(key as RungId) || !isRecord(val)) continue;
     const parsedEntry = parseManifestRungEntry(key as RungId, val, repoRoot, validator);
-    if (parsedEntry.error) return { path: rel, error: parsedEntry.error };
+    if (parsedEntry.error) { errors.push(parsedEntry.error); continue; }
     if (parsedEntry.entry) rungs[key as RungId] = parsedEntry.entry;
   }
   const allowExcluded = Array.isArray(parsed.allowExcluded)
@@ -109,8 +110,9 @@ export function loadRungManifest(
     : [];
   for (const pat of allowExcluded) {
     const reason = isDangerousAllowPattern(pat);
-    if (reason) return { path: rel, error: `allowExcluded pattern '${pat}' is too broad (${reason}); cannot hide source/test paths under --strict.` };
+    if (reason) errors.push(`allowExcluded pattern '${pat}' is too broad (${reason}); cannot hide source/test paths under --strict.`);
   }
+  if (errors.length > 0) return { path: rel, error: errors.join("\n") };
   const workspaces = Array.isArray(parsed.workspaces)
     ? parsed.workspaces
         .filter(

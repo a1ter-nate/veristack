@@ -36,7 +36,7 @@ export interface ScanCliOutputOptions {
 function evaluateStrictScanExit(report: ScanReport): number {
   if (!report.summary) throw new Error("ScanReport.summary is required.");
   const s = report.summary;
-  if (report.config) {
+  if (report.config && !(report.config as { monotonicStrengthenOnly?: boolean }).monotonicStrengthenOnly) {
     console.error("vstack scan --strict failed: .vstack.json overrides/ignores are forbidden under --strict.");
     return 1;
   }
@@ -195,8 +195,8 @@ function auditVerifyControlPlane(host: VeristackHostInstance, repoRoot: string, 
     }
   }
   if (!baseToCheck) return true;
-  const downgrades = auditManifest(repoRoot, baseToCheck, { failClosedOnMissingBase: failClosed });
-  if (!explicitBase && !hasTrustedOriginBase) downgrades.push(...checkAncestorManifestDowngrades(repoRoot, auditManifest));
+  const downgrades = auditManifest(repoRoot, baseToCheck, { failClosedOnMissingBase: failClosed }).filter((d) => d.severity !== "info");
+  if (!explicitBase && !hasTrustedOriginBase) downgrades.push(...checkAncestorManifestDowngrades(repoRoot, auditManifest).filter((d) => d.severity !== "info"));
   for (const d of downgrades) console.error(`verify control-plane lock [${d.rule}]: ${d.message}`);
   return downgrades.length === 0;
 }
@@ -236,7 +236,13 @@ export async function handleVerifyAndRunRungCli(
   }
   if (cmd === "verify") {
     const repo = host.discover(target);
-    if (!auditVerifyControlPlane(host, repo.root, parseFlagValue(rest, "--base"))) return 1;
+    const controlPlaneOk = auditVerifyControlPlane(host, repo.root, parseFlagValue(rest, "--base"));
+    if (repo.manifestError) {
+      for (const errLine of repo.manifestError.split(/\r?\n/)) {
+        console.error(`verify manifest error [rung-manifest-invalid]: ${errLine}`);
+      }
+    }
+    if (!controlPlaneOk || repo.manifestError) return 1;
     const ephemeralKey = crypto.randomBytes(32).toString("hex");
     const runResult = await runnerSpec.runAllDeclaredRungsAsync(repo, "all", ephemeralKey);
     if (!asJson && !asMd) logRungExecutionReceipts("verify", runResult);

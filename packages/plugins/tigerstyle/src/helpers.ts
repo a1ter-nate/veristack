@@ -22,6 +22,7 @@ export interface FunctionUnit {
   codeLines: number;
   paramCount: number;
   boolParamCount: number;
+  isOverrideOrInterfaceImpl?: boolean;
   bodyText: string;
   node?: Record<string, unknown>;
 }
@@ -183,10 +184,35 @@ function findBraceSpanEnd(masked: string, openIdx: number): number {
   return -1;
 }
 
+function splitTopLevelParams(paramSlice: string): string[] {
+  const parts: string[] = [];
+  let cur = "";
+  let angle = 0;
+  let paren = 0;
+  let bracket = 0;
+  for (let i = 0; i < paramSlice.length; i++) {
+    const ch = paramSlice[i] ?? "";
+    if (ch === "<") angle += 1;
+    else if (ch === ">" && angle > 0) angle -= 1;
+    else if (ch === "(") paren += 1;
+    else if (ch === ")" && paren > 0) paren -= 1;
+    else if (ch === "[") bracket += 1;
+    else if (ch === "]" && bracket > 0) bracket -= 1;
+    else if (ch === "," && angle === 0 && paren === 0 && bracket === 0) {
+      if (cur.trim()) parts.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+
 function countParamsFromHeader(paramSlice: string, lang: TigerLang): { params: number; bools: number } {
   const clean = paramSlice.trim();
   if (!clean) return { params: 0, bools: 0 };
-  const parts = clean.split(",").map((s) => s.trim()).filter((s) => s.length > 0 && s !== "self" && s !== "&self" && s !== "&mut self" && s !== "cls");
+  const parts = splitTopLevelParams(clean).filter((s) => s.length > 0 && s !== "self" && s !== "&self" && s !== "&mut self" && s !== "cls");
   const boolRe = lang === "python" ? /:\s*bool\b|=\s*(?:True|False)\b/ : /\bbool(?:ean)?\b/;
   let bools = 0;
   for (const p of parts) if (boolRe.test(p)) bools += 1;
@@ -202,14 +228,17 @@ function extractBraceLangUnits(file: ScannedFile, lang: TigerLang): FunctionUnit
       : lang === "go"
         ? /\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(([^)]*)\)/g
         : lang === "csharp"
-          ? /\b(?:public|private|internal|protected)\s+(?:static\s+|async\s+|virtual\s+|override\s+)*[A-Za-z0-9_<>,.\s?]+\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/g
+          ? /\b(?:public|private|internal|protected)\s+(?:static\s+|async\s+|virtual\s+|override\s+|sealed\s+|readonly\s+)*[A-Za-z0-9_<>,.\s?]+\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/g
           : /(?:^|\n)\s*(?:function\s+)?([A-Za-z_]\w*)\s*\(\s*\)\s*\{/g;
   const out: FunctionUnit[] = [];
   for (const m of masked.matchAll(headerRe)) {
     const idx = m.index ?? -1;
     const name = m[1] ?? "";
     if (idx < 0 || !name) continue;
-    if (lang === "csharp" && /^(?:if|for|foreach|while|switch|catch|using|lock)$/.test(name)) continue;
+    if (lang === "csharp") {
+      if (/^(?:if|for|foreach|while|switch|catch|using|lock)$/.test(name)) continue;
+      if (/\b(?:record|class|struct|interface|enum)\b/.test(m[0])) continue;
+    }
     const braceIdx = masked.indexOf("{", idx + m[0].length - 1);
     const semiIdx = masked.indexOf(";", idx + m[0].length);
     if (braceIdx < 0 || (semiIdx >= 0 && semiIdx < braceIdx)) continue;
@@ -218,6 +247,7 @@ function extractBraceLangUnits(file: ScannedFile, lang: TigerLang): FunctionUnit
     const bodyText = file.content.slice(idx, endIdx + 1);
     const maskedBody = masked.slice(idx, endIdx + 1);
     const counts = countParamsFromHeader(m[2] ?? "", lang);
+    const isOverrideOrInterfaceImpl = lang === "csharp" && (/\boverride\b/.test(m[0]) || /\bI[A-Z]\w*\.[A-Z]\w*\s*\(/.test(m[0]));
     out.push({
       name,
       startLine: lineAtOffset(file.content, idx),
@@ -225,6 +255,7 @@ function extractBraceLangUnits(file: ScannedFile, lang: TigerLang): FunctionUnit
       codeLines: countNonBlankLines(maskedBody),
       paramCount: counts.params,
       boolParamCount: counts.bools,
+      ...(isOverrideOrInterfaceImpl ? { isOverrideOrInterfaceImpl: true } : {}),
       bodyText,
     });
   }

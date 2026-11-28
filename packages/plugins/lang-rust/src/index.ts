@@ -7,7 +7,7 @@ const RUST_NON_PROD_HARNESS = /(?:^|\/)(?:tests\/(?:support|helpers|fixtures|moc
 const RUST_TEST_ONLY_EXPORT = /\bpub(?:\([^)]*\))?\s+fn\s+[a-zA-Z0-9_]*(?:_for_testing|_test_only)\b/g;
 const RUST_UNSAFE_OR_TRANSMUTE = /\bstd::mem::transmute\b|\bmem::transmute\b|\bunsafe\s*\{/g;
 const RUST_SWALLOWING_ERR = /\bif\s+let\s+Err\s*\(\s*_\s*\)\s*=\s*[^\n{]+\{\s*\}|\bErr\s*\(\s*_\s*\)\s*=>\s*\{\s*\}/g;
-const RUST_PROD_UNWRAP = /\.\s*(?:unwrap|expect)\s*\(/g;
+const RUST_PROD_UNWRAP = /\.\s*(?:unwrap\s*\(\s*\)|expect\s*\([^,)\n]+\))/g;
 const RUST_ALLOW_ATTR = /#!?\s*\[\s*allow\s*\(([^)]+)\)\s*\]/g;
 const RUST_DEBUG_ASSERT = /\bdebug_assert(?:_eq|_ne)?!\s*\(/g;
 const CDC_WALL_CLOCK_RS = /\bSystemTime::now\s*\(\s*\)\s*\.duration_since\b|\b(?:Utc|Local)::now\s*\(\s*\)\s*-\s*[A-Za-z_]/g;
@@ -30,15 +30,21 @@ export function scanRustStructure(file: ScannedFile): Finding[] {
     findings.push({ id: `AS:rs-unsafe:${file.rel}:${line}`, rule: "rust-unjustified-unsafe", category: "structure", rung: "R0", severity: "error", file: file.rel, line, message: `Unjustified Rust safety escape hatch (${match[0].trim()}) without // SAFETY: invariant.`, fix: "Prefer safe typed conversions (TryFrom/From) or document the soundness invariant with // SAFETY:." });
   }
   for (const match of maskedProd.matchAll(RUST_SWALLOWING_ERR)) {
-    const line = lineOf(prodContent, match.index ?? 0);
+    const idx = match.index ?? 0;
+    if (/\btry_into_mut\s*\(/.test(maskedProd.slice(Math.max(0, idx - 160), idx))) continue;
+    const line = lineOf(prodContent, idx);
     findings.push({ id: `ST:rs-swallow-err:${file.rel}:${line}`, rule: "no-swallowing-catch", category: "structure", rung: "R0", severity: "error", file: file.rel, line, message: "Empty Err(_) branch silently swallows Rust errors.", fix: "Propagate with ?, return a typed error variant, or handle the specific error explicitly." });
   }
-  if (!RUST_NON_PROD_HARNESS.test(file.rel)) {
+  const isCfgTestOnlyModule = /^\s*#!\[cfg\(test\)\]/m.test(prodContent) || (/\bproptest!\s*\{/.test(maskedProd) && !/\bpub\s+(?:async\s+)?fn\b/.test(maskedProd));
+  if (!RUST_NON_PROD_HARNESS.test(file.rel) && !isCfgTestOnlyModule) {
     let unwrapCount = 0;
     for (const match of maskedProd.matchAll(RUST_PROD_UNWRAP)) {
+      const idx = match.index ?? 0;
+      const line = lineOf(prodContent, idx);
+      const prevBlock = prodLines.slice(Math.max(0, line - 5), line).join("\n");
+      if (/#\[\s*(?:expect|allow)\s*\([^)]*(?:unwrap_used|expect_used)[^)]*reason\s*=/.test(prevBlock) || /SAFETY:/i.test(prevBlock)) continue;
       if (++unwrapCount > 5) break;
-      const line = lineOf(prodContent, match.index ?? 0);
-      findings.push({ id: `AS:rs-unwrap:${file.rel}:${line}`, rule: "rust-prod-unwrap-or-expect", category: "structure", rung: "R0", severity: "error", file: file.rel, line, message: `Production Rust ${match[0].trim()}) can panic at runtime instead of returning Result/Option.`, fix: 'Return a typed Result/Option with ? or enforce clippy::unwrap_used = "deny" and clippy::expect_used = "deny".' });
+      findings.push({ id: `AS:rs-unwrap:${file.rel}:${line}`, rule: "rust-prod-unwrap-or-expect", category: "structure", rung: "R0", severity: "error", file: file.rel, line, message: `Production Rust ${match[0].trim()} can panic at runtime instead of returning Result/Option.`, fix: 'Return a typed Result/Option with ? or enforce clippy::unwrap_used = "deny" and clippy::expect_used = "deny".' });
     }
   }
   for (const match of prodContent.matchAll(RUST_ALLOW_ATTR)) {
@@ -54,8 +60,11 @@ export function scanRustStructure(file: ScannedFile): Finding[] {
     findings.push({ id: `ZD:rs-debug-assert:${file.rel}:${line}`, rule: "no-release-stripped-assert", category: "structure", rung: "R1", severity: "warn", file: file.rel, line, message: "debug_assert! is stripped in --release builds (violates Runtime Jidoka V36 for corruption-critical invariants).", fix: "Use release-active assert! or return a typed invariant error variant." });
   }
   for (const match of maskedProd.matchAll(CDC_WALL_CLOCK_RS)) {
+    const idx = match.index ?? 0;
+    const afterSpan = maskedProd.slice(idx, idx + 90);
+    if (/duration_since\s*\(\s*(?:std::time::|SystemTime::)?UNIX_EPOCH\s*\)/.test(afterSpan)) continue;
     if (/(?:retention|ttl|window|max_?age|lookback|stale|grace|cooldown|expir|cutoff|days?_?ms|hours?_?ms|minutes?_?ms|seconds?_?ms|interval_?ms)/i.test(match[0])) continue;
-    const line = lineOf(prodContent, match.index ?? 0);
+    const line = lineOf(prodContent, idx);
     findings.push({ id: `ZD:cdc-clock:${file.rel}:${line}`, rule: "cdc-wall-clock-duration", category: "structure", rung: "R1", severity: "warn", file: file.rel, line, message: `Wall-clock timestamp used for duration/elapsed math (${match[0].trim()}) breaks on NTP jumps or DST (V30 Clock CDC).`, fix: "Use a monotonic clock (std::time::Instant)." });
   }
   return findings;

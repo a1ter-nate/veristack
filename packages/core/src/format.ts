@@ -83,11 +83,15 @@ function appendTerminalDetails(report: ScanReport, out: string[]): void {
     }
   }
   if (report.findings.length > 0) {
-    out.push("", `ANTI-SLOP, NO-COMMENTS & ANTI-CHEAT FINDINGS (${report.findings.length}, showing up to 40)`);
-    for (const f of report.findings.slice(0, 40)) {
+    const rank = (sev: Finding["severity"]): number => (sev === "error" ? 0 : sev === "warn" ? 1 : 2);
+    const ordered = [...report.findings].sort((a, b) => rank(a.severity) - rank(b.severity));
+    const errorCount = ordered.filter((f) => f.severity === "error").length;
+    const displayCap = Math.max(40, errorCount);
+    out.push("", `ANTI-SLOP, NO-COMMENTS & ANTI-CHEAT FINDINGS (${ordered.length}, showing all ${errorCount} error(s) + up to ${displayCap} total)`);
+    for (const f of ordered.slice(0, displayCap)) {
       out.push(`  - [${f.severity.toUpperCase()}] ${f.rung} ${f.rule} ${f.file}:${f.line} — ${f.message}`, `      Fix: ${f.fix}`);
     }
-    if (report.findings.length > 40) out.push(`  ... and ${report.findings.length - 40} more findings (use --json for complete output).`);
+    if (ordered.length > displayCap) out.push(`  ... and ${ordered.length - displayCap} more non-error findings (use --json for complete output).`);
   }
   if (report.missingLinters.length > 0) {
     out.push("", "RECOMMENDED MISSING LINTERS");
@@ -146,8 +150,11 @@ export function formatMarkdownReport(report: ScanReport): string {
     }
   }
   if (report.findings.length > 0) {
-    out.push("", "## Findings (First 50)", "", "| Severity | Rung | Rule | Location | Message | Fix |", "| :---: | :---: | :--- | :--- | :--- | :--- |");
-    for (const f of report.findings.slice(0, 50)) {
+    const rank = (sev: Finding["severity"]): number => (sev === "error" ? 0 : sev === "warn" ? 1 : 2);
+    const ordered = [...report.findings].sort((a, b) => rank(a.severity) - rank(b.severity));
+    const cap = Math.max(50, ordered.filter((f) => f.severity === "error").length);
+    out.push("", `## Findings (First ${cap}, Errors First)`, "", "| Severity | Rung | Rule | Location | Message | Fix |", "| :---: | :---: | :--- | :--- | :--- | :--- |");
+    for (const f of ordered.slice(0, cap)) {
       out.push(`| \`${f.severity}\` | ${f.rung} | \`${f.rule}\` | \`${f.file}:${f.line}\` | ${f.message} | ${f.fix} |`);
     }
   }

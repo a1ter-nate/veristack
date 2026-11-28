@@ -39,7 +39,7 @@ function runDiffCheatsCommand(ctx: CommandRunContext): number {
   const baseRef = parseFlagValue(ctx.rest, "--base") ?? "HEAD";
   const findings = scanGitDiffCheats(ctx.target, baseRef);
   console.log(formatFindings(`diff-cheats (${baseRef})`, findings, ctx.asJson));
-  return ctx.rest.includes("--fail") && findings.length > 0 ? 1 : 0;
+  return ctx.rest.includes("--fail") && findings.some((f) => f.severity !== "info") ? 1 : 0;
 }
 
 function runPerimeterCommand(ctx: CommandRunContext): number {

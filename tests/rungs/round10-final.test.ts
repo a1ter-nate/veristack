@@ -5,16 +5,11 @@ import path from "node:path";
 import { test } from "node:test";
 import { maskCode } from "@veristack/plugin";
 import { analyzeT3TestGuards } from "@veristack/plugin-lang-typescript";
-import { scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
+import { auditCodeownersPerimeter, scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
 import { extractSfcScript } from "@veristack/plugin-lang-typescript";
-import { executeHookEvent } from "@veristack/plugin-control-plane";
-import { scanRepo } from "@veristack/core";
-import { parseAndValidateCommandArgv, sanitizeShellBlock } from "@veristack/plugin-control-plane";
-import { auditRunnerConfigs, runGitClean } from "@veristack/plugin-control-plane";
-import { loadRungManifest } from "@veristack/core";
-import { evaluateCrapForCoverageFile } from "@veristack/plugin-canary";
-import { auditCodeownersPerimeter } from "@veristack/plugin-ci-auditor";
-import { auditManifestDowngrade } from "@veristack/plugin-control-plane";
+import { discoverRepo, inferArchetypeFromFiles, loadRungManifest, scanRepo } from "@veristack/core";
+import { computeRepoTreeHash, evaluateCrapForCoverageFile } from "@veristack/plugin-canary";
+import { auditManifestDowngrade, auditRunnerConfigs, executeHookEvent, loadHookConfig, parseAndValidateCommandArgv, runGitClean, sanitizeShellBlock } from "@veristack/plugin-control-plane";
 import { runRedBeforeFix } from "@veristack/plugin-zero-defect";
 
 function withTempDir(fn: (dir: string) => void): void {
@@ -269,5 +264,46 @@ test("round10 calibration: monorepo workspace build-dir skip, helper script lang
     assert.equal(r2?.executedInCi, true);
     assert.equal(r8?.executedInCi, true);
     assert.equal(r8?.coverageGrade, "well-covered");
+  });
+});
+
+test("control-plane behavioral invariants: fresh disabled hooks, git ls-files tree hashing, Cargo/Go service archetype, shell trailing backslash, and cwd script expansion", () => {
+  withTempDir((dir) => {
+    initGit(dir);
+    fs.mkdirSync(path.join(dir, ".verification"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".verification", "hooks.json"), JSON.stringify({ enabled: false, tier: "immediate", harnesses: [] }));
+    assert.equal(loadHookConfig(dir).enabled, false);
+
+    fs.writeFileSync(path.join(dir, "tracked-only.txt"), "alpha\n");
+    runGitClean(dir, ["add", "tracked-only.txt"]);
+    runGitClean(dir, ["commit", "-q", "-m", "init"]);
+    const baseRepo = { ...discoverRepo(dir), allRelPaths: [] };
+    const h1 = computeRepoTreeHash(baseRepo);
+    fs.writeFileSync(path.join(dir, "tracked-only.txt"), "beta\n");
+    const h2 = computeRepoTreeHash(baseRepo);
+    assert.notEqual(h1, h2);
+
+    const cargoArch = inferArchetypeFromFiles(
+      [{ rel: "Cargo.toml", abs: "/tmp/Cargo.toml", isTest: false, isWorkflow: false, lines: 3, content: '[package]\nname = "svc"\n[dependencies]\naxum = "0.8"\n' }],
+      ["Cargo.toml"],
+    );
+    assert.equal(cargoArch, "service");
+
+    const contLines = sanitizeShellBlock("bun test \\");
+    assert.deepEqual(contLines, ["bun test"]);
+
+    fs.mkdirSync(path.join(dir, "apps", "web"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+      name: "mono",
+      scripts: { lint: "bunx oxlint .", all: "bun --cwd apps/web run sub && bun run lint" },
+    }));
+    fs.writeFileSync(path.join(dir, "apps", "web", "package.json"), JSON.stringify({
+      name: "web",
+      scripts: { sub: "bunx oxlint ." },
+    }));
+    const expanded = parseAndValidateCommandArgv("R0", "bun run all", dir);
+    assert.equal(expanded.error, undefined);
+    assert.equal(expanded.steps.length, 2);
+    assert.equal(expanded.stepCwds?.[0], "apps/web");
   });
 });

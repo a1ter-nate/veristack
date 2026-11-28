@@ -253,6 +253,8 @@ export interface ToolSignals {
   hasArchFitness: boolean;
   hasPreCommitHook: boolean;
   hasCodeowners: boolean;
+  codeownersUncovered?: string[];
+  hasDatastore?: boolean;
   hasReviewMd: boolean;
   hasAgentsMd: boolean;
   hasPbt: boolean;
@@ -320,6 +322,7 @@ export interface ScanConfigMeta {
   path?: string;
   disabledRules: string[];
   suppressedCount: number;
+  monotonicStrengthenOnly?: boolean;
 }
 
 export type TigerStylePillar = "safety" | "performance" | "developer-experience";

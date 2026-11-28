@@ -9,7 +9,7 @@ const TEST_FRAME_WAIT = /\brequestAnimationFrame\s*\(|\baddEventListener\s*\(\s*
 const TEST_POLLING_LOOP = /\bwhile\s*\([^)\n]+\)\s*\{[^}]{0,260}\b(?:sleep|yieldNow|setTimeout)\s*\(/g;
 const PY_SOURCE_INTROSPECTION = /\binspect\.getsource(?:lines)?\s*\(/g;
 const JS_FN_TOSTRING_THEATER = /(?:Function\.prototype\.toString\.call\s*\(|\bString\s*\(\s*([a-z_$][A-Za-z0-9_$]*)\s*\)|\b([a-z_$][A-Za-z0-9_$]*)\.toString\s*\(\s*\))/g;
-const NON_FN_TOSTRING_RECEIVER = /^(?:err|error|e|ex|url|uri|buf|buffer|val|value|num|n|id|count|total|sum|len|length|size|idx|index|i|j|k|x|y|z|str|text|body|out|stdout|stderr|res|result|raw|data|date|now|ts|time|path|file|dir|rel|abs|href|host|port|code|status|msg|message|name|key|token|hash|digest|hex|uuid|ver|version|re|regex|pattern|match|args|argv|cmd|line|src|source|content|json|xml|html|sql|query|params|searchParams|headers|response|request|req|big|bigint|bn|dec|decimal|amount|price|score|rate|pct|ms|sec|min|max|avg|stdoutText|stderrText)$/i;
+const NON_FN_TOSTRING_RECEIVER = /^(?:err|error|e|ex|url|uri|buf|buffer|val|value|num|n|id|count|total|sum|len|length|size|idx|index|i|j|k|x|y|z|str|text|body|out|stdout|stderr|res|result|raw|data|date|now|ts|timestamp|epoch|time|path|file|dir|rel|abs|href|host|port|code|status|msg|message|name|key|token|hash|digest|hex|uuid|ver|version|re|regex|pattern|match|args|argv|cmd|line|src|source|content|json|xml|html|sql|query|params|searchParams|headers|response|request|req|big|bigint|bn|dec|decimal|amount|price|score|rate|pct|ms|sec|min|max|avg|stdoutText|stderrText|pid|uid|gid|seq|offset|limit|page|row|col|label|title|tag|mode|kind|type|delay|timeout|duration|elapsed)$/i;
 
 interface T3FindingSpec {
   file: string;
@@ -37,14 +37,17 @@ function checkTsTestAstGuards(file: ScannedFile, raw: string, findings: Finding[
         (node.callee.type === "MemberExpression" && isAstNode(node.callee.object) && node.callee.object.type === "Identifier");
       const name = isDirectTestCallee ? getMemberChain(node.callee) : "";
       if (/^(?:test|it)(?:\.(?:concurrent|sequential|only|skip|todo|fails))?$/.test(name)) {
-        const hasTimeout = node.arguments.slice(1, 3).some((arg) => {
+        const isIntegrationOrSubprocess =
+          /(?:integration|e2e|smoke|contract)/i.test(file.rel) ||
+          /\b(?:spawnSync|execFile|Testcontainers|playwright|puppeteer|new\s+Database)\b/.test(raw);
+        const timeoutArg = node.arguments.slice(1, 3).find((arg) => {
           const isNum = isAstNode(arg) && arg.type === "Literal" && typeof arg.value === "number" && arg.value >= 1000;
           const isObj = isAstNode(arg) && arg.type === "ObjectExpression" && Array.isArray(arg.properties) && arg.properties.some((p) => isAstNode(p) && isAstNode(p.key) && p.key.name === "timeout");
           return isNum || isObj;
         });
-        if (hasTimeout) {
+        if (timeoutArg && !isIntegrationOrSubprocess) {
           push(findings, {
-            file: file.rel, line: lineOf(raw, node.start ?? 0), rule: "test-no-per-test-timeout", category: "test-smell", rung: "R2", severity: "warn",
+            file: file.rel, line: lineOf(raw, (isAstNode(timeoutArg) ? timeoutArg.start : undefined) ?? node.start ?? 0), rule: "test-no-per-test-timeout", category: "test-smell", rung: "R2", severity: "warn",
             message: "Per-test numeric timeout override masks slow or hanging tests instead of fixing the underlying wait.",
             fix: "Remove custom per-test timeouts and let the suite default enforce fast deterministic execution.",
           });

@@ -3,7 +3,6 @@ import { isAstNode, parseTsAst, scanSfcScriptSpans, walkAst } from "@veristack/p
 import { lineOf, maskCode, type DiscoveredRepo, type Finding, type ScannedFile } from "@veristack/plugin";
 
 const TS_ANY_ANNOTATION = /(?:[,({]\s*[A-Za-z_$][A-Za-z0-9_$]*\??\s*:\s*any\b|\)\s*:\s*any\b|<\s*any\s*>)/g;
-const UNBOUNDED_FETCH = /(?<![.\w$])fetch\s*\(\s*[^,)\n]+\s*\)/g;
 const DYNAMIC_IMPORT_VAR = /\bimport\s*\(\s*([A-Za-z_$][A-Za-z0-9_$.]*)\s*\)/g;
 const ARGV_EMPTY_ONLY = /\bprocess\.argv\s*\[\s*\d+\s*\]\s*!==?\s*(?:""|'')/g;
 const EVALUATOR_PASS_LITERAL = /\bstatus\s*:\s*["']pass["']/g;
@@ -129,12 +128,35 @@ function scanTsJsEcosystemCore(file: ScannedFile, raw: string, masked: string, f
     }
   }
   if (!/\b(?:AbortSignal\.timeout|AbortController)\b/.test(masked)) {
-    const rawLines = raw.split(/\r?\n/); let fetchCount = 0;
-    for (const m of masked.matchAll(UNBOUNDED_FETCH)) {
-      const idx = m.index ?? 0;
-      if (/\b(?:signal|timeout)\b/.test(rawLines[lineOf(raw, idx) - 1] ?? "")) continue;
-      if (++fetchCount > 3) break;
-      push(findings, { file: file.rel, line: lineOf(raw, idx), rule: "require-bounded-external-await", rung: "R1", severity: "warn", message: "Bare fetch(url) without an AbortSignal timeout can hang handlers or CI jobs indefinitely.", fix: "Pass { signal: AbortSignal.timeout(ms) } or thread an explicit AbortSignal." });
+    const ast = parseTsAst(file);
+    let fetchCount = 0;
+    if (ast) {
+      walkAst(ast, (node) => {
+        if (fetchCount >= 3 || node.type !== "CallExpression" || !isAstNode(node.callee)) return;
+        const isGlobalFetch =
+          (node.callee.type === "Identifier" && node.callee.name === "fetch") ||
+          (node.callee.type === "MemberExpression" &&
+            !node.callee.computed &&
+            isAstNode(node.callee.object) &&
+            node.callee.object.type === "Identifier" &&
+            (node.callee.object.name === "globalThis" || node.callee.object.name === "window") &&
+            isAstNode(node.callee.property) &&
+            node.callee.property.name === "fetch");
+        if (!isGlobalFetch) return;
+        const callStart = node.start ?? 0;
+        const callEnd = node.end ?? callStart;
+        if (!/\b(?:await|return)\s+$|=\s*$/.test(raw.slice(Math.max(0, callStart - 16), callStart))) return;
+        const callSrc = raw.slice(callStart, callEnd);
+        if (/\b(?:signal|timeout)\b/.test(callSrc)) return;
+        const optsArg = Array.isArray(node.arguments) && isAstNode(node.arguments[1]) ? node.arguments[1] : null;
+        if (optsArg && optsArg.type === "Identifier" && typeof optsArg.name === "string") {
+          const prevWindow = raw.slice(Math.max(0, callStart - 500), callStart);
+          const nameIdx = prevWindow.lastIndexOf(optsArg.name);
+          if ((nameIdx >= 0 && /\b(?:signal|AbortSignal|timeout)\b/.test(prevWindow.slice(nameIdx, nameIdx + 220))) || /\bRequestInit\b/.test(prevWindow)) return;
+        }
+        fetchCount += 1;
+        push(findings, { file: file.rel, line: lineOf(raw, callStart), rule: "require-bounded-external-await", rung: "R1", severity: "warn", message: "Bare fetch(url) without an AbortSignal timeout can hang handlers or CI jobs indefinitely.", fix: "Pass { signal: AbortSignal.timeout(ms) } or thread an explicit AbortSignal." });
+      });
     }
   }
   if (PLUGIN_OR_LOADER_PATH.test(file.rel)) {

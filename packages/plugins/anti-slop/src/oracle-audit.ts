@@ -4,9 +4,9 @@ import type { Finding } from "@veristack/plugin";
 
 const INSTRUCTION_NAMES = new Set(["agents.md", "claude.md", "gemini.md", "skill.md"]);
 const ORACLE_NO_EDIT_TOPIC =
-  /\b(?:oracle|gherkin|feature files?|acceptance tests?|contracts\.lock)\b|(?:features|tests\/acceptance)\/|\.feature\b/i;
+  /\b(?:oracle|gherkin|feature files?|acceptance tests?|contracts\.lock|test suites?|tests?|assertions?|verification gates?|quality gates?|rungs\.json|invariants\.json)\b|(?:features|tests\/acceptance)\/|\.feature\b/i;
 const ORACLE_LOCK_VERB =
-  /\b(?:read[- ]only|locked|immutable)\b|\b(?:do not|don't|must not|never)\s+(?:be\s+)?(?:edit|modify|change|rewrite|delete|touch)(?:ed)?\b/i;
+  /\b(?:read[- ]only|locked|immutable|intact)\b|\b(?:do not|don't|must not|never)\s+(?:be\s+)?(?:edit|modify|change|rewrite|delete|touch|weaken|bypass|skip|relax|tamper)(?:ed)?\b|\bkeep\b.{0,24}\bintact\b/i;
 const WEAKEN_FORBID =
   /\b(?:never weaken|never skip|do not skip|must not (?:weaken|skip|delete))\b.{0,40}\b(?:test|check|baseline|ratchet|floor)\b/i;
 const WEAKEN_ALLOW = /\b(?:skip|delete|weaken|disable)\s+tests?\s+to\s+(?:get\s+a\s+)?pass\b/i;

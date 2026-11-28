@@ -36,7 +36,7 @@ npx vstack diff-cheats . --base origin/main --fail
 npx vstack review-brief . --base origin/main --md
 ```
 
-Run `npx vstack --help` for the complete command and flag reference. From a local clone, run `bun run check` to self-verify Veristack.
+Run `npx vstack --help` (`vstack --version`) for the complete command and flag reference. From a local clone, `node bin/vstack.mjs scan .` or `bun bin/vstack.mjs scan .` runs directly with zero build step; run `bun run check` to self-verify Veristack. `vstack scan` exits `0` when gates pass and `1` when any applicable rung is uncovered, over-budget, not executed in CI, or fails `--strict`.
 
 ---
 

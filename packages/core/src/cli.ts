@@ -1,9 +1,25 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { registerCoreServices, type PluginOperation } from "@veristack/plugin";
 import { getDefaultHostSync } from "./ladder.ts";
 import { createPluginHost, type VeristackHostInstance } from "./plugin/host.ts";
 import { buildRungStatuses } from "./rungs/coverage.ts";
 import { loadRungManifest } from "./rungs/manifest.ts";
 import { handleScanCli, handleVerifyAndRunRungCli } from "./rungs/scan-cli.ts";
+
+function resolvePackageVersion(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const rel of ["../package.json", "../../package.json", "../../../package.json"]) {
+    const candidate = path.resolve(here, rel);
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      const doc = JSON.parse(fs.readFileSync(candidate, "utf8")) as { name?: string; version?: string };
+      if (doc.name === "veristack" && typeof doc.version === "string") return doc.version;
+    } catch { continue; }
+  }
+  return "0.1.22";
+}
 
 const CLI_VALUE_FLAGS = new Set([
   "--base", "--max", "--max-lines", "--max-dirs", "--max-doc-lines", "--corroborate",
@@ -16,7 +32,7 @@ const CLI_VALUE_FLAGS = new Set([
 const CLI_BOOL_FLAGS = new Set([
   "--json", "--md", "--strict", "--fail", "--allow-missing-rungs", "--update-ratchet",
   "--fail-on-poor-coverage", "--fail-on-errors", "--fail-on-cheats", "--force", "--no-hooks",
-  "--dry-run", "--verify", "--update", "--check-github", "--emit-requests", "-h", "--help",
+  "--dry-run", "--verify", "--update", "--check-github", "--emit-requests", "-h", "--help", "-V", "--version",
 ]);
 
 function findUnknownCliFlag(args: readonly string[], extraUsage?: string): string | null {
@@ -83,10 +99,11 @@ function formatUsage(host: VeristackHostInstance): string {
     "  --disable-plugin <id|*>    Disable a non-guarded plugin (guarded control-plane plugins remain active)",
     "",
     "Core Commands:",
-    "  vstack scan [dir] [--json | --md] [--strict] [--ratchet <file>] [--plugin <path>] [--disable-plugin <id>]",
+    "  vstack scan [dir] [--json | --md] [--strict] [--ratchet <file>] [--allow-missing-rungs]  (exits 1 on uncovered rungs or failing gates)",
     "  vstack verify [dir] [--strict] [--json | --md]",
     "  vstack run-rung <R0..R8|all> [dir] [--json]",
     "  vstack plugins [list] [--plugin <path>] [--disable-plugin <id>] [--json]",
+    "  vstack --version | -V",
     "",
     "Plugin Commands:",
   ];
@@ -137,6 +154,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   });
 
   try {
+    if (cmd === "--version" || cmd === "-V") {
+      console.log(`veristack ${resolvePackageVersion()}`);
+      return 0;
+    }
     if (!cmd || cmd === "-h" || cmd === "--help") {
       console.log(formatUsage(host));
       return 0;

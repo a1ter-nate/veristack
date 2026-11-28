@@ -58,7 +58,6 @@ function isLinearAcquisition(init: AstNode | null): { kind: string; isAbortContr
   const callee = getCalleeName(init);
   if (!callee) return null;
   if (LINEAR_CONSTRUCTORS.has(callee)) return { kind: callee, isAbortController: false };
-  if (callee === "new AbortController") return { kind: callee, isAbortController: true };
   return null;
 }
 

@@ -34,7 +34,7 @@ const UNTRACKED_CACHE_SKIP_DIRS = new Set([
 
 const MAX_FILE_BYTES = 512_000;
 const MAX_FILES = 12_000;
-const PRIORITY_DIRS = new Set([".github", ".verification", ".circleci", ".husky", ".githooks", "ci", ".azure-pipelines", ".azuredevops"]);
+const PRIORITY_DIRS = new Set([".github", ".verification", ".circleci", ".husky", ".githooks", "ci", "pipelines", ".azure", ".azure-pipelines", ".azuredevops"]);
 const SOURCE_TREE_ROOT = /^(?:src|packages|services|apps|crates|libs|pkg|internal|cmd)\//i;
 const ALWAYS_SKIP_DIRS = new Set([".git", "node_modules", ".repospec", ".runtime"]);
 const WORKSPACE_BUILD_DIR = /^(?:apps|packages|services|crates|libs)\/[^/]+\/(?:dist|build|coverage|target|obj|bin|\.next|\.nuxt|\.output|\.svelte-kit|\.vite|\.turbo|\.cache|\.stryker-tmp|TestResults|StrykerOutput|__pycache__|\.venv|venv)$/i;
@@ -79,11 +79,8 @@ function isWorkflowPath(rel: string): boolean {
   const isYaml = lower.endsWith(".yml") || lower.endsWith(".yaml");
   return (
     (lower.startsWith(".github/workflows/") && isYaml) ||
-    lower === "azure-pipelines.yml" ||
-    lower === "azure-pipelines.yaml" ||
-    lower === ".azure-pipelines.yml" ||
-    lower === ".azure-pipelines.yaml" ||
-    ((lower.startsWith("ci/") || lower.startsWith(".azure-pipelines/") || lower.startsWith(".azuredevops/")) && isYaml) ||
+    /^\.?azure-pipelines(?:[-.][^/]+)?\.ya?ml$/.test(lower) ||
+    ((lower.startsWith("ci/") || lower.startsWith("pipelines/") || lower.startsWith(".azure/") || lower.startsWith(".azure-pipelines/") || lower.startsWith(".azuredevops/")) && isYaml) ||
     lower === ".gitlab-ci.yml" ||
     lower === ".circleci/config.yml" ||
     lower === "bitbucket-pipelines.yml"
