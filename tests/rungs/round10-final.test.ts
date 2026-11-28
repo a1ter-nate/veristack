@@ -7,7 +7,7 @@ import { maskCode } from "@veristack/plugin";
 import { analyzeT3TestGuards } from "@veristack/plugin-lang-typescript";
 import { auditCodeownersPerimeter, scanGitDiffCheats } from "@veristack/plugin-ci-auditor";
 import { extractSfcScript } from "@veristack/plugin-lang-typescript";
-import { discoverRepo, inferArchetypeFromFiles, loadRungManifest, scanRepo } from "@veristack/core";
+import { discoverRepo, evaluateRatchet, inferArchetypeFromFiles, loadRungManifest, scanRepo } from "@veristack/core";
 import { computeRepoTreeHash, evaluateCrapForCoverageFile } from "@veristack/plugin-canary";
 import { auditManifestDowngrade, auditRunnerConfigs, executeHookEvent, loadHookConfig, parseAndValidateCommandArgv, runGitClean, sanitizeShellBlock } from "@veristack/plugin-control-plane";
 import { runRedBeforeFix } from "@veristack/plugin-zero-defect";
@@ -331,5 +331,17 @@ test("control-plane behavioral invariants: fresh disabled hooks, git ls-files tr
     const tsCrap = evaluateCrapForCoverageFile(dir, "ts-multi.info", 30);
     assert.equal(tsCrap.passed, false);
     assert.ok(tsCrap.worstCrap >= 42);
+
+    const depReg = evaluateRatchet([], { version: 1, rules: {}, dependenciesCount: 2 }, undefined, 4);
+    assert.equal(depReg.passed, false);
+    assert.equal(depReg.regressions.some((r) => r.rule === "tiger-minimal-dependencies" && r.delta === 2), true);
+    const depTight = evaluateRatchet([], { version: 1, rules: {}, dependenciesCount: 4 }, undefined, 2);
+    assert.equal(depTight.tightenAvailable.some((r) => r.rule === "tiger-minimal-dependencies" && r.delta === -2), true);
+
+    const pyService = inferArchetypeFromFiles(
+      [{ rel: "pyproject.toml", abs: "/tmp/pyproject.toml", isTest: false, isWorkflow: false, lines: 3, content: '[project]\nname = "my-api"\ndependencies = ["fastapi>=0.110"]\n' }],
+      ["pyproject.toml"],
+    );
+    assert.equal(pyService, "service");
   });
 });
